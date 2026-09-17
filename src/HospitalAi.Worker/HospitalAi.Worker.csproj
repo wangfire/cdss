@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-HospitalAi.Worker-d83f7d0a-d962-49f3-8e76-217d7d53b4c1</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Worker 与消息发布端保持同一 MassTransit 主版本，避免运行时协议差异。 -->
+    <PackageReference Include="MassTransit.RabbitMQ" Version="8.5.7" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\HospitalAi.Application\HospitalAi.Application.csproj" />
+    <ProjectReference Include="..\HospitalAi.Contracts\HospitalAi.Contracts.csproj" />
+    <ProjectReference Include="..\HospitalAi.Infrastructure\HospitalAi.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

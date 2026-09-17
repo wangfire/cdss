@@ -1,0 +1,10 @@
+**/bin/
+**/obj/
+.git/
+.vs/
+.idea/
+*.user
+*.suo
+*.pptx
+deploy/
+tests/

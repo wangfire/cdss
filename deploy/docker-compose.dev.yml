@@ -1,0 +1,132 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2019-latest
+    container_name: hospitalai-sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${HOSPITAL_AI_SQL_PASSWORD:?请先设置 HOSPITAL_AI_SQL_PASSWORD}
+      MSSQL_PID: Developer
+    ports:
+      - "14333:1433"
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "(/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$${MSSQL_SA_PASSWORD}\" -Q \"SELECT 1\" || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P \"$${MSSQL_SA_PASSWORD}\" -Q \"SELECT 1\") >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks:
+      - hospitalai
+
+  redis:
+    image: redis:7-alpine
+    container_name: hospitalai-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - hospitalai
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: hospitalai-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${HOSPITAL_AI_RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${HOSPITAL_AI_RABBITMQ_PASSWORD:-guest}
+    ports:
+      - "5673:5672"
+      - "15673:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    networks:
+      - hospitalai
+
+  api:
+    build:
+      context: ..
+      dockerfile: src/HospitalAi.Api/Dockerfile
+    container_name: hospitalai-api
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      Database__AutoMigrate: "true"
+      ConnectionStrings__HospitalAi: Server=sqlserver,1433;Database=HospitalAi;User Id=sa;Password=${HOSPITAL_AI_SQL_PASSWORD:?请先设置 HOSPITAL_AI_SQL_PASSWORD};TrustServerCertificate=True;
+      RabbitMq__Enabled: "true"
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__VirtualHost: /
+      RabbitMq__Username: ${HOSPITAL_AI_RABBITMQ_USER:?请先设置 HOSPITAL_AI_RABBITMQ_USER}
+      RabbitMq__Password: ${HOSPITAL_AI_RABBITMQ_PASSWORD:?请先设置 HOSPITAL_AI_RABBITMQ_PASSWORD}
+      RabbitMq__QueueName: coding.task.created
+      HealthChecks__Redis__Host: redis
+      HealthChecks__Redis__Port: "6379"
+      HealthChecks__RabbitMq__Host: rabbitmq
+      HealthChecks__RabbitMq__Port: "5672"
+    ports:
+      - "5080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "dotnet --info >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - hospitalai
+
+  worker:
+    build:
+      context: ..
+      dockerfile: src/HospitalAi.Worker/Dockerfile
+    container_name: hospitalai-worker
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      api:
+        condition: service_started
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      ConnectionStrings__HospitalAi: Server=sqlserver,1433;Database=HospitalAi;User Id=sa;Password=${HOSPITAL_AI_SQL_PASSWORD:?请先设置 HOSPITAL_AI_SQL_PASSWORD};TrustServerCertificate=True;
+      RabbitMq__Enabled: "true"
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__VirtualHost: /
+      RabbitMq__Username: ${HOSPITAL_AI_RABBITMQ_USER:?请先设置 HOSPITAL_AI_RABBITMQ_USER}
+      RabbitMq__Password: ${HOSPITAL_AI_RABBITMQ_PASSWORD:?请先设置 HOSPITAL_AI_RABBITMQ_PASSWORD}
+      RabbitMq__QueueName: coding.task.created
+    networks:
+      - hospitalai
+    healthcheck:
+      test: ["CMD-SHELL", "dotnet --info >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  sqlserver-data:
+  redis-data:
+  rabbitmq-data:
+
+networks:
+  hospitalai:
+    driver: bridge

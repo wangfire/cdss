@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/HospitalAi.Api/HospitalAi.Api.csproj" />
+    <Project Path="src/HospitalAi.Application/HospitalAi.Application.csproj" />
+    <Project Path="src/HospitalAi.Contracts/HospitalAi.Contracts.csproj" />
+    <Project Path="src/HospitalAi.Domain/HospitalAi.Domain.csproj" />
+    <Project Path="src/HospitalAi.Infrastructure/HospitalAi.Infrastructure.csproj" />
+    <Project Path="src/HospitalAi.Worker/HospitalAi.Worker.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/HospitalAi.Api.Tests/HospitalAi.Api.Tests.csproj" />
+    <Project Path="tests/HospitalAi.Application.Tests/HospitalAi.Application.Tests.csproj" />
+    <Project Path="tests/HospitalAi.Domain.Tests/HospitalAi.Domain.Tests.csproj" />
+    <Project Path="tests/HospitalAi.Infrastructure.Tests/HospitalAi.Infrastructure.Tests.csproj" />
+    <Project Path="tests/HospitalAi.Worker.Tests/HospitalAi.Worker.Tests.csproj" />
+  </Folder>
+</Solution>

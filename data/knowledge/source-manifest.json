@@ -1,0 +1,28 @@
+{
+  "generatedAt": "2026-09-18T15:57:11.994644+08:00",
+  "sourceDirectory": "D:\\CDSS智能编码系统\\docs\\superpowers\\konwledge",
+  "files": [
+    {
+      "name": "疾病三库对照表.xlsx",
+      "size": 7129988
+    },
+    {
+      "name": "手术三库对照表.xlsx",
+      "size": 1975903
+    },
+    {
+      "name": "ICD10索引关键词编码提取结果(20260909).xlsx",
+      "size": 422837
+    },
+    {
+      "name": "深圳医保规则.xlsx",
+      "size": 289532
+    }
+  ],
+  "outputs": {
+    "icd10": 36662,
+    "icd9cm3": 14388,
+    "synonyms": 6134,
+    "rules": 2178
+  }
+}

@@ -12,5 +12,9 @@ public enum CodingTaskStatus
     Retrying = 4,
     Timeout = 5,
     Cancelled = 6,
-    HumanRequired = 7
+    HumanRequired = 7,
+    PendingReview = 8,
+    Accepted = 9,
+    Modified = 10,
+    Rejected = 11
 }

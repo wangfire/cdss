@@ -1,0 +1,160 @@
+{
+  "name": "Phase2 智能编码推荐 MVP 脱敏 Golden Dataset 样例",
+  "version": "2026-09-17",
+  "cases": [
+    {
+      "caseId": "GOLDEN-001",
+      "documentText": "出院诊断：左胫骨平台粉碎性骨折。手术名称：胫骨内固定术。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "S82.142A", "title": "左胫骨平台粉碎性骨折" },
+        { "codeSystem": "ICD-9-CM-3", "code": "79.36", "title": "胫骨内固定术" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-002",
+      "documentText": "出院诊断：2型糖尿病。治疗经过：给予降糖治疗。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "E11.900", "title": "2型糖尿病" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-003",
+      "documentText": "出院诊断：高血压病3级。长期口服降压药。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "I10.x00", "title": "高血压病" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-004",
+      "documentText": "出院诊断：急性阑尾炎。手术名称：腹腔镜阑尾切除术。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "K35.900", "title": "急性阑尾炎" },
+        { "codeSystem": "ICD-9-CM-3", "code": "47.0100", "title": "腹腔镜阑尾切除术" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-005",
+      "documentText": "出院诊断：胆囊结石伴慢性胆囊炎。手术名称：腹腔镜胆囊切除术。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "K80.100", "title": "胆囊结石伴慢性胆囊炎" },
+        { "codeSystem": "ICD-9-CM-3", "code": "51.2300", "title": "腹腔镜胆囊切除术" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-006",
+      "documentText": "出院诊断：右股骨颈骨折。手术名称：人工股骨头置换术。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "S72.001", "title": "股骨颈骨折" },
+        { "codeSystem": "ICD-9-CM-3", "code": "81.5200", "title": "人工股骨头置换术" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-007",
+      "documentText": "出院诊断：社区获得性肺炎。胸部影像提示双肺感染。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "J18.900", "title": "肺炎" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-008",
+      "documentText": "出院诊断：慢性阻塞性肺疾病急性加重。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "J44.100", "title": "慢性阻塞性肺疾病急性加重" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-009",
+      "documentText": "出院诊断：脑梗死。主要表现为左侧肢体无力。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "I63.900", "title": "脑梗死" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-010",
+      "documentText": "出院诊断：急性心肌梗死。行冠状动脉支架置入术。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "I21.900", "title": "急性心肌梗死" },
+        { "codeSystem": "ICD-9-CM-3", "code": "36.0600", "title": "冠状动脉支架置入术" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-011",
+      "documentText": "出院诊断：胃溃疡伴出血。胃镜提示活动性出血。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "K25.400", "title": "胃溃疡伴出血" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-012",
+      "documentText": "出院诊断：肾结石。手术名称：经皮肾镜碎石取石术。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "N20.000", "title": "肾结石" },
+        { "codeSystem": "ICD-9-CM-3", "code": "55.0400", "title": "经皮肾镜碎石取石术" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-013",
+      "documentText": "出院诊断：前列腺增生。手术名称：经尿道前列腺电切术。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "N40.x00", "title": "前列腺增生" },
+        { "codeSystem": "ICD-9-CM-3", "code": "60.2900", "title": "经尿道前列腺电切术" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-014",
+      "documentText": "出院诊断：白内障。手术名称：白内障超声乳化摘除伴人工晶体植入术。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "H26.900", "title": "白内障" },
+        { "codeSystem": "ICD-9-CM-3", "code": "13.4100", "title": "白内障超声乳化摘除术" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-015",
+      "documentText": "出院诊断：子宫平滑肌瘤。手术名称：腹腔镜子宫肌瘤剔除术。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "D25.900", "title": "子宫平滑肌瘤" },
+        { "codeSystem": "ICD-9-CM-3", "code": "68.2900", "title": "子宫肌瘤剔除术" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-016",
+      "documentText": "出院诊断：乳腺恶性肿瘤。手术名称：乳腺癌改良根治术。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "C50.900", "title": "乳腺恶性肿瘤" },
+        { "codeSystem": "ICD-9-CM-3", "code": "85.4300", "title": "乳腺癌改良根治术" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-017",
+      "documentText": "出院诊断：结肠恶性肿瘤。手术名称：右半结肠切除术。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "C18.900", "title": "结肠恶性肿瘤" },
+        { "codeSystem": "ICD-9-CM-3", "code": "45.7300", "title": "右半结肠切除术" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-018",
+      "documentText": "出院诊断：腰椎间盘突出症。手术名称：椎间盘切除术。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "M51.200", "title": "腰椎间盘突出症" },
+        { "codeSystem": "ICD-9-CM-3", "code": "80.5100", "title": "椎间盘切除术" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-019",
+      "documentText": "出院诊断：甲状腺结节。手术名称：甲状腺部分切除术。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "E04.101", "title": "甲状腺结节" },
+        { "codeSystem": "ICD-9-CM-3", "code": "06.3900", "title": "甲状腺部分切除术" }
+      ]
+    },
+    {
+      "caseId": "GOLDEN-020",
+      "documentText": "出院诊断：下肢静脉曲张。手术名称：大隐静脉高位结扎剥脱术。",
+      "expectedCodes": [
+        { "codeSystem": "ICD-10", "code": "I83.900", "title": "下肢静脉曲张" },
+        { "codeSystem": "ICD-9-CM-3", "code": "38.5900", "title": "大隐静脉高位结扎剥脱术" }
+      ]
+    }
+  ]
+}

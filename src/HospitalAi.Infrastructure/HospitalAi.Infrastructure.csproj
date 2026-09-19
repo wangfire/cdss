@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <ProjectReference Include="..\HospitalAi.Application\HospitalAi.Application.csproj" />
@@ -15,6 +15,17 @@
     <!-- 基础设施层与 API、Worker 统一使用开源的 MassTransit 8.x。 -->
     <PackageReference Include="MassTransit.RabbitMQ" Version="8.5.7" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
+    <!-- OpenTelemetry：供 Observability 扩展注册 HTTP/SQL/运行时/自定义指标 + Prometheus 导出。
+         API 与 Worker 通过 ProjectReference 引用 Infrastructure 获得这些包。
+         AddOpenTelemetry() 扩展方法在 OpenTelemetry.Extensions.Hosting 包中。 -->
+    <PackageReference Include="OpenTelemetry" Version="1.10.0" />
+    <PackageReference Include="OpenTelemetry.Api" Version="1.10.0" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.10.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.10.0-beta.1" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.10.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.10.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.10.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.SqlClient" Version="1.10.0-beta.1" />
   </ItemGroup>
 
   <PropertyGroup>

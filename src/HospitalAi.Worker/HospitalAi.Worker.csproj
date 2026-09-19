@@ -11,6 +11,15 @@
     <!-- Worker 与消息发布端保持同一 MassTransit 主版本，避免运行时协议差异。 -->
     <PackageReference Include="MassTransit.RabbitMQ" Version="8.5.7" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
+    <!-- OpenTelemetry：Worker 流水线指标（自定义 Meter + RabbitMQ 消费）。
+         Worker 使用 Microsoft.NET.Sdk.Worker（非 ASP.NET Core），
+         Prometheus 端点通过 Worker 侧 HTTP host 暴露（参见 Program.cs）。
+         OpenTelemetry.Exporter.Prometheus.AspNetCore 1.10.0 仅有 beta 版。 -->
+    <PackageReference Include="OpenTelemetry" Version="1.10.0" />
+    <PackageReference Include="OpenTelemetry.Api" Version="1.10.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.10.0-beta.1" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.10.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.SqlClient" Version="1.10.0-beta.1" />
   </ItemGroup>
 
   <ItemGroup>

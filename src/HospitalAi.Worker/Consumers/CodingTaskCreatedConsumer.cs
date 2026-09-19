@@ -2,6 +2,7 @@ using HospitalAi.Infrastructure.Outbox;
 using HospitalAi.Infrastructure.SqlServer;
 using HospitalAi.Contracts.CodingTasks;
 using HospitalAi.Worker.Audit;
+using HospitalAi.Worker.Observability;
 using HospitalAi.Worker.Pipeline;
 using HospitalAi.Worker.Retry;
 using HospitalAi.Worker.Tracing;
@@ -97,9 +98,18 @@ public sealed class CodingTaskCreatedConsumer(
                 await pipelineRunner.RunAsync(message, cancellationToken);
 
                 now = DateTimeOffset.UtcNow;
-                task.Status = Domain.CodingTasks.CodingTaskStatus.Success;
+                if (task.Status == Domain.CodingTasks.CodingTaskStatus.Running)
+                {
+                    task.Status = Domain.CodingTasks.CodingTaskStatus.Success;
+                }
+
                 task.CompletedAt = now;
-                task.ErrorCode = null;
+                if (task.Status is Domain.CodingTasks.CodingTaskStatus.Success
+                    or Domain.CodingTasks.CodingTaskStatus.PendingReview)
+                {
+                    task.ErrorCode = null;
+                }
+
                 task.UpdatedAt = now;
                 traceService.FinishAttempt(trace, step, "SUCCESS", null, now);
                 auditService.Add(
@@ -109,6 +119,8 @@ public sealed class CodingTaskCreatedConsumer(
                     "SUCCESS",
                     GetRequestId(message),
                     now);
+                PipelineMetrics.RecordPipelineExecuted(message);
+                PipelineMetrics.RecordProcessingCompleted("SUCCESS", message);
                 await dbContext.SaveChangesAsync(cancellationToken);
                 await inboxStore.MarkProcessedAsync(
                     message.MessageId,
@@ -140,6 +152,15 @@ public sealed class CodingTaskCreatedConsumer(
                     isFinalAttempt ? "FAILED" : "RETRY",
                     GetRequestId(message),
                     now);
+                PipelineMetrics.RecordPipelineFailed(PipelineErrorCode, message);
+                if (isFinalAttempt)
+                {
+                    PipelineMetrics.RecordProcessingCompleted("FAILED", message);
+                }
+                else
+                {
+                    PipelineMetrics.RecordProcessingCompleted("RETRY", message);
+                }
                 await dbContext.SaveChangesAsync(cancellationToken);
 
                 if (isFinalAttempt)

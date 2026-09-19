@@ -159,6 +159,54 @@ try {
             dischargeAt = $null
         }
 
+    Invoke-JsonRequest `
+        -Method Post `
+        -Uri "$ApiBaseUrl/api/v1/code-systems/import" `
+        -Headers $headers `
+        -Body @{
+            codeSystem = "ICD-10"
+            version = "2026"
+            codes = @(
+                @{
+                    code = "S82.142A"
+                    title = "左胫骨平台粉碎性骨折"
+                    codeType = "诊断"
+                    searchText = "左胫骨平台 粉碎性 骨折"
+                    isEnabled = $true
+                }
+            )
+        } | Out-Null
+
+    Invoke-JsonRequest `
+        -Method Post `
+        -Uri "$ApiBaseUrl/api/v1/code-systems/import" `
+        -Headers $headers `
+        -Body @{
+            codeSystem = "ICD-9-CM-3"
+            version = "2026"
+            codes = @(
+                @{
+                    code = "79.36"
+                    title = "胫骨内固定术"
+                    codeType = "手术"
+                    searchText = "胫骨 内固定术"
+                    isEnabled = $true
+                }
+            )
+        } | Out-Null
+
+    Invoke-JsonRequest `
+        -Method Post `
+        -Uri "$ApiBaseUrl/api/v1/documents" `
+        -Headers $headers `
+        -Body @{
+            visitId = $visit.id
+            documentType = "discharge"
+            contentReference = "出院诊断：左胫骨平台粉碎性骨折。手术名称：胫骨内固定术。"
+            contentHash = [Guid]::NewGuid().ToString("N")
+            version = 1
+        } | Out-Null
+
     $taskHeaders = $headers.Clone()
     $taskHeaders["Idempotency-Key"] = [Guid]::NewGuid().ToString("N")
     $task = Invoke-JsonRequest `
@@ -170,19 +218,54 @@ try {
             pipelineVersion = "pipeline-v1"
         }
 
-    $completed = Wait-Until -TimeoutSeconds $TaskTimeoutSeconds -FailureMessage "编码任务未在限定时间内进入 SUCCESS。" -Probe {
+    $pendingReview = Wait-Until -TimeoutSeconds $TaskTimeoutSeconds -FailureMessage "编码任务未在限定时间内进入 PENDING_REVIEW。" -Probe {
         $current = Invoke-JsonRequest `
             -Method Get `
             -Uri "$ApiBaseUrl/api/v1/coding-tasks/$($task.id)" `
             -Headers $headers
-        if ($current.status -eq "SUCCESS") {
+        if ($current.status -eq "PENDING_REVIEW") {
             return $current
         }
 
         return $null
     }
 
-    Write-Host "Smoke PASS: task $($completed.id) reached SUCCESS with trace $($completed.traceId)"
+    $recommendations = Invoke-JsonRequest `
+        -Method Get `
+        -Uri "$ApiBaseUrl/api/v1/coding-tasks/$($task.id)/recommendations" `
+        -Headers $headers
+
+    if ($recommendations.recommendations.Count -lt 2) {
+        throw "编码任务推荐数量不足，期望至少 2 条。"
+    }
+
+    $finalCodes = @(
+        $recommendations.recommendations | ForEach-Object {
+            @{
+                recommendationId = $_.id
+                resultType = $_.recommendationType
+                codeSystem = $_.codeSystem
+                code = $_.code
+                title = $_.title
+            }
+        }
+    )
+
+    $review = Invoke-JsonRequest `
+        -Method Post `
+        -Uri "$ApiBaseUrl/api/v1/coding-tasks/$($task.id)/review" `
+        -Headers $headers `
+        -Body @{
+            reviewStatus = "ACCEPTED"
+            finalCodes = $finalCodes
+            comment = "冒烟测试确认推荐"
+        }
+
+    if ($review.reviewStatus -ne "ACCEPTED" -or $review.finalCodeCount -lt 2) {
+        throw "人工审核未生成期望的最终编码。"
+    }
+
+    Write-Host "Smoke PASS: task $($pendingReview.id) reached PENDING_REVIEW and review accepted with trace $($pendingReview.traceId)"
 }
 finally {
     docker compose -f $ComposeFile ps

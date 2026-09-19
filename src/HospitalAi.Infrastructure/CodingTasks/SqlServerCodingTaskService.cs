@@ -165,7 +165,7 @@ public sealed class SqlServerCodingTaskService(
             record.HospitalId,
             record.VisitId,
             record.PipelineVersion,
-            record.Status.ToString().ToUpperInvariant(),
+            record.Status.ToWireValue(),
             traceId,
             record.CreatedAt,
             record.CompletedAt);

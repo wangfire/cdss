@@ -11,6 +11,12 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
 {
     public DbSet<HospitalRecord> Hospitals => Set<HospitalRecord>();
 
+    public DbSet<AppUserRecord> AppUsers => Set<AppUserRecord>();
+
+    public DbSet<AppRoleRecord> AppRoles => Set<AppRoleRecord>();
+
+    public DbSet<AppUserRoleRecord> AppUserRoles => Set<AppUserRoleRecord>();
+
     public DbSet<PatientRecord> Patients => Set<PatientRecord>();
 
     public DbSet<VisitRecord> Visits => Set<VisitRecord>();
@@ -18,6 +24,26 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
     public DbSet<CodingTaskRecord> CodingTasks => Set<CodingTaskRecord>();
 
     public DbSet<MedicalDocumentRecord> MedicalDocuments => Set<MedicalDocumentRecord>();
+
+    public DbSet<CodeSystemRecord> CodeSystems => Set<CodeSystemRecord>();
+
+    public DbSet<MedicalCodeRecord> MedicalCodes => Set<MedicalCodeRecord>();
+
+    public DbSet<TermSynonymRecord> TermSynonyms => Set<TermSynonymRecord>();
+
+    public DbSet<CodingRuleRecord> CodingRules => Set<CodingRuleRecord>();
+
+    public DbSet<DocumentSectionRecord> DocumentSections => Set<DocumentSectionRecord>();
+
+    public DbSet<ClinicalEntityRecord> ClinicalEntities => Set<ClinicalEntityRecord>();
+
+    public DbSet<CodingRecommendationRecord> CodingRecommendations => Set<CodingRecommendationRecord>();
+
+    public DbSet<RecommendationEvidenceRecord> RecommendationEvidences => Set<RecommendationEvidenceRecord>();
+
+    public DbSet<CodingReviewRecord> CodingReviews => Set<CodingReviewRecord>();
+
+    public DbSet<FinalCodingResultRecord> FinalCodingResults => Set<FinalCodingResultRecord>();
 
     public DbSet<OutboxMessageRecord> OutboxMessages => Set<OutboxMessageRecord>();
 
@@ -32,10 +58,23 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ConfigureHospital(modelBuilder);
+        ConfigureAppUser(modelBuilder);
+        ConfigureAppRole(modelBuilder);
+        ConfigureAppUserRole(modelBuilder);
         ConfigurePatient(modelBuilder);
         ConfigureVisit(modelBuilder);
         ConfigureCodingTask(modelBuilder);
         ConfigureMedicalDocument(modelBuilder);
+        ConfigureCodeSystem(modelBuilder);
+        ConfigureMedicalCode(modelBuilder);
+        ConfigureTermSynonym(modelBuilder);
+        ConfigureCodingRule(modelBuilder);
+        ConfigureDocumentSection(modelBuilder);
+        ConfigureClinicalEntity(modelBuilder);
+        ConfigureCodingRecommendation(modelBuilder);
+        ConfigureRecommendationEvidence(modelBuilder);
+        ConfigureCodingReview(modelBuilder);
+        ConfigureFinalCodingResult(modelBuilder);
         ConfigureOutbox(modelBuilder);
         ConfigureInbox(modelBuilder);
         ConfigurePipelineTrace(modelBuilder);
@@ -55,6 +94,70 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
         entity.HasIndex(item => item.Code)
             .HasDatabaseName("ux_hospital_code")
             .IsUnique();
+    }
+
+    private static void ConfigureAppUser(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<AppUserRecord>();
+
+        entity.ToTable("app_user");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.HospitalId).HasColumnName("hospital_id").IsRequired();
+        entity.Property(item => item.Code).HasColumnName("code").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.DisplayName).HasColumnName("display_name").HasMaxLength(200).IsRequired();
+        entity.Property(item => item.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
+        entity.HasIndex(item => new { item.HospitalId, item.Code })
+            .HasDatabaseName("ux_app_user_hospital_code")
+            .IsUnique();
+        entity.HasOne(item => item.Hospital)
+            .WithMany()
+            .HasForeignKey(item => item.HospitalId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureAppRole(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<AppRoleRecord>();
+
+        entity.ToTable("app_role");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.HospitalId).HasColumnName("hospital_id").IsRequired();
+        entity.Property(item => item.Code).HasColumnName("code").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.Name).HasColumnName("name").HasMaxLength(200).IsRequired();
+        entity.Property(item => item.Description).HasColumnName("description").HasMaxLength(500).IsRequired();
+        entity.HasIndex(item => new { item.HospitalId, item.Code })
+            .HasDatabaseName("ux_app_role_hospital_code")
+            .IsUnique();
+        entity.HasOne(item => item.Hospital)
+            .WithMany()
+            .HasForeignKey(item => item.HospitalId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureAppUserRole(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<AppUserRoleRecord>();
+
+        entity.ToTable("app_user_role");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.HospitalId).HasColumnName("hospital_id").IsRequired();
+        entity.Property(item => item.AppUserId).HasColumnName("app_user_id").IsRequired();
+        entity.Property(item => item.AppRoleId).HasColumnName("app_role_id").IsRequired();
+        entity.HasIndex(item => new { item.HospitalId, item.AppUserId, item.AppRoleId })
+            .HasDatabaseName("ux_app_user_role_hospital_user_role")
+            .IsUnique();
+        entity.HasOne(item => item.Hospital)
+            .WithMany()
+            .HasForeignKey(item => item.HospitalId)
+            .OnDelete(DeleteBehavior.Restrict);
+        entity.HasOne(item => item.AppUser)
+            .WithMany()
+            .HasForeignKey(item => item.AppUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+        entity.HasOne(item => item.AppRole)
+            .WithMany()
+            .HasForeignKey(item => item.AppRoleId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 
     private static void ConfigurePatient(ModelBuilder modelBuilder)
@@ -151,6 +254,273 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
             .WithMany()
             .HasForeignKey(item => item.VisitId)
             .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureCodeSystem(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<CodeSystemRecord>();
+
+        entity.ToTable("code_system");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.HospitalId).HasColumnName("hospital_id").IsRequired();
+        entity.Property(item => item.Code).HasColumnName("code").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.Name).HasColumnName("name").HasMaxLength(200).IsRequired();
+        entity.Property(item => item.Version).HasColumnName("version").HasMaxLength(64).IsRequired();
+        entity.HasIndex(item => new { item.HospitalId, item.Code })
+            .HasDatabaseName("ux_code_system_hospital_code")
+            .IsUnique();
+        entity.HasOne(item => item.Hospital)
+            .WithMany(item => item.CodeSystems)
+            .HasForeignKey(item => item.HospitalId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureMedicalCode(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<MedicalCodeRecord>();
+
+        entity.ToTable("medical_code");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.HospitalId).HasColumnName("hospital_id").IsRequired();
+        entity.Property(item => item.CodeSystemId).HasColumnName("code_system_id").IsRequired();
+        entity.Property(item => item.CodeSystemCode).HasColumnName("code_system_code").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.Code).HasColumnName("code").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.Title).HasColumnName("title").HasMaxLength(300).IsRequired();
+        entity.Property(item => item.CodeType).HasColumnName("code_type").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.SearchText).HasColumnName("search_text").HasMaxLength(1000).IsRequired();
+        entity.Property(item => item.IsEnabled).HasColumnName("is_enabled").IsRequired();
+        entity.HasIndex(item => new { item.HospitalId, item.CodeSystemCode, item.Code })
+            .HasDatabaseName("ux_medical_code_hospital_system_code")
+            .IsUnique();
+        entity.HasIndex(item => new { item.HospitalId, item.CodeSystemCode, item.CodeType })
+            .HasDatabaseName("ix_medical_code_hospital_system_type");
+        entity.HasOne(item => item.Hospital)
+            .WithMany()
+            .HasForeignKey(item => item.HospitalId)
+            .OnDelete(DeleteBehavior.Restrict);
+        entity.HasOne(item => item.CodeSystem)
+            .WithMany(item => item.MedicalCodes)
+            .HasForeignKey(item => item.CodeSystemId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+
+    private static void ConfigureTermSynonym(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<TermSynonymRecord>();
+
+        entity.ToTable("term_synonym");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.HospitalId).HasColumnName("hospital_id").IsRequired();
+        entity.Property(item => item.Term).HasColumnName("term").HasMaxLength(200).IsRequired();
+        entity.Property(item => item.NormalizedTerm).HasColumnName("normalized_term").HasMaxLength(200).IsRequired();
+        entity.Property(item => item.CodeSystemCode).HasColumnName("code_system_code").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.Code).HasColumnName("code").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.EntityType).HasColumnName("entity_type").HasMaxLength(64).IsRequired();
+        entity.HasIndex(item => new { item.HospitalId, item.Term, item.EntityType, item.CodeSystemCode, item.Code })
+            .HasDatabaseName("ux_term_synonym_hospital_term_type_code")
+            .IsUnique();
+        entity.HasOne(item => item.Hospital)
+            .WithMany()
+            .HasForeignKey(item => item.HospitalId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureCodingRule(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<CodingRuleRecord>();
+
+        entity.ToTable("coding_rule");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.HospitalId).HasColumnName("hospital_id").IsRequired();
+        entity.Property(item => item.RuleCode).HasColumnName("rule_code").HasMaxLength(128).IsRequired();
+        entity.Property(item => item.CodeSystemCode).HasColumnName("code_system_code").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.CodePattern).HasColumnName("code_pattern").HasMaxLength(128).IsRequired();
+        entity.Property(item => item.RuleType).HasColumnName("rule_type").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.Severity).HasColumnName("severity").HasMaxLength(32).IsRequired();
+        entity.Property(item => item.Message).HasColumnName("message").HasMaxLength(500).IsRequired();
+        entity.Property(item => item.IsEnabled).HasColumnName("is_enabled").IsRequired();
+        entity.HasIndex(item => new { item.HospitalId, item.RuleCode })
+            .HasDatabaseName("ux_coding_rule_hospital_rule")
+            .IsUnique();
+        entity.HasOne(item => item.Hospital)
+            .WithMany()
+            .HasForeignKey(item => item.HospitalId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureDocumentSection(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<DocumentSectionRecord>();
+
+        entity.ToTable("document_section");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.HospitalId).HasColumnName("hospital_id").IsRequired();
+        entity.Property(item => item.VisitId).HasColumnName("visit_id").IsRequired();
+        entity.Property(item => item.MedicalDocumentId).HasColumnName("medical_document_id").IsRequired();
+        entity.Property(item => item.SectionType).HasColumnName("section_type").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.Title).HasColumnName("title").HasMaxLength(200).IsRequired();
+        entity.Property(item => item.Content).HasColumnName("content").HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(item => item.Sequence).HasColumnName("sequence").IsRequired();
+        entity.HasIndex(item => new { item.HospitalId, item.VisitId, item.Sequence })
+            .HasDatabaseName("ix_document_section_visit_sequence");
+        entity.HasOne(item => item.Hospital)
+            .WithMany()
+            .HasForeignKey(item => item.HospitalId)
+            .OnDelete(DeleteBehavior.Restrict);
+        entity.HasOne(item => item.Visit)
+            .WithMany()
+            .HasForeignKey(item => item.VisitId)
+            .OnDelete(DeleteBehavior.Restrict);
+        entity.HasOne(item => item.MedicalDocument)
+            .WithMany()
+            .HasForeignKey(item => item.MedicalDocumentId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+
+    private static void ConfigureClinicalEntity(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ClinicalEntityRecord>();
+
+        entity.ToTable("clinical_entity");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.HospitalId).HasColumnName("hospital_id").IsRequired();
+        entity.Property(item => item.CodingTaskId).HasColumnName("coding_task_id").IsRequired();
+        entity.Property(item => item.DocumentSectionId).HasColumnName("document_section_id");
+        entity.Property(item => item.EntityType).HasColumnName("entity_type").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.RawText).HasColumnName("raw_text").HasMaxLength(300).IsRequired();
+        entity.Property(item => item.NormalizedText).HasColumnName("normalized_text").HasMaxLength(300).IsRequired();
+        entity.Property(item => item.IsNegated).HasColumnName("is_negated").IsRequired();
+        entity.HasIndex(item => new { item.HospitalId, item.CodingTaskId, item.EntityType })
+            .HasDatabaseName("ix_clinical_entity_task_type");
+        entity.HasOne(item => item.Hospital)
+            .WithMany()
+            .HasForeignKey(item => item.HospitalId)
+            .OnDelete(DeleteBehavior.Restrict);
+        entity.HasOne(item => item.CodingTask)
+            .WithMany()
+            .HasForeignKey(item => item.CodingTaskId)
+            .OnDelete(DeleteBehavior.Restrict);
+        entity.HasOne(item => item.DocumentSection)
+            .WithMany()
+            .HasForeignKey(item => item.DocumentSectionId)
+            .OnDelete(DeleteBehavior.SetNull);
+    }
+
+    private static void ConfigureCodingRecommendation(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<CodingRecommendationRecord>();
+
+        entity.ToTable("coding_recommendation");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.HospitalId).HasColumnName("hospital_id").IsRequired();
+        entity.Property(item => item.CodingTaskId).HasColumnName("coding_task_id").IsRequired();
+        entity.Property(item => item.RecommendationType).HasColumnName("recommendation_type").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.CodeSystemCode).HasColumnName("code_system_code").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.Code).HasColumnName("code").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.Title).HasColumnName("title").HasMaxLength(300).IsRequired();
+        entity.Property(item => item.Rank).HasColumnName("rank").IsRequired();
+        entity.Property(item => item.RecallScore).HasColumnName("recall_score").HasColumnType("decimal(5,4)").IsRequired();
+        entity.Property(item => item.RuleScore).HasColumnName("rule_score").HasColumnType("decimal(5,4)").IsRequired();
+        entity.Property(item => item.ConfidenceScore).HasColumnName("confidence_score").HasColumnType("decimal(5,4)").IsRequired();
+        entity.Property(item => item.ReviewStatus).HasColumnName("review_status").HasMaxLength(32).IsRequired();
+        entity.HasIndex(item => new { item.CodingTaskId, item.RecommendationType, item.Code })
+            .HasDatabaseName("ux_coding_recommendation_task_type_code")
+            .IsUnique();
+        entity.HasIndex(item => new { item.CodingTaskId, item.ReviewStatus })
+            .HasDatabaseName("ix_coding_recommendation_task_review_status");
+        entity.HasOne(item => item.Hospital)
+            .WithMany()
+            .HasForeignKey(item => item.HospitalId)
+            .OnDelete(DeleteBehavior.Restrict);
+        entity.HasOne(item => item.CodingTask)
+            .WithMany(item => item.CodingRecommendations)
+            .HasForeignKey(item => item.CodingTaskId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+
+    private static void ConfigureRecommendationEvidence(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<RecommendationEvidenceRecord>();
+
+        entity.ToTable("recommendation_evidence");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.HospitalId).HasColumnName("hospital_id").IsRequired();
+        entity.Property(item => item.CodingRecommendationId).HasColumnName("coding_recommendation_id").IsRequired();
+        entity.Property(item => item.DocumentSectionId).HasColumnName("document_section_id");
+        entity.Property(item => item.SourceType).HasColumnName("source_type").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.SourceText).HasColumnName("source_text").HasMaxLength(1000).IsRequired();
+        entity.Property(item => item.MatchText).HasColumnName("match_text").HasMaxLength(300).IsRequired();
+        entity.Property(item => item.Score).HasColumnName("score").HasColumnType("decimal(5,4)").IsRequired();
+        entity.HasIndex(item => item.CodingRecommendationId)
+            .HasDatabaseName("ix_recommendation_evidence_recommendation");
+        entity.HasOne(item => item.Hospital)
+            .WithMany()
+            .HasForeignKey(item => item.HospitalId)
+            .OnDelete(DeleteBehavior.Restrict);
+        entity.HasOne(item => item.CodingRecommendation)
+            .WithMany(item => item.Evidences)
+            .HasForeignKey(item => item.CodingRecommendationId)
+            .OnDelete(DeleteBehavior.Cascade);
+        entity.HasOne(item => item.DocumentSection)
+            .WithMany()
+            .HasForeignKey(item => item.DocumentSectionId)
+            .OnDelete(DeleteBehavior.SetNull);
+    }
+
+    private static void ConfigureCodingReview(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<CodingReviewRecord>();
+
+        entity.ToTable("coding_review");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.HospitalId).HasColumnName("hospital_id").IsRequired();
+        entity.Property(item => item.CodingTaskId).HasColumnName("coding_task_id").IsRequired();
+        entity.Property(item => item.ReviewStatus).HasColumnName("review_status").HasMaxLength(32).IsRequired();
+        entity.Property(item => item.Comment).HasColumnName("comment").HasMaxLength(1000);
+        entity.Property(item => item.ReviewerId).HasColumnName("reviewer_id").HasMaxLength(128);
+        entity.Property(item => item.ReviewedAt).HasColumnName("reviewed_at").IsRequired();
+        entity.HasIndex(item => new { item.CodingTaskId, item.ReviewStatus })
+            .HasDatabaseName("ix_coding_review_task_status");
+        entity.HasOne(item => item.Hospital)
+            .WithMany()
+            .HasForeignKey(item => item.HospitalId)
+            .OnDelete(DeleteBehavior.Restrict);
+        entity.HasOne(item => item.CodingTask)
+            .WithMany()
+            .HasForeignKey(item => item.CodingTaskId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureFinalCodingResult(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<FinalCodingResultRecord>();
+
+        entity.ToTable("final_coding_result");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.HospitalId).HasColumnName("hospital_id").IsRequired();
+        entity.Property(item => item.CodingTaskId).HasColumnName("coding_task_id").IsRequired();
+        entity.Property(item => item.SourceRecommendationId).HasColumnName("source_recommendation_id");
+        entity.Property(item => item.ResultType).HasColumnName("result_type").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.CodeSystemCode).HasColumnName("code_system_code").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.Code).HasColumnName("code").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.Title).HasColumnName("title").HasMaxLength(300).IsRequired();
+        entity.Property(item => item.ReviewerId).HasColumnName("reviewer_id").HasMaxLength(128);
+        entity.Property(item => item.ConfirmedAt).HasColumnName("confirmed_at").IsRequired();
+        entity.HasIndex(item => new { item.CodingTaskId, item.ResultType, item.CodeSystemCode, item.Code })
+            .HasDatabaseName("ux_final_coding_result_task_type_code")
+            .IsUnique();
+        entity.HasOne(item => item.Hospital)
+            .WithMany()
+            .HasForeignKey(item => item.HospitalId)
+            .OnDelete(DeleteBehavior.Restrict);
+        entity.HasOne(item => item.CodingTask)
+            .WithMany()
+            .HasForeignKey(item => item.CodingTaskId)
+            .OnDelete(DeleteBehavior.Restrict);
+        entity.HasOne(item => item.SourceRecommendation)
+            .WithMany()
+            .HasForeignKey(item => item.SourceRecommendationId)
+            .OnDelete(DeleteBehavior.SetNull);
     }
 
     private static void ConfigureOutbox(ModelBuilder modelBuilder)

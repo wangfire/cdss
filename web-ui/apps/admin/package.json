@@ -1,0 +1,33 @@
+{
+  "name": "@tabtab/admin",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vp dev",
+    "build": "vp build",
+    "preview": "vp preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tabtab/styles": "workspace:*",
+    "@tabtab/ui": "workspace:*",
+    "@tabtab/utils": "workspace:*",
+    "@vueuse/core": "catalog:",
+    "lucide-vue-next": "catalog:",
+    "pinia": "catalog:",
+    "pinia-plugin-persistedstate": "^4.7.1",
+    "vue": "catalog:",
+    "vue-i18n": "catalog:",
+    "vue-router": "catalog:"
+  },
+  "devDependencies": {
+    "@tabtab/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "@vitejs/plugin-vue": "catalog:",
+    "tailwindcss": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vue-tsc": "catalog:"
+  }
+}

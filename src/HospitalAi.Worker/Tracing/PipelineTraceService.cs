@@ -15,21 +15,25 @@ public sealed class PipelineTraceService(HospitalAiDbContext dbContext)
         CancellationToken cancellationToken = default)
     {
         var trace = await dbContext.PipelineTraces
-            .SingleOrDefaultAsync(
-                item => item.HospitalId == hospitalId
-                    && item.CodingTaskId == taskId
-                    && item.TraceId == traceId,
-                cancellationToken);
+            .Where(item => item.HospitalId == hospitalId
+                && item.CodingTaskId == taskId
+                && item.TraceId == traceId)
+            .OrderBy(item => item.CreatedAt)
+            .FirstOrDefaultAsync(cancellationToken);
 
         if (trace is not null)
         {
             return trace;
         }
 
+        // 同一 taskId + traceId 允许存在多条历史记录（重试、并发建任务、回填脚本），
+        // 取最早一条作为本次处理的 Trace，避免 Single 因多行直接抛异常。
         return dbContext.PipelineTraces.Local
-            .SingleOrDefault(item => item.HospitalId == hospitalId
+            .Where(item => item.HospitalId == hospitalId
                 && item.CodingTaskId == taskId
-                && item.TraceId == traceId);
+                && item.TraceId == traceId)
+            .OrderBy(item => item.CreatedAt)
+            .FirstOrDefault();
     }
 
     public PipelineTraceStepRecord StartAttempt(

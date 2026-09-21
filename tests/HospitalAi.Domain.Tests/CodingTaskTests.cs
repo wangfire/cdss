@@ -88,6 +88,13 @@ public sealed class CodingTaskTests
         Assert.Throws<DomainException>(() => task.Succeed());
     }
 
+    [Fact]
+    public void ToWireValue_审核状态包含下划线()
+    {
+        Assert.Equal("PENDING_REVIEW", CodingTaskStatus.PendingReview.ToWireValue());
+        Assert.Equal("HUMAN_REQUIRED", CodingTaskStatus.HumanRequired.ToWireValue());
+    }
+
     private static CodingTask CreateTask()
     {
         return CodingTask.Create(

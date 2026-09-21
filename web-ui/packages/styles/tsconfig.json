@@ -1,0 +1,4 @@
+{
+  "extends": "@tabtab/typescript-config/base",
+  "include": ["src"]
+}

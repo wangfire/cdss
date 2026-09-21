@@ -1,0 +1,20 @@
+{
+  "codeSystem": "ICD-10",
+  "version": "2026",
+  "codes": [
+    {
+      "code": "S82.142A",
+      "title": "左胫骨平台粉碎性骨折",
+      "codeType": "诊断",
+      "searchText": "左胫骨平台 粉碎性 骨折",
+      "isEnabled": true
+    },
+    {
+      "code": "E11.900",
+      "title": "2型糖尿病",
+      "codeType": "诊断",
+      "searchText": "2型糖尿病 糖尿病",
+      "isEnabled": true
+    }
+  ]
+}

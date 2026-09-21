@@ -1,0 +1,34 @@
+{
+  "synonyms": [
+    {
+      "term": "内固定",
+      "normalizedTerm": "内固定术",
+      "entityType": "PROCEDURE"
+    },
+    {
+      "term": "二型糖尿病",
+      "normalizedTerm": "2型糖尿病",
+      "entityType": "DIAGNOSIS"
+    }
+  ],
+  "rules": [
+    {
+      "ruleCode": "ICD10_DISABLED_FILTER",
+      "codeSystem": "ICD-10",
+      "codePattern": "*",
+      "ruleType": "DISABLED_CODE_FILTER",
+      "severity": "ERROR",
+      "message": "禁用编码不得进入推荐结果。",
+      "isEnabled": true
+    },
+    {
+      "ruleCode": "ICD9_PROCEDURE_ONLY",
+      "codeSystem": "ICD-9-CM-3",
+      "codePattern": "*",
+      "ruleType": "PROCEDURE_SYSTEM_MATCH",
+      "severity": "ERROR",
+      "message": "手术操作推荐必须使用 ICD-9-CM-3。",
+      "isEnabled": true
+    }
+  ]
+}

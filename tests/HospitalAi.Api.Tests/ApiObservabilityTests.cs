@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using HospitalAi.Contracts.CodingTasks;
 using HospitalAi.Contracts.Hospitals;
 using HospitalAi.Contracts.Patients;
@@ -59,6 +60,48 @@ public sealed class ApiObservabilityTests
     }
 
     [Fact]
+    public async Task CodeSystemsImport_导入ICD字典返回计数()
+    {
+        await using var database = await ApiTestDatabase.CreateAsync();
+        var loggerProvider = new CaptureLoggerProvider();
+        using var factory = CreateFactory(database.ConnectionString, loggerProvider);
+        using var client = factory.CreateClient();
+        var hospital = await CreateHospitalAsync(client, loggerProvider);
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/code-systems/import")
+        {
+            Content = JsonContent.Create(new
+            {
+                codeSystem = "ICD-10",
+                version = "2026",
+                codes = new[]
+                {
+                    new
+                    {
+                        code = "S82.142A",
+                        title = "左胫骨平台粉碎性骨折",
+                        codeType = "诊断",
+                        searchText = "左胫骨平台 粉碎性 骨折",
+                        isEnabled = true
+                    }
+                }
+            })
+        };
+        request.Headers.Add("X-Hospital-Id", hospital.Id.ToString());
+        request.Headers.Add("X-User-Id", "api-test-user");
+
+        using var response = await client.SendAsync(request);
+        await EnsureSuccessAsync(response, loggerProvider);
+        var body = await ReadEnvelopeDataAsync<ImportResponse>(response);
+
+        Assert.Equal("ICD-10", body?.CodeSystem);
+        Assert.Equal(1, body?.ImportedCount);
+        Assert.Equal(0, body?.UpdatedCount);
+    }
+
+    [Fact]
     public async Task RequestLog_记录结构化上下文且不包含患者姓名()
     {
         await using var database = await ApiTestDatabase.CreateAsync();
@@ -90,6 +133,7 @@ public sealed class ApiObservabilityTests
         return new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
             {
+                builder.UseEnvironment("Testing");
                 builder.UseSetting("ConnectionStrings:HospitalAi", connectionString);
                 builder.ConfigureAppConfiguration(configuration =>
                 {
@@ -107,7 +151,19 @@ public sealed class ApiObservabilityTests
                 {
                     services.AddSingleton<ILoggerProvider>(loggerProvider);
                 });
+                builder.ConfigureLogging(logging =>
+                {
+                    logging.AddProvider(loggerProvider);
+                });
             });
+    }
+
+    private static async Task<T> ReadEnvelopeDataAsync<T>(HttpResponseMessage response)
+    {
+        // 成功响应被 ApiEnvelope 包装为 { code:0, message, data }。
+        var root = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var data = root.GetProperty("data");
+        return data.Deserialize<T>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
     }
 
     private static async Task<HospitalResponse> CreateHospitalAsync(
@@ -118,7 +174,7 @@ public sealed class ApiObservabilityTests
             "/api/v1/hospitals",
             new CreateHospitalRequest($"H-{Guid.NewGuid():N}"[..16], "API Test Hospital"));
         await EnsureSuccessAsync(response, loggerProvider);
-        return (await response.Content.ReadFromJsonAsync<HospitalResponse>())!;
+        return await ReadEnvelopeDataAsync<HospitalResponse>(response);
     }
 
     private static async Task<PatientResponse> CreatePatientAsync(
@@ -141,7 +197,7 @@ public sealed class ApiObservabilityTests
 
         using var response = await client.SendAsync(request);
         await EnsureSuccessAsync(response, loggerProvider);
-        return (await response.Content.ReadFromJsonAsync<PatientResponse>())!;
+        return await ReadEnvelopeDataAsync<PatientResponse>(response);
     }
 
     private static async Task<VisitResponse> CreateVisitAsync(
@@ -164,7 +220,7 @@ public sealed class ApiObservabilityTests
 
         using var response = await client.SendAsync(request);
         await EnsureSuccessAsync(response, loggerProvider);
-        return (await response.Content.ReadFromJsonAsync<VisitResponse>())!;
+        return await ReadEnvelopeDataAsync<VisitResponse>(response);
     }
 
     private static async Task<CodingTaskResponse> CreateCodingTaskAsync(
@@ -187,7 +243,7 @@ public sealed class ApiObservabilityTests
 
         using var response = await client.SendAsync(request);
         await EnsureSuccessAsync(response, loggerProvider);
-        return (await response.Content.ReadFromJsonAsync<CodingTaskResponse>())!;
+        return await ReadEnvelopeDataAsync<CodingTaskResponse>(response);
     }
 
     private static async Task EnsureSuccessAsync(
@@ -339,4 +395,9 @@ public sealed class ApiObservabilityTests
     private sealed record LogEntry(
         string Message,
         IReadOnlyList<string> Scopes);
+
+    private sealed record ImportResponse(
+        string CodeSystem,
+        int ImportedCount,
+        int UpdatedCount);
 }

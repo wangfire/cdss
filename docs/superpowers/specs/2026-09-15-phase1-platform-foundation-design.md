@@ -8,7 +8,7 @@
 
 ### 目标
 
-第一阶段建立一个不依赖医院真实接口和本地模型、可通过 Docker Compose 启动的 .NET 8 平台内核，验证以下基础能力：
+第一阶段建立一个不依赖医院真实接口和本地模型、可通过 Docker Compose 启动的 .NET 10 平台内核，验证以下基础能力：
 
 1. API 接收并查询医院、患者、就诊、文书和编码任务。
 2. 业务写入与 Outbox 事件在同一数据库事务中提交。
@@ -131,7 +131,6 @@ app_user_role
 patient
 visit
 medical_document
-medical_document_version
 coding_task
 pipeline_trace
 pipeline_trace_step
@@ -139,6 +138,9 @@ outbox_message
 inbox_message
 audit_log
 ```
+
+> `medical_document_version` 已合并进 `medical_document.version` 字段，通过唯一索引
+> `ux_medical_document_visit_type_version` 保证同一就诊同一文书类型同一版本唯一。
 
 通用约束：
 
@@ -224,6 +226,8 @@ POST coding-task
 8. 跨医院访问返回 404，日志中不出现患者姓名和原文。
 9. Domain、Application、Infrastructure 和 Smoke 测试全部通过。
 10. 后续接入 Document、Fact、Evidence、Recommendation 时不需要修改 API 主流程和消息基础设施。
+11. RBAC 最小模型落地：`app_user`、`app_role`、`app_user_role` 三张表提供用户身份、角色定义和用户-角色分配能力。
+12. OpenTelemetry 指标落地：API 暴露 HTTP/SQL/运行时指标，Worker 暴露 SQL/流水线执行指标，Prometheus 端点可抓取。
 
 ## 11. 后续门禁
 

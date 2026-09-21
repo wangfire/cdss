@@ -3,11 +3,11 @@ using System.Text.Json.Serialization;
 namespace HospitalAi.Contracts.CodingTasks;
 
 /// <summary>
-/// 创建编码任务请求。
+/// 创建编码任务请求。pipelineVersion 缺省时使用配置的默认版本（灰度开关）。
 /// </summary>
 public sealed record CreateCodingTaskRequest(
     [property: JsonPropertyName("visitId")] Guid VisitId,
-    [property: JsonPropertyName("pipelineVersion")] string PipelineVersion);
+    [property: JsonPropertyName("pipelineVersion")] string? PipelineVersion);
 
 /// <summary>
 /// 编码任务响应，不直接暴露领域实体。

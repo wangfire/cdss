@@ -8,6 +8,8 @@ namespace HospitalAi.Api;
 
 /// <summary>
 /// 将应用层异常统一转换为 ErrorResponse，避免接口返回不一致的错误结构。
+/// 响应体序列化为 ApiEnvelope 形状 { code, message, data }，与成功响应一致，
+/// 前端 api/http.ts 按 code 是否为 0 判定成功/业务错误。
 /// </summary>
 public sealed class ExceptionHandlingMiddleware(
     RequestDelegate next,

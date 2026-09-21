@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\HospitalAi.Application\HospitalAi.Application.csproj" />
     <ProjectReference Include="..\HospitalAi.Contracts\HospitalAi.Contracts.csproj" />
+    <ProjectReference Include="..\HospitalAi.Worker\HospitalAi.Worker.csproj" />
     <ProjectReference Include="..\HospitalAi.Infrastructure\HospitalAi.Infrastructure.csproj" />
   </ItemGroup>
 
@@ -24,6 +25,9 @@
     <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.10.0" />
     <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.10.0" />
     <PackageReference Include="OpenTelemetry.Instrumentation.SqlClient" Version="1.10.0-beta.1" />
+    <!-- JWT：RequestContextMiddleware 校验前端 Bearer 令牌（与 Infrastructure 认证服务共用 7.7.1）。 -->
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="7.7.1" />
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="7.7.1" />
   </ItemGroup>
 
   <PropertyGroup>

@@ -1,0 +1,39 @@
+{
+  "name": "tabtab-ui",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Personal UI Component Library Monorepo",
+  "type": "module",
+  "scripts": {
+    "dev": "node internal/dev-cli/index.mjs",
+    "dev:admin": "pnpm --filter @tabtab/admin dev",
+    "build": "pnpm -r build",
+    "test": "vp test",
+    "test:run": "vp test run",
+    "check": "vp check",
+    "lint": "vp lint",
+    "clean": "node internal/dev-cli/index.mjs --clean",
+    "clean:all": "node internal/dev-cli/index.mjs --clean --all",
+    "clean:deep": "node internal/dev-cli/index.mjs --clean --deep",
+    "fmt": "vp fmt",
+    "stub": "pnpm -r --filter './packages/*' --filter './internal/*' run stub"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "catalog:",
+    "@vitejs/plugin-vue": "catalog:",
+    "@voidzero-dev/vite-plus-core": "0.1.13",
+    "@voidzero-dev/vite-plus-test": "0.1.13",
+    "rimraf": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "0.1.13",
+    "vue-sfc-transformer": "catalog:"
+  },
+  "overrides": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.1.13",
+    "vitest": "npm:@voidzero-dev/vite-plus-test@0.1.13"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.32.1"
+}

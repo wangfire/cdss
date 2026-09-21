@@ -46,7 +46,8 @@ public sealed record TermSynonymImportItem(
     [property: JsonPropertyName("code")] string Code = "");
 
 /// <summary>
-/// 编码规则导入项。
+/// 编码规则导入项。V2.2-Lite 起支持版本化 JSON 条件规则；旧平面规则沿用原有字段，
+/// conditionJson 为空时按 codePattern + ruleType 兼容评估。
 /// </summary>
 public sealed record CodingRuleImportItem(
     [property: JsonPropertyName("ruleCode")] string RuleCode,
@@ -55,7 +56,14 @@ public sealed record CodingRuleImportItem(
     [property: JsonPropertyName("ruleType")] string RuleType,
     [property: JsonPropertyName("severity")] string Severity,
     [property: JsonPropertyName("message")] string Message,
-    [property: JsonPropertyName("isEnabled")] bool IsEnabled);
+    [property: JsonPropertyName("isEnabled")] bool IsEnabled,
+    [property: JsonPropertyName("ruleVersion")] string RuleVersion = "v1",
+    [property: JsonPropertyName("priority")] int Priority = 100,
+    [property: JsonPropertyName("group")] string? Group = null,
+    [property: JsonPropertyName("conditionJson")] string? ConditionJson = null,
+    [property: JsonPropertyName("actionJson")] string? ActionJson = null,
+    [property: JsonPropertyName("blocking")] bool Blocking = false,
+    [property: JsonPropertyName("isBuiltin")] bool IsBuiltin = false);
 
 /// <summary>
 /// 编码规则导入结果。

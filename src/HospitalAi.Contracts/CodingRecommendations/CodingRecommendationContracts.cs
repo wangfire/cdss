@@ -14,16 +14,24 @@ public sealed record CodingRecommendationResponse(
     [property: JsonPropertyName("rank")] int Rank,
     [property: JsonPropertyName("confidenceScore")] decimal ConfidenceScore,
     [property: JsonPropertyName("reviewStatus")] string ReviewStatus,
-    [property: JsonPropertyName("evidences")] IReadOnlyList<RecommendationEvidenceResponse> Evidences);
+    [property: JsonPropertyName("evidences")] IReadOnlyList<RecommendationEvidenceResponse> Evidences,
+    [property: JsonPropertyName("diagnosisInputId")] Guid? DiagnosisInputId = null,
+    [property: JsonPropertyName("doctorDiagnosisText")] string? DoctorDiagnosisText = null,
+    [property: JsonPropertyName("isPrincipal")] bool? IsPrincipal = null,
+    [property: JsonPropertyName("diagnosisOrder")] int? DiagnosisOrder = null,
+    [property: JsonPropertyName("diagnosisSourceType")] string? DiagnosisSourceType = null);
 
 /// <summary>
-/// 编码推荐证据响应。
+/// 编码推荐证据响应。evidenceLevel / pipelineRunId 供前端点击问题时定位原文与运行版本。
 /// </summary>
 public sealed record RecommendationEvidenceResponse(
     [property: JsonPropertyName("sourceType")] string SourceType,
     [property: JsonPropertyName("sourceText")] string SourceText,
     [property: JsonPropertyName("matchText")] string MatchText,
-    [property: JsonPropertyName("score")] decimal Score);
+    [property: JsonPropertyName("score")] decimal Score,
+    [property: JsonPropertyName("evidenceLevel")] string? EvidenceLevel = null,
+    [property: JsonPropertyName("pipelineRunId")] Guid? PipelineRunId = null,
+    [property: JsonPropertyName("documentSectionId")] Guid? DocumentSectionId = null);
 
 /// <summary>
 /// 编码任务推荐列表响应。
@@ -67,4 +75,8 @@ public sealed record WorkbenchTaskResponse(
     [property: JsonPropertyName("visitId")] Guid VisitId,
     [property: JsonPropertyName("status")] string Status,
     [property: JsonPropertyName("recommendationCount")] int RecommendationCount,
-    [property: JsonPropertyName("createdAt")] DateTimeOffset CreatedAt);
+    [property: JsonPropertyName("createdAt")] DateTimeOffset CreatedAt,
+    [property: JsonPropertyName("patientName")] string? PatientName,
+    [property: JsonPropertyName("medicalRecordNo")] string? MedicalRecordNo,
+    [property: JsonPropertyName("admissionCount")] int AdmissionCount,
+    [property: JsonPropertyName("dischargeAt")] DateTimeOffset? DischargeAt);

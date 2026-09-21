@@ -14,4 +14,7 @@
     <Project Path="tests/HospitalAi.Infrastructure.Tests/HospitalAi.Infrastructure.Tests.csproj" />
     <Project Path="tests/HospitalAi.Worker.Tests/HospitalAi.Worker.Tests.csproj" />
   </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/HospitalAi.Tools/HospitalAi.Tools.csproj" />
+  </Folder>
 </Solution>

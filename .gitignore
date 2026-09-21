@@ -1,3 +1,20 @@
-﻿**/bin/
+**/bin/
 **/obj/
 .env
+
+# IDE / package caches
+.vs/
+.pnpm-store/
+*.csproj.user
+
+# Logs & scratch outputs
+logs/
+*.log
+recs.json
+repro.json
+repro2.json
+wb.json
+.superpowers/
+
+# Python
+__pycache__/

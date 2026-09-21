@@ -1,3 +1,4 @@
+using System.Text.Json;
 using HospitalAi.Application.Abstractions;
 using HospitalAi.Application.Common;
 using HospitalAi.Contracts.CodingKnowledge;
@@ -175,6 +176,22 @@ public sealed class SqlServerCodingKnowledgeService(
         var rulesByCode = new Dictionary<string, CodingRuleImportItem>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in request.Rules)
         {
+            if (string.IsNullOrWhiteSpace(item.RuleCode))
+            {
+                throw new ValidationException("规则编码不能为空。");
+            }
+
+            // 条件与动作只做 JSON 合法性校验并原样存储，禁止动态执行任意表达式或脚本。
+            if (item.ConditionJson is not null)
+            {
+                ValidateRuleJson(item.ConditionJson, "conditionJson");
+            }
+
+            if (item.ActionJson is not null)
+            {
+                ValidateRuleJson(item.ActionJson, "actionJson");
+            }
+
             rulesByCode[item.RuleCode.Trim()] = item;
         }
 
@@ -185,7 +202,22 @@ public sealed class SqlServerCodingKnowledgeService(
 
         foreach (var pair in rulesByCode)
         {
-            var item = pair.Value;
+            var item = new CodingRuleImportItem(
+                pair.Value.RuleCode.Trim(),
+                pair.Value.CodeSystem,
+                pair.Value.CodePattern,
+                pair.Value.RuleType,
+                pair.Value.Severity,
+                pair.Value.Message,
+                pair.Value.IsEnabled,
+                string.IsNullOrWhiteSpace(pair.Value.RuleVersion) ? "v1" : pair.Value.RuleVersion.Trim(),
+                pair.Value.Priority,
+                string.IsNullOrWhiteSpace(pair.Value.Group) ? null : pair.Value.Group.Trim(),
+                pair.Value.ConditionJson,
+                pair.Value.ActionJson,
+                pair.Value.Blocking,
+                pair.Value.IsBuiltin);
+
             if (!existingRules.TryGetValue(pair.Key, out var existing))
             {
                 dbContext.CodingRules.Add(new CodingRuleRecord
@@ -198,6 +230,13 @@ public sealed class SqlServerCodingKnowledgeService(
                     RuleType = item.RuleType,
                     Severity = item.Severity,
                     Message = item.Message,
+                    RuleVersion = item.RuleVersion,
+                    Priority = item.Priority,
+                    RuleGroup = item.Group,
+                    ConditionJson = item.ConditionJson,
+                    ActionJson = item.ActionJson,
+                    Blocking = item.Blocking,
+                    IsBuiltin = item.IsBuiltin,
                     IsEnabled = item.IsEnabled,
                     CreatedAt = now,
                     UpdatedAt = now
@@ -210,6 +249,13 @@ public sealed class SqlServerCodingKnowledgeService(
             existing.RuleType = item.RuleType;
             existing.Severity = item.Severity;
             existing.Message = item.Message;
+            existing.RuleVersion = item.RuleVersion;
+            existing.Priority = item.Priority;
+            existing.RuleGroup = item.Group;
+            existing.ConditionJson = item.ConditionJson;
+            existing.ActionJson = item.ActionJson;
+            existing.Blocking = item.Blocking;
+            existing.IsBuiltin = item.IsBuiltin;
             existing.IsEnabled = item.IsEnabled;
             existing.UpdatedAt = now;
         }
@@ -223,6 +269,26 @@ public sealed class SqlServerCodingKnowledgeService(
         if (requestContext.HospitalId == Guid.Empty)
         {
             throw new ValidationException("X-Hospital-Id 不能为空。");
+        }
+    }
+
+    /// <summary>
+    /// 规则 JSON 只做结构合法性校验：条件与动作必须能被 JsonDocument 解析成对象，
+    /// 禁止动态执行任意表达式或脚本，评估走定型后的规则求值器。
+    /// </summary>
+    private static void ValidateRuleJson(string json, string fieldName)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                throw new ValidationException($"{fieldName} 必须是 JSON 对象。");
+            }
+        }
+        catch (JsonException exception)
+        {
+            throw new ValidationException($"{fieldName} 不是合法 JSON 对象：{exception.Message}");
         }
     }
 

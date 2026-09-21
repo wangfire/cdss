@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using HospitalAi.Contracts.CodingTasks;
 using HospitalAi.Contracts.Hospitals;
 using HospitalAi.Contracts.Patients;
@@ -93,7 +94,7 @@ public sealed class ApiObservabilityTests
 
         using var response = await client.SendAsync(request);
         await EnsureSuccessAsync(response, loggerProvider);
-        var body = await response.Content.ReadFromJsonAsync<ImportResponse>();
+        var body = await ReadEnvelopeDataAsync<ImportResponse>(response);
 
         Assert.Equal("ICD-10", body?.CodeSystem);
         Assert.Equal(1, body?.ImportedCount);
@@ -157,6 +158,14 @@ public sealed class ApiObservabilityTests
             });
     }
 
+    private static async Task<T> ReadEnvelopeDataAsync<T>(HttpResponseMessage response)
+    {
+        // 成功响应被 ApiEnvelope 包装为 { code:0, message, data }。
+        var root = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var data = root.GetProperty("data");
+        return data.Deserialize<T>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    }
+
     private static async Task<HospitalResponse> CreateHospitalAsync(
         HttpClient client,
         CaptureLoggerProvider loggerProvider)
@@ -165,7 +174,7 @@ public sealed class ApiObservabilityTests
             "/api/v1/hospitals",
             new CreateHospitalRequest($"H-{Guid.NewGuid():N}"[..16], "API Test Hospital"));
         await EnsureSuccessAsync(response, loggerProvider);
-        return (await response.Content.ReadFromJsonAsync<HospitalResponse>())!;
+        return await ReadEnvelopeDataAsync<HospitalResponse>(response);
     }
 
     private static async Task<PatientResponse> CreatePatientAsync(
@@ -188,7 +197,7 @@ public sealed class ApiObservabilityTests
 
         using var response = await client.SendAsync(request);
         await EnsureSuccessAsync(response, loggerProvider);
-        return (await response.Content.ReadFromJsonAsync<PatientResponse>())!;
+        return await ReadEnvelopeDataAsync<PatientResponse>(response);
     }
 
     private static async Task<VisitResponse> CreateVisitAsync(
@@ -211,7 +220,7 @@ public sealed class ApiObservabilityTests
 
         using var response = await client.SendAsync(request);
         await EnsureSuccessAsync(response, loggerProvider);
-        return (await response.Content.ReadFromJsonAsync<VisitResponse>())!;
+        return await ReadEnvelopeDataAsync<VisitResponse>(response);
     }
 
     private static async Task<CodingTaskResponse> CreateCodingTaskAsync(
@@ -234,7 +243,7 @@ public sealed class ApiObservabilityTests
 
         using var response = await client.SendAsync(request);
         await EnsureSuccessAsync(response, loggerProvider);
-        return (await response.Content.ReadFromJsonAsync<CodingTaskResponse>())!;
+        return await ReadEnvelopeDataAsync<CodingTaskResponse>(response);
     }
 
     private static async Task EnsureSuccessAsync(

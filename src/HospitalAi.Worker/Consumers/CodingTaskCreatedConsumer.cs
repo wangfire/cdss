@@ -14,10 +14,11 @@ namespace HospitalAi.Worker.Consumers;
 
 /// <summary>
 /// 消费 coding.task.created，负责 Inbox 幂等、状态推进、重试、Trace 和审计。
+/// 流水线执行器由 ICodingTaskPipelineDispatcher 按任务 PipelineVersion 选择。
 /// </summary>
 public sealed class CodingTaskCreatedConsumer(
     HospitalAiDbContext dbContext,
-    ICodingTaskPipelineRunner pipelineRunner,
+    ICodingTaskPipelineDispatcher pipelineDispatcher,
     IRetryDelay retryDelay,
     ILogger<CodingTaskCreatedConsumer> logger)
     : IConsumer<CodingTaskCreatedMessage>
@@ -70,10 +71,14 @@ public sealed class CodingTaskCreatedConsumer(
             return;
         }
 
-        var trace = await dbContext.PipelineTraces.SingleOrDefaultAsync(
-            item => item.CodingTaskId == task.Id
-                && item.HospitalId == task.HospitalId,
-            cancellationToken);
+        // 根 Trace 查询必须按 hospital_id + coding_task_id + trace_id，
+        // 不再假设“一个任务永远只有一条 Trace”（Full 阶段一个任务可有多次运行的多条 Trace）。
+        var trace = await dbContext.PipelineTraces
+            .Where(item => item.CodingTaskId == task.Id
+                && item.HospitalId == task.HospitalId
+                && item.TraceId == message.TraceId)
+            .OrderBy(item => item.CreatedAt)
+            .FirstOrDefaultAsync(cancellationToken);
         if (trace is null)
         {
             throw new InvalidOperationException("编码任务缺少 Pipeline Trace。");
@@ -85,6 +90,26 @@ public sealed class CodingTaskCreatedConsumer(
         for (var attempt = 1; attempt <= MaxAttempts; attempt++)
         {
             var now = DateTimeOffset.UtcNow;
+            ICodingTaskPipelineRunner pipelineRunner;
+            try
+            {
+                pipelineRunner = pipelineDispatcher.Select(task.PipelineVersion);
+            }
+            catch (InvalidOperationException exception)
+            {
+                // 执行器缺失属于配置问题，不通过重试解决。
+                logger.LogError(
+                    exception,
+                    "无法选择流水线执行器，TaskId={TaskId}, PipelineVersion={PipelineVersion}",
+                    task.Id,
+                    task.PipelineVersion);
+                await inboxStore.MarkProcessedAsync(
+                    message.MessageId,
+                    ConsumerName,
+                    cancellationToken);
+                return;
+            }
+
             task.Status = Domain.CodingTasks.CodingTaskStatus.Running;
             task.StartedAt ??= now;
             task.CompletedAt = null;

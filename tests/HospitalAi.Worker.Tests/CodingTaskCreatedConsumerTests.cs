@@ -163,6 +163,15 @@ public sealed class CodingTaskCreatedConsumerTests
         }
     }
 
+    /// <summary>
+    /// 固定返回同一个 Runner 的分发替身，用于验证消费者调用链路而不关心版本选择。
+    /// </summary>
+    private sealed class SingleRunnerDispatcher(ICodingTaskPipelineRunner runner)
+        : ICodingTaskPipelineDispatcher
+    {
+        public ICodingTaskPipelineRunner Select(string pipelineVersion) => runner;
+    }
+
     private sealed class RecordingRetryDelay : IRetryDelay
     {
         public List<TimeSpan> Delays { get; } = [];
@@ -236,7 +245,7 @@ public sealed class CodingTaskCreatedConsumerTests
         {
             return new CodingTaskCreatedConsumer(
                 CreateContext(),
-                runner,
+                new SingleRunnerDispatcher(runner),
                 delay ?? new RecordingRetryDelay(),
                 NullLogger<CodingTaskCreatedConsumer>.Instance);
         }

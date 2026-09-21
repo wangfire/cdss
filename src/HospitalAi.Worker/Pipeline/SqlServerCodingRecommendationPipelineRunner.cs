@@ -10,11 +10,18 @@ namespace HospitalAi.Worker.Pipeline;
 /// Phase 2 智能编码推荐 MVP 流水线，使用规则和 SQL 字典完成可解释推荐。
 /// 注意：coding_rule 表为预留，规则引擎消费在后续 Phase。当前流水线仅使用
 /// 编码字典（MedicalCodes）与同义词（TermSynonyms）做召回，规则库未参与推荐打分。
+///
+/// 只声明处理 Legacy 版本：V2.2 新任务不得进入本 Runner。
 /// </summary>
 public sealed partial class SqlServerCodingRecommendationPipelineRunner(
-    HospitalAiDbContext dbContext) : ICodingTaskPipelineRunner
+    HospitalAiDbContext dbContext) : ICodingTaskPipelineRunner, ICodingTaskPipelineCapabilities
 {
+    private static readonly string[] SupportedVersions = [PipelineVersions.Legacy];
+
     private const decimal ReviewThreshold = 0.85m;
+
+    /// <summary>仅用于历史任务回放，明文拒绝新 V2.2 任务。</summary>
+    public IReadOnlyCollection<string> SupportedPipelineVersions => SupportedVersions;
 
     public async Task RunAsync(
         CodingTaskCreatedMessage message,

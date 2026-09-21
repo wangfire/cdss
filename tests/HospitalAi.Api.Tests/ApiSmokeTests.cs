@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using HospitalAi.Api;
 using HospitalAi.Contracts.Common;
 using Microsoft.AspNetCore.Mvc.Testing;
 
@@ -71,6 +72,23 @@ public sealed class ApiSmokeTests
         Assert.Equal("validation_error", body?.Code);
         Assert.Equal("api-error-trace", body?.TraceId);
         Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task Auth_Login_缺少字段返回验证错误()
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/auth/login")
+        {
+            Content = JsonContent.Create(new { userName = "admin", password = "x" })
+        };
+
+        using var response = await _client.SendAsync(request);
+        var body = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("validation_error", body?.Code);
     }
 
     private sealed record HealthResponse(string Status, string TraceId);

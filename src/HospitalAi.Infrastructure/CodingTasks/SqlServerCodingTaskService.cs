@@ -15,7 +15,8 @@ namespace HospitalAi.Infrastructure.CodingTasks;
 /// </summary>
 public sealed class SqlServerCodingTaskService(
     HospitalAiDbContext dbContext,
-    IRequestContext requestContext) : ICodingTaskService
+    IRequestContext requestContext,
+    CodingTaskPipelineOptions pipelineOptions) : ICodingTaskService
 {
     public async Task<CodingTaskResponse> CreateAsync(
         CreateCodingTaskRequest request,
@@ -28,6 +29,8 @@ public sealed class SqlServerCodingTaskService(
         {
             throw new ValidationException("Idempotency-Key 不能为空。");
         }
+
+        var pipelineVersion = pipelineOptions.Resolve(request.PipelineVersion);
 
         var existing = await dbContext.CodingTasks
             .AsNoTracking()
@@ -56,7 +59,7 @@ public sealed class SqlServerCodingTaskService(
         var task = CodingTask.Create(
             requestContext.HospitalId,
             request.VisitId,
-            request.PipelineVersion);
+            pipelineVersion);
         var now = DateTimeOffset.UtcNow;
         var taskRecord = new CodingTaskRecord
         {
@@ -93,7 +96,7 @@ public sealed class SqlServerCodingTaskService(
             requestContext.HospitalId,
             task.Id,
             request.VisitId,
-            request.PipelineVersion,
+            pipelineVersion,
             requestContext.TraceId,
             requestContext.RequestId);
         new OutboxStore(dbContext).Add(OutboxMessage.Create(

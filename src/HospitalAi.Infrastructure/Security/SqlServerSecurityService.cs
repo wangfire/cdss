@@ -39,6 +39,8 @@ public sealed class SqlServerSecurityService(
             Code = request.Code.Trim(),
             DisplayName = request.DisplayName.Trim(),
             Status = "ACTIVE",
+            // 创建用户时默认设置初始密码为 Code + "123"，生产环境接入 SSO/目录后应停用此默认值。
+            PasswordHash = SqlServerAuthService.HashPassword($"{request.Code.Trim()}123"),
             CreatedAt = now,
             UpdatedAt = now
         };

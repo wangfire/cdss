@@ -12,9 +12,13 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <!-- 基础设施层与 API、Worker 统一使用开源的 MassTransit 8.x。 -->
-    <PackageReference Include="MassTransit.RabbitMQ" Version="8.5.7" />
+    <!-- JWT：认证服务签发 Bearer 令牌（登录 /me 端点）；7.7.1 为离线缓存可用版本。 -->
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="7.7.1" />
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="7.7.1" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
+    <!-- MassTransit：RabbitMQ 消息发布/消费框架，供 Outbox → RabbitMq 事件总线使用。 -->
+    <PackageReference Include="MassTransit" Version="8.3.6" />
+    <PackageReference Include="MassTransit.RabbitMQ" Version="8.3.6" />
     <!-- OpenTelemetry：供 Observability 扩展注册 HTTP/SQL/运行时/自定义指标 + Prometheus 导出。
          API 与 Worker 通过 ProjectReference 引用 Infrastructure 获得这些包。
          AddOpenTelemetry() 扩展方法在 OpenTelemetry.Extensions.Hosting 包中。 -->

@@ -85,7 +85,7 @@ public sealed class VisitRecord
 }
 
 /// <summary>
-/// 编码任务持久化记录。
+/// 编码任务持久化记录。Status 是技术任务状态，CodingStage 是业务阶段状态，两者分离。
 /// </summary>
 public sealed class CodingTaskRecord
 {
@@ -100,6 +100,9 @@ public sealed class CodingTaskRecord
     public string? IdempotencyKey { get; set; }
 
     public CodingTaskStatus Status { get; set; }
+
+    /// <summary>V2.2 业务阶段：IMPORTED / PROCESSING / READY / AI_RECOMMENDING / CODER_REVIEW / FINAL_PENDING / FINALIZED / HUMAN_REQUIRED。</summary>
+    public CodingStage CodingStage { get; set; } = CodingStage.Imported;
 
     public int RetryCount { get; set; }
 
@@ -214,6 +217,7 @@ public sealed class TermSynonymRecord
 
 /// <summary>
 /// 应用用户持久化记录，RBAC 最小模型的用户身份。
+/// 含密码哈希（PBKDF2），支持用户名/密码登录。
 /// </summary>
 public sealed class AppUserRecord
 {
@@ -226,6 +230,16 @@ public sealed class AppUserRecord
     public string DisplayName { get; set; } = string.Empty;
 
     public string Status { get; set; } = string.Empty;
+
+    /// <summary>
+    /// PBKDF2 密码哈希，格式：v1$&lt;saltBase64&gt;$&lt;hashBase64&gt;。
+    /// </summary>
+    public string PasswordHash { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 最后登录时间（UTC）。
+    /// </summary>
+    public DateTimeOffset? LastLoginAt { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
 
@@ -287,7 +301,8 @@ public sealed class AppUserRoleRecord
 }
 
 /// <summary>
-/// 编码规则记录。
+/// 编码规则记录。V2.2-Lite 起支持版本化 JSON 条件规则（ConditionJson / ActionJson），
+/// 旧平面规则沿用 code_pattern + rule_type 字段，ConditionJson 为空时按兼容模式评估。
 /// </summary>
 public sealed class CodingRuleRecord
 {
@@ -296,6 +311,8 @@ public sealed class CodingRuleRecord
     public Guid HospitalId { get; set; }
 
     public string RuleCode { get; set; } = string.Empty;
+
+    public string RuleVersion { get; set; } = "v1";
 
     public string CodeSystemCode { get; set; } = string.Empty;
 
@@ -306,6 +323,20 @@ public sealed class CodingRuleRecord
     public string Severity { get; set; } = string.Empty;
 
     public string Message { get; set; } = string.Empty;
+
+    /// <summary>数值越小优先级越高。内置规则与医院自定义规则按 is_builtin 区分先后。</summary>
+    public int Priority { get; set; } = 100;
+
+    /// <summary>互斥组：同一 group 内只取优先级最高（数值最小）的命中规则。</summary>
+    public string? RuleGroup { get; set; }
+
+    public string? ConditionJson { get; set; }
+
+    public string? ActionJson { get; set; }
+
+    public bool Blocking { get; set; }
+
+    public bool IsBuiltin { get; set; }
 
     public bool IsEnabled { get; set; }
 
@@ -320,6 +351,8 @@ public sealed class CodingRuleRecord
 
 /// <summary>
 /// 医疗文书元数据记录。正文只保存外部引用和哈希。
+/// V2.2-Lite 复用本表作为文档版本入口，parse_version / ocr_version / is_current
+/// 描述版本状态；Full 阶段再拆出独立 medical_document_version。
 /// </summary>
 public sealed class MedicalDocumentRecord
 {
@@ -337,6 +370,21 @@ public sealed class MedicalDocumentRecord
 
     public int Version { get; set; }
 
+    public string? ParseVersion { get; set; }
+
+    public string? OcrVersion { get; set; }
+
+    /// <summary>ACTIVE / STALE / PENDING_PARSE / HUMAN_REQUIRED。</summary>
+    public string DocumentStatus { get; set; } = "ACTIVE";
+
+    /// <summary>增量更新来源文档（同一 visit 下的前一版本）。</summary>
+    public Guid? SourceDocumentId { get; set; }
+
+    public DateTimeOffset? SourceUpdatedAt { get; set; }
+
+    /// <summary>同一就诊同类型文书是否当前生效版本。</summary>
+    public bool IsCurrent { get; set; } = true;
+
     public DateTimeOffset CreatedAt { get; set; }
 
     public DateTimeOffset UpdatedAt { get; set; }
@@ -349,7 +397,7 @@ public sealed class MedicalDocumentRecord
 }
 
 /// <summary>
-/// 文书段落记录。
+/// 文书段落记录。V2.2-Lite 同时作为 Chunk 使用，记录原文位置、token 近似数与索引状态。
 /// </summary>
 public sealed class DocumentSectionRecord
 {
@@ -368,6 +416,23 @@ public sealed class DocumentSectionRecord
     public string Content { get; set; } = string.Empty;
 
     public int Sequence { get; set; }
+
+    /// <summary>Chunk 在原文中的起始偏移。</summary>
+    public int StartPosition { get; set; }
+
+    /// <summary>Chunk 在原文中的结束偏移。</summary>
+    public int EndPosition { get; set; }
+
+    /// <summary>token 近似长度，用于上下文预算控制。</summary>
+    public int TokenCount { get; set; }
+
+    public string ContentHash { get; set; } = string.Empty;
+
+    /// <summary>PENDING / DONE / UNAVAILABLE。</summary>
+    public string EmbeddingStatus { get; set; } = "PENDING";
+
+    /// <summary>PENDING / INDEXED / UNAVAILABLE。</summary>
+    public string IndexStatus { get; set; } = "PENDING";
 
     public DateTimeOffset CreatedAt { get; set; }
 
@@ -417,7 +482,8 @@ public sealed class ClinicalEntityRecord
 }
 
 /// <summary>
-/// AI 编码推荐记录。
+/// AI 编码推荐记录。旧 MVP 与新 V2.2 共用此表，通过 PipelineVersion 与
+/// LifecycleStatus 区分：旧数据标记 phase2-mvp-legacy + LEGACY_READ_ONLY，只读。
 /// </summary>
 public sealed class CodingRecommendationRecord
 {
@@ -426,6 +492,17 @@ public sealed class CodingRecommendationRecord
     public Guid HospitalId { get; set; }
 
     public Guid CodingTaskId { get; set; }
+
+    /// <summary>V2.2 诊断输入标识；旧 MVP 推荐为 null。</summary>
+    public Guid? DiagnosisInputId { get; set; }
+
+    public string PipelineVersion { get; set; } = string.Empty;
+
+    /// <summary>本次推荐运行标识，用于 Trace、Candidate、Score 关联。</summary>
+    public Guid? PipelineRunId { get; set; }
+
+    /// <summary>同一诊断输入的推荐版本号，重跑递增。</summary>
+    public string? RecommendationVersion { get; set; }
 
     public string RecommendationType { get; set; } = string.Empty;
 
@@ -444,6 +521,30 @@ public sealed class CodingRecommendationRecord
     public decimal ConfidenceScore { get; set; }
 
     public string ReviewStatus { get; set; } = string.Empty;
+
+    /// <summary>HIGH_CONFIDENCE / NEED_REVIEW / NO_SAFE_RECOMMENDATION / HUMAN_REQUIRED / LEGACY / UNKNOWN。</summary>
+    public string Outcome { get; set; } = "UNKNOWN";
+
+    /// <summary>生命周期：ACTIVE / STALE / LEGACY_READ_ONLY / SUPERSEDED。</summary>
+    public string LifecycleStatus { get; set; } = "ACTIVE";
+
+    public decimal? EvidenceSufficiency { get; set; }
+
+    public string? RiskLevel { get; set; }
+
+    public string? Reason { get; set; }
+
+    public string? ModelVersion { get; set; }
+
+    public string? PromptVersion { get; set; }
+
+    public string? KnowledgeVersion { get; set; }
+
+    public string? RuleVersion { get; set; }
+
+    public string? CodingVersion { get; set; }
+
+    public bool IsReadOnly { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
 
@@ -470,6 +571,12 @@ public sealed class RecommendationEvidenceRecord
     public Guid CodingRecommendationId { get; set; }
 
     public Guid? DocumentSectionId { get; set; }
+
+    /// <summary>V2.2 运行标识；旧 MVP 证据为 null。</summary>
+    public Guid? PipelineRunId { get; set; }
+
+    /// <summary>V2.2 证据等级 A-E；旧 MVP 证据为 null。</summary>
+    public string? EvidenceLevel { get; set; }
 
     public string SourceType { get; set; } = string.Empty;
 
@@ -508,6 +615,9 @@ public sealed class CodingReviewRecord
     public string? Comment { get; set; }
 
     public string? ReviewerId { get; set; }
+
+    /// <summary>V2.2 审核动作类型：ACCEPTED / REJECTED / MODIFIED。</summary>
+    public string? ResultType { get; set; }
 
     public DateTimeOffset ReviewedAt { get; set; }
 
@@ -645,7 +755,8 @@ public sealed class PipelineTraceRecord
 }
 
 /// <summary>
-/// Pipeline 步骤级追踪记录。
+/// Pipeline 步骤级追踪记录。V2.2 增加 pipeline_run_id / diagnosis_input_id / stage
+/// 与模型、知识、规则版本和 token 记录；一个任务的多个运行、多个诊断输入可共存。
 /// </summary>
 public sealed class PipelineTraceStepRecord
 {
@@ -654,6 +765,16 @@ public sealed class PipelineTraceStepRecord
     public Guid HospitalId { get; set; }
 
     public Guid PipelineTraceId { get; set; }
+
+    /// <summary>V2.2 运行标识；旧 MVP 步骤为 null。</summary>
+    public Guid? PipelineRunId { get; set; }
+
+    /// <summary>V2.2 诊断输入标识；任务级步骤为 null。</summary>
+    public Guid? DiagnosisInputId { get; set; }
+
+    /// <summary>QUALITY_GATE / DOCUMENT_VERSION / CHUNK / FACT / EVIDENCE / EXACT_RETRIEVAL /
+    /// BM25_RETRIEVAL / RULE / SCORE / POLICY / PERSIST。</summary>
+    public string Stage { get; set; } = string.Empty;
 
     public string StepName { get; set; } = string.Empty;
 
@@ -664,6 +785,20 @@ public sealed class PipelineTraceStepRecord
     public DateTimeOffset? CompletedAt { get; set; }
 
     public string? ErrorCode { get; set; }
+
+    public long? DurationMs { get; set; }
+
+    public string? ModelVersion { get; set; }
+
+    public string? PromptVersion { get; set; }
+
+    public string? KnowledgeVersion { get; set; }
+
+    public string? RuleVersion { get; set; }
+
+    public int? InputTokens { get; set; }
+
+    public int? OutputTokens { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
 

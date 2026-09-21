@@ -92,7 +92,8 @@ public sealed class CodingTaskServiceTests
     {
         return new SqlServerCodingTaskService(
             context,
-            new TestRequestContext(hospitalId, traceId));
+            new TestRequestContext(hospitalId, traceId),
+            new CodingTaskPipelineOptions());
     }
 
     private sealed record TestRequestContext(

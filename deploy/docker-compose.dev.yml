@@ -54,6 +54,34 @@ services:
     networks:
       - hospitalai
 
+  elasticsearch:
+    # V2.2 检索层：BM25 检索。未启用时流水线按 Exact 快路径降级，
+    # Exact 未命中直接 NO_SAFE_RECOMMENDATION，不回退 SQL 全量扫描。
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
+    container_name: hospitalai-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.ml.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - cluster.routing.allocation.disk.threshold_enabled=false
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "9201:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS \"http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s\" >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 40s
+    networks:
+      - hospitalai
+
   api:
     build:
       context: ..
@@ -65,6 +93,8 @@ services:
       redis:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      elasticsearch:
         condition: service_healthy
     environment:
       ASPNETCORE_ENVIRONMENT: Development
@@ -82,6 +112,13 @@ services:
       HealthChecks__Redis__Port: "6379"
       HealthChecks__RabbitMq__Host: rabbitmq
       HealthChecks__RabbitMq__Port: "5672"
+      # V2.2 检索层：ES 就绪后在编排里开启即可获得 BM25；关闭时自动降级 Exact 快路径。
+      Elasticsearch__Enabled: ${HOSPITAL_AI_ELASTICSEARCH_ENABLED:-true}
+      Elasticsearch__Url: http://elasticsearch:9200
+      Elasticsearch__TimeoutSeconds: "5"
+      # 模型网关默认不可用：未接入模型时不得伪造分数，按退化口径出结果。
+      ModelGateway__ModelMode: ${HOSPITAL_AI_MODEL_MODE:-unavailable}
+      Coding__Pipeline__DefaultPipelineVersion: ${HOSPITAL_AI_DEFAULT_PIPELINE_VERSION:-phase1-v2.2-lite}
     ports:
       - "5080:8080"
     healthcheck:
@@ -104,6 +141,8 @@ services:
         condition: service_healthy
       api:
         condition: service_started
+      elasticsearch:
+        condition: service_healthy
     environment:
       DOTNET_ENVIRONMENT: Development
       ConnectionStrings__HospitalAi: Server=sqlserver,1433;Database=HospitalAi;User Id=sa;Password=${HOSPITAL_AI_SQL_PASSWORD:?请先设置 HOSPITAL_AI_SQL_PASSWORD};TrustServerCertificate=True;
@@ -114,6 +153,11 @@ services:
       RabbitMq__Username: ${HOSPITAL_AI_RABBITMQ_USER:?请先设置 HOSPITAL_AI_RABBITMQ_USER}
       RabbitMq__Password: ${HOSPITAL_AI_RABBITMQ_PASSWORD:?请先设置 HOSPITAL_AI_RABBITMQ_PASSWORD}
       RabbitMq__QueueName: coding.task.created
+      Elasticsearch__Enabled: ${HOSPITAL_AI_ELASTICSEARCH_ENABLED:-true}
+      Elasticsearch__Url: http://elasticsearch:9200
+      Elasticsearch__TimeoutSeconds: "5"
+      ModelGateway__ModelMode: ${HOSPITAL_AI_MODEL_MODE:-unavailable}
+      Coding__Pipeline__DefaultPipelineVersion: ${HOSPITAL_AI_DEFAULT_PIPELINE_VERSION:-phase1-v2.2-lite}
     networks:
       - hospitalai
     healthcheck:
@@ -126,6 +170,7 @@ volumes:
   sqlserver-data:
   redis-data:
   rabbitmq-data:
+  elasticsearch-data:
 
 networks:
   hospitalai:

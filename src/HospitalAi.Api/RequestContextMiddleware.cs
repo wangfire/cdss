@@ -1,20 +1,26 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using System.Text.Json;
+using HospitalAi.Contracts.Common;
 using HospitalAi.Infrastructure.Security;
+using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
 
 namespace HospitalAi.Api;
 
 /// <summary>
 /// 提取并回写请求追踪头，确保应用服务始终能拿到稳定的请求上下文。
-/// 支持两种认证主体来源：
-/// 1. Bearer JWT 令牌（前端登录签发，含 sub=userId + hospitalId）—— 校验后回写 UserId/HospitalId。
-/// 2. 旧版 X-User-Id / X-Hospital-Id 请求头占位认证 —— 保持向后兼容。
+/// 认证主体来源：
+/// 1. Bearer JWT 令牌（前端登录签发，含 sub=userId + hospitalId + 角色声明）——校验后构建已认证主体；
+/// 2. X-User-Id / X-Hospital-Id 占位头——仅本地联调通道（Security:AllowHeaderIdentity，
+///    默认仅 Testing 环境开启，生产必须显式关闭），防止伪造身份头绕过认证。
+/// 携带 Bearer 令牌但校验失败时直接 401，不再静默降级为匿名（WP-B2-5）。
 /// </summary>
 public sealed class RequestContextMiddleware(
     RequestDelegate next,
-    IJwtOptionsProvider jwtOptionsProvider)
+    IJwtOptionsProvider jwtOptionsProvider,
+    IConfiguration configuration)
 {
     public async Task InvokeAsync(
         HttpContext httpContext,
@@ -29,21 +35,11 @@ public sealed class RequestContextMiddleware(
         requestContext.IdempotencyKey = GetOptionalHeader(
             httpContext,
             "Idempotency-Key");
-        requestContext.UserId = GetOptionalHeader(
-            httpContext,
-            "X-User-Id");
-        if (!string.IsNullOrWhiteSpace(requestContext.UserId))
-        {
-            // 第一阶段只建立认证主体，完整角色矩阵等医院权限方案确认后再收敛。
-            httpContext.User = new ClaimsPrincipal(new ClaimsIdentity(
-                [new Claim(ClaimTypes.NameIdentifier, requestContext.UserId)],
-                authenticationType: "Header"));
-        }
 
         var hospitalHeader = GetOptionalHeader(httpContext, "X-Hospital-Id");
-        if (Guid.TryParse(hospitalHeader, out var hospitalId))
+        if (Guid.TryParse(hospitalHeader, out var headerHospitalId))
         {
-            requestContext.HospitalId = hospitalId;
+            requestContext.HospitalId = headerHospitalId;
         }
 
         // 优先解析 Bearer JWT（前端登录令牌）：校验签名与有效期后，
@@ -51,38 +47,59 @@ public sealed class RequestContextMiddleware(
         var authHeader = httpContext.Request.Headers.Authorization.ToString();
         if (authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
         {
+            IEnumerable<Claim>? claims;
             try
             {
-                var token = authHeader["Bearer ".Length..];
-                var claims = ValidateJwt(token);
-                if (claims is not null)
-                {
-                    var claimList = claims.ToList();
-                    var subClaim = claimList.FirstOrDefault(c => c.Type == "sub");
-                    if (subClaim is not null)
-                    {
-                        requestContext.UserId = subClaim.Value;
-                    }
-                    var hospitalClaim = claimList.FirstOrDefault(c => c.Type == "hospitalId");
-                    if (hospitalClaim is not null
-                        && Guid.TryParse(hospitalClaim.Value, out var jwtHospitalId))
-                    {
-                        requestContext.HospitalId = jwtHospitalId;
-                    }
-
-                    httpContext.User = new ClaimsPrincipal(new ClaimsIdentity(
-                        claimList,
-                        "Jwt"));
-                }
+                claims = ValidateJwt(authHeader["Bearer ".Length..]);
             }
             catch (SecurityTokenException)
             {
-                // 令牌无效/过期：回退到旧的 Header 认证或匿名。
+                claims = null;
             }
             catch (ArgumentException)
             {
-                // 畸形令牌（非法 Base64 / JSON）：同样按匿名处理，避免 500。
+                // 畸形令牌（非法 Base64 / JSON）同样按无效令牌处理。
+                claims = null;
             }
+
+            if (claims is null)
+            {
+                // 令牌无效/过期：显式 401。静默降级会让过期会话伪装成匿名请求，掩盖权限语义。
+                await WriteUnauthorizedAsync(httpContext, requestContext);
+                return;
+            }
+
+            var claimList = claims.ToList();
+            var subClaim = claimList.FirstOrDefault(c => c.Type == "sub");
+            if (subClaim is not null)
+            {
+                requestContext.UserId = subClaim.Value;
+            }
+
+            var hospitalClaim = claimList.FirstOrDefault(c => c.Type == "hospitalId");
+            if (hospitalClaim is not null
+                && Guid.TryParse(hospitalClaim.Value, out var jwtHospitalId))
+            {
+                requestContext.HospitalId = jwtHospitalId;
+            }
+
+            httpContext.User = new ClaimsPrincipal(new ClaimsIdentity(
+                claimList,
+                "Jwt"));
+        }
+        else if (
+            configuration.GetValue(
+                "Security:AllowHeaderIdentity",
+                defaultValue: httpContext.RequestServices
+                    .GetRequiredService<IHostEnvironment>()
+                    .IsEnvironment("Testing"))
+            && GetOptionalHeader(httpContext, "X-User-Id") is { } headerUserId)
+        {
+            // 占位头认证：默认仅 Testing 环境开启；生产必须保持关闭。
+            requestContext.UserId = headerUserId;
+            httpContext.User = new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(ClaimTypes.NameIdentifier, headerUserId)],
+                authenticationType: "Header"));
         }
 
         httpContext.Response.Headers["X-Request-Id"] = requestContext.RequestId;
@@ -92,7 +109,7 @@ public sealed class RequestContextMiddleware(
     }
 
     /// <summary>
-    /// 校验 Bearer JWT。返回 null 表示令牌无效，调用方据此回退到旧 Header 认证。
+    /// 校验 Bearer JWT。返回 null 表示令牌无效。
     /// </summary>
     private IEnumerable<Claim>? ValidateJwt(string token)
     {
@@ -131,6 +148,21 @@ public sealed class RequestContextMiddleware(
         }
 
         return principal.Claims.Select(claim => new Claim(claim.Type, claim.Value)).ToList();
+    }
+
+    private static async Task WriteUnauthorizedAsync(
+        HttpContext httpContext,
+        RequestContext requestContext)
+    {
+        if (httpContext.Response.HasStarted)
+        {
+            return;
+        }
+
+        httpContext.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        httpContext.Response.ContentType = "application/json; charset=utf-8";
+        await httpContext.Response.WriteAsync(JsonSerializer.Serialize(
+            new ErrorResponse("unauthorized", "令牌无效或已过期。", requestContext.TraceId, null)));
     }
 
     private static string GetOrCreateHeader(

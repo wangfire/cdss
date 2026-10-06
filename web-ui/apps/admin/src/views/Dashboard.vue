@@ -136,7 +136,6 @@ const healthLabel = (status: string) => {
 const isHealthy = computed(() => healthStatus.value.toLowerCase() === 'healthy')
 const DEPENDENCY_LABEL_KEYS: Record<string, string> = {
   sqlServer: 'dashboard.database',
-  redis: 'dashboard.cacheService',
   rabbitMq: 'dashboard.messageQueue',
   elasticsearch: 'dashboard.searchEngine',
 }

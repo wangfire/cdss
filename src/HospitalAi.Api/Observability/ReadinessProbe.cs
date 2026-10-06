@@ -19,7 +19,7 @@ public sealed class ReadinessProbe(
         var dependencies = new Dictionary<string, DependencyStatus>
         {
             ["sqlServer"] = await CheckSqlServerAsync(cancellationToken),
-            ["redis"] = await CheckTcpAsync(options.Value.Redis, cancellationToken),
+            ["elasticsearch"] = await CheckTcpAsync(options.Value.Elasticsearch, cancellationToken),
             ["rabbitMq"] = await CheckTcpAsync(options.Value.RabbitMq, cancellationToken)
         };
 

@@ -50,7 +50,6 @@ export default {
   searchEngine: 'Search Engine',
   apiService: 'API Service',
   database: 'Database',
-  cacheService: 'Cache Service',
   messageQueue: 'Message Queue',
 
   // Order status

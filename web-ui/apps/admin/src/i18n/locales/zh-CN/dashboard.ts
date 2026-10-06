@@ -50,7 +50,6 @@ export default {
   searchEngine: '检索引擎',
   apiService: 'API 服务',
   database: '数据库',
-  cacheService: '缓存服务',
   messageQueue: '消息队列',
 
   // 订单状态

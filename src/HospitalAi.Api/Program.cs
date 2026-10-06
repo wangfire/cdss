@@ -41,6 +41,17 @@ if (!builder.Environment.IsEnvironment("Testing"))
     }, writeToProviders: true);
 }
 
+// 生产环境拒绝占位/过短 JWT 签名密钥：密钥未替换即上线等于允许伪造令牌（WP-B2-5）。
+var jwtSigningKey = builder.Configuration["JwtAuth:Key"];
+if (builder.Environment.IsProduction()
+    && (string.IsNullOrWhiteSpace(jwtSigningKey)
+        || jwtSigningKey.StartsWith("REPLACE-WITH", StringComparison.OrdinalIgnoreCase)
+        || jwtSigningKey.Length < 32))
+{
+    throw new InvalidOperationException(
+        "生产环境必须配置 ≥32 字节的 JwtAuth:Key（经环境变量或密钥管理注入），禁止使用占位密钥启动。");
+}
+
 var configuredConnectionString = builder.Configuration.GetConnectionString("HospitalAi");
 var connectionString = !string.IsNullOrWhiteSpace(configuredConnectionString)
     ? configuredConnectionString
@@ -76,6 +87,9 @@ builder.Services.Configure<DependencyHealthOptions>(
     builder.Configuration.GetSection(DependencyHealthOptions.SectionName));
 builder.Services.AddScoped<ReadinessProbe>();
 builder.Services.AddHospitalAiAuthorization();
+// 接口文档（WP-B2-2）：Minimal API 元数据 + Swashbuckle UI；中间件仅在非生产环境挂载。
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
 // OpenTelemetry 指标：HTTP/SQL/运行时 + Prometheus 端点（http://localhost:5080/metrics）。
 builder.Services.AddHospitalAiApiMetrics("hospitalai.api");
 if (builder.Configuration.GetValue<bool>("RabbitMq:Enabled"))
@@ -122,6 +136,12 @@ app.UseMiddleware<RequestContextMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseMiddleware<RequestLoggingMiddleware>();
+// 接口文档（WP-B2-2）：/swagger 仅非生产环境暴露，生产关闭避免扩大攻击面。
+if (!builder.Environment.IsProduction())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
 // OpenTelemetry Prometheus 端点，供监控抓取 HTTP/SQL/运行时指标。
 app.UseOpenTelemetryPrometheusScrapingEndpoint();
 
@@ -154,7 +174,7 @@ app.MapGet(
     {
         var response = await authService.GetCurrentUserAsync(cancellationToken);
         return Results.Ok(ApiEnvelope.Create(response));
-    });
+    }).RequireAuthorization();
 
 app.MapPost(
     "/api/v1/auth/logout",
@@ -173,7 +193,7 @@ app.MapPost(
     {
         await authService.ChangePasswordAsync(request, cancellationToken);
         return Results.Ok(ApiEnvelope.Create(new { ok = true }));
-    });
+    }).RequireAuthorization();
 
 app.MapGet(
     "/api/v1/health/live",
@@ -208,7 +228,7 @@ app.MapPost(
         var response = await service.ImportCodeSystemAsync(request, cancellationToken);
         dictionarySource.Invalidate();
         return Results.Ok(ApiEnvelope.Create(response));
-    });
+    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
 
 app.MapPost(
     "/api/v1/coding-rules/import",
@@ -222,7 +242,7 @@ app.MapPost(
         // 同义词同时写入 icd_term_synonym（索引链路词库），导入后立即生效。
         synonymSource.Invalidate();
         return Results.Ok(ApiEnvelope.Create(response));
-    });
+    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
 
 // 查询知识库数据
 app.MapGet(
@@ -236,7 +256,7 @@ app.MapGet(
             .Select(s => new { s.Id, s.Code, s.Name, s.Version, s.CreatedAt })
             .ToListAsync(cancellationToken);
         return Results.Ok(ApiEnvelope.Create(systems));
-    });
+    }).RequireAuthorization(RbacPolicies.CodingReader);
 
 app.MapGet(
     "/api/v1/knowledge/medical-codes",
@@ -265,7 +285,7 @@ app.MapGet(
             .ToListAsync(cancellationToken);
 
         return Results.Ok(ApiEnvelope.Create(new { total, page = pageNum, pageSize = size, items }));
-    });
+    }).RequireAuthorization(RbacPolicies.CodingReader);
 
 app.MapGet(
     "/api/v1/knowledge/term-synonyms",
@@ -291,7 +311,7 @@ app.MapGet(
             .ToListAsync(cancellationToken);
 
         return Results.Ok(ApiEnvelope.Create(new { total, page = pageNum, pageSize = size, items }));
-    });
+    }).RequireAuthorization(RbacPolicies.CodingReader);
 
 app.MapGet(
     "/api/v1/knowledge/coding-rules",
@@ -317,7 +337,7 @@ app.MapGet(
             .ToListAsync(cancellationToken);
 
         return Results.Ok(ApiEnvelope.Create(new { total, page = pageNum, pageSize = size, items }));
-    });
+    }).RequireAuthorization(RbacPolicies.CodingReader);
 
 // ICD 索引库导入（按序号 upsert，全列保留）。
 app.MapPost(
@@ -376,7 +396,7 @@ app.MapPost(
         indexSource.Invalidate();
         return Results.Ok(ApiEnvelope.Create(
             new ImportIcdIndexResponse(imported, updated)));
-    });
+    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
 
 // 查询 ICD 索引库（leadWordStatus：0=有效，1=无效，缺省返回全部）。
 app.MapGet(
@@ -428,7 +448,7 @@ app.MapGet(
             .ToListAsync(cancellationToken);
 
         return Results.Ok(ApiEnvelope.Create(new { total, page = pageNum, pageSize = size, items }));
-    });
+    }).RequireAuthorization(RbacPolicies.CodingReader);
 
 // ICD 索引库节点树：按父序号取直接子节点，并标记 each 节点是否还有下一级。
 app.MapGet(
@@ -491,7 +511,7 @@ app.MapGet(
         });
 
         return Results.Ok(ApiEnvelope.Create(new { parentSeqNo = parentId, total, items }));
-    });
+    }).RequireAuthorization(RbacPolicies.CodingReader);
 
 app.MapPost(
     "/api/v1/icd-term-synonym/import",
@@ -551,7 +571,7 @@ app.MapPost(
         await db.SaveChangesAsync(cancellationToken);
         synonymSource.Invalidate();
         return Results.Ok(ApiEnvelope.Create(new ImportTermSynonymResponse(imported, updated)));
-    });
+    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
 
 // 术语同义词组查询（按 类型+规范词 聚合展示，停用行一并返回供页面维护）。
 app.MapGet(
@@ -588,7 +608,7 @@ app.MapGet(
             .ToList();
 
         return Results.Ok(ApiEnvelope.Create(new { total = groups.Count, items = groups }));
-    });
+    }).RequireAuthorization(RbacPolicies.CodingReader);
 
 // 单条同义词新增：在等价类里补一个等同词（类内任意两词在匹配时可互换）。
 app.MapPost(
@@ -641,7 +661,7 @@ app.MapPost(
         await db.SaveChangesAsync(cancellationToken);
         synonymSource.Invalidate();
         return Results.Ok(ApiEnvelope.Create(new { id = record.Id }));
-    });
+    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
 
 // 单条同义词修改：改等同词/规范词、换通道或启停（null 字段沿用原值）。
 app.MapPut(
@@ -700,7 +720,7 @@ app.MapPut(
         await db.SaveChangesAsync(cancellationToken);
         synonymSource.Invalidate();
         return Results.Ok(ApiEnvelope.Create(new { id = record.Id, updated = true }));
-    });
+    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
 
 app.MapDelete(
     "/api/v1/knowledge/icd-term-synonym/{id:guid}",
@@ -721,7 +741,7 @@ app.MapDelete(
         await db.SaveChangesAsync(cancellationToken);
         synonymSource.Invalidate();
         return Results.Ok(ApiEnvelope.Create(new { deleted = true }));
-    });
+    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
 
 app.MapGet(
     "/api/v1/coding-tasks/{taskId:guid}/recommendations",
@@ -738,7 +758,7 @@ app.MapGet(
         return response is null
             ? Results.NotFound()
             : Results.Ok(ApiEnvelope.Create(response));
-    });
+    }).RequireAuthorization(RbacPolicies.CodingReader);
 
 app.MapPost(
     "/api/v1/coding-tasks/{taskId:guid}/review",
@@ -750,7 +770,7 @@ app.MapPost(
     {
         var response = await service.ReviewAsync(taskId, request, cancellationToken);
         return Results.Ok(ApiEnvelope.Create(response));
-    });
+    }).RequireAuthorization(RbacPolicies.CodingReviewer);
 
 app.MapGet(
     "/api/v1/workbench/tasks",
@@ -761,7 +781,7 @@ app.MapGet(
     {
         var response = await service.ListWorkbenchTasksAsync(status, cancellationToken);
         return Results.Ok(ApiEnvelope.Create(response));
-    });
+    }).RequireAuthorization(RbacPolicies.CodingReader);
 
 app.MapGet(
     "/workbench",
@@ -830,7 +850,7 @@ app.MapPost(
     {
         var response = await service.CreateHospitalAsync(request, cancellationToken);
         return Results.Created($"/api/v1/hospitals/{response.Id}", ApiEnvelope.Create(response));
-    });
+    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
 
 app.MapPost(
     "/api/v1/patients",
@@ -841,7 +861,7 @@ app.MapPost(
     {
         var response = await service.CreatePatientAsync(request, cancellationToken);
         return Results.Created($"/api/v1/patients/{response.Id}", ApiEnvelope.Create(response));
-    });
+    }).RequireAuthorization(RbacPolicies.CodingReviewer);
 
 app.MapPost(
     "/api/v1/visits",
@@ -852,7 +872,7 @@ app.MapPost(
     {
         var response = await service.CreateVisitAsync(request, cancellationToken);
         return Results.Created($"/api/v1/visits/{response.Id}", ApiEnvelope.Create(response));
-    });
+    }).RequireAuthorization(RbacPolicies.CodingReviewer);
 
 app.MapPost(
     "/api/v1/documents",
@@ -863,7 +883,7 @@ app.MapPost(
     {
         var response = await service.CreateDocumentAsync(request, cancellationToken);
         return Results.Created($"/api/v1/documents/{response.Id}", ApiEnvelope.Create(response));
-    });
+    }).RequireAuthorization(RbacPolicies.CodingReviewer);
 
 app.MapPost(
     "/api/v1/coding-tasks",
@@ -878,7 +898,7 @@ app.MapPost(
             requestContext.IdempotencyKey ?? string.Empty,
             cancellationToken);
         return Results.Created($"/api/v1/coding-tasks/{response.Id}", ApiEnvelope.Create(response));
-    });
+    }).RequireAuthorization(RbacPolicies.CodingReviewer);
 
 app.MapGet(
     "/api/v1/coding-tasks/{taskId:guid}",
@@ -891,7 +911,7 @@ app.MapGet(
         return response is null
             ? Results.NotFound()
             : Results.Ok(ApiEnvelope.Create(response));
-    });
+    }).RequireAuthorization(RbacPolicies.CodingReader);
 
 app.MapGet(
     "/api/v1/traces/{traceId}",
@@ -904,7 +924,7 @@ app.MapGet(
         return response is null
             ? Results.NotFound(ApiEnvelope.Create<object>(new { error = "TRACE_NOT_FOUND" }))
             : Results.Ok(ApiEnvelope.Create(response));
-    });
+    }).RequireAuthorization(RbacPolicies.CodingReader);
 
 app.MapGet(
     "/api/v1/coding-tasks/{taskId:guid}/traces",
@@ -926,7 +946,7 @@ app.MapPost(
     {
         var response = await service.CreateUserAsync(request, cancellationToken);
         return Results.Created($"/api/v1/users/{response.Id}", ApiEnvelope.Create(response));
-    });
+    }).RequireAuthorization(RbacPolicies.UserAdmin);
 
 app.MapPost(
     "/api/v1/roles",
@@ -937,7 +957,7 @@ app.MapPost(
     {
         var response = await service.CreateRoleAsync(request, cancellationToken);
         return Results.Created($"/api/v1/roles/{response.Id}", ApiEnvelope.Create(response));
-    });
+    }).RequireAuthorization(RbacPolicies.UserAdmin);
 
 app.MapPost(
     "/api/v1/users/{userId:guid}/roles/{roleId:guid}",
@@ -949,7 +969,7 @@ app.MapPost(
     {
         await service.AssignRoleAsync(userId, roleId, cancellationToken);
         return Results.Ok(ApiEnvelope.Create(new { ok = true }));
-    });
+    }).RequireAuthorization(RbacPolicies.UserAdmin);
 
 app.MapGet(
     "/api/v1/users/{userId:guid}/roles",
@@ -960,7 +980,7 @@ app.MapGet(
     {
         var roles = await service.GetRolesByUserAsync(userId, cancellationToken);
         return Results.Ok(ApiEnvelope.Create(roles));
-    });
+    }).RequireAuthorization(RbacPolicies.UserAdmin);
 
 app.MapPatch(
     "/api/v1/users/{userId:guid}/status",
@@ -971,7 +991,7 @@ app.MapPatch(
     {
         await service.SetUserStatusAsync(userId, "DISABLED", cancellationToken);
         return Results.Ok(ApiEnvelope.Create(new { ok = true }));
-    });
+    }).RequireAuthorization(RbacPolicies.UserAdmin);
 
 // ===== V2.2-Lite 新增接口 =====
 // 约定：ApiEnvelope 包装；RequestContext 提供医院隔离；

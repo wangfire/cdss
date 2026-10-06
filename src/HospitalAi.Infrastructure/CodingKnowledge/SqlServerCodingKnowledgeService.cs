@@ -1,5 +1,6 @@
 using System.Text.Json;
 using HospitalAi.Application.Abstractions;
+using HospitalAi.Application.Coding.Matching;
 using HospitalAi.Application.Common;
 using HospitalAi.Contracts.CodingKnowledge;
 using HospitalAi.Infrastructure.SqlServer;
@@ -173,6 +174,8 @@ public sealed class SqlServerCodingKnowledgeService(
             existing.UpdatedAt = now;
         }
 
+        await UpsertIndexChannelSynonymsAsync(synonymsByKey.Values, now, cancellationToken);
+
         var rulesByCode = new Dictionary<string, CodingRuleImportItem>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in request.Rules)
         {
@@ -262,6 +265,91 @@ public sealed class SqlServerCodingKnowledgeService(
 
         await dbContext.SaveChangesAsync(cancellationToken);
         return new ImportCodingRulesResponse(synonymsByKey.Count, rulesByCode.Count);
+    }
+
+    /// <summary>
+    /// 同义词同时落到索引链路词库 icd_term_synonym（推荐链路实际读取的表，平台级共享）：
+    /// entityType 决定通道（DISEASE/DIAGNOSIS→诊断，PROCEDURE/OPERATION→手术），
+    /// 键为 (term_type, variant_term)，与库内唯一索引一致；codeSystemCode/code 不参与链路匹配，故不落库。
+    /// term_synonym 仍按医院写入，供 ES 索引与旧版检索通道使用。
+    /// </summary>
+    private async Task UpsertIndexChannelSynonymsAsync(
+        IEnumerable<TermSynonymImportItem> items,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var pairs = items
+            .Select(item => (
+                TermType: ToTermChannel(item.EntityType),
+                Canonical: item.NormalizedTerm.Trim(),
+                Variant: item.Term.Trim()))
+            .Where(pair => pair.Canonical.Length > 0
+                && pair.Variant.Length > 0
+                && !string.Equals(pair.Canonical, pair.Variant, StringComparison.Ordinal))
+            .GroupBy(pair => (pair.TermType, pair.Variant), ValueTupleComparer.Instance)
+            .Select(group => group.First())
+            .ToList();
+        if (pairs.Count == 0)
+        {
+            return;
+        }
+
+        var termTypes = pairs.Select(pair => pair.TermType).Distinct().ToArray();
+        var variants = pairs.Select(pair => pair.Variant).ToArray();
+        // 库内比对按 SQL 大小写不敏感 collation 走，这里同样用不区分大小写的键，
+        // 避免 "II"/"ii" 被判成新词后撞上 (term_type, variant_term) 唯一索引。
+        // EF.Constant 强制把集合内联为 IN 常量列表：参数化集合默认翻译为 OPENJSON，
+        // 数据库兼容级别 <130（如 SQL Server 2012）不支持，导入路径承诺兼容旧版 SQL Server。
+        var existing = (await dbContext.IcdTermSynonyms
+                .Where(item => EF.Constant(termTypes).Contains(item.TermType) && EF.Constant(variants).Contains(item.VariantTerm))
+                .ToListAsync(cancellationToken))
+            .ToDictionary(
+                item => (item.TermType, item.VariantTerm),
+                ValueTupleComparer.Instance);
+
+        foreach (var pair in pairs)
+        {
+            if (existing.TryGetValue((pair.TermType, pair.Variant), out var record))
+            {
+                record.CanonicalTerm = pair.Canonical;
+                record.IsEnabled = true;
+                record.UpdatedAt = now;
+                continue;
+            }
+
+            dbContext.IcdTermSynonyms.Add(new IcdTermSynonymRecord
+            {
+                Id = Guid.NewGuid(),
+                TermType = pair.TermType,
+                CanonicalTerm = pair.Canonical,
+                VariantTerm = pair.Variant,
+                IsEnabled = true,
+                CreatedAt = now,
+                UpdatedAt = now
+            });
+        }
+    }
+
+    /// <summary>导入的 entityType 必须能落到诊断或手术通道，两通道改写互不串用。</summary>
+    private static string ToTermChannel(string entityType) => entityType.ToUpperInvariant() switch
+    {
+        "DIAGNOSIS" or "DISEASE" => TermSynonymTypes.Diagnosis,
+        "PROCEDURE" or "OPERATION" or "SURGERY" => TermSynonymTypes.Procedure,
+        _ => throw new ValidationException(
+            $"entityType「{entityType}」无法映射到索引链路通道，仅支持 DISEASE/DIAGNOSIS（诊断）或 PROCEDURE/OPERATION（手术）。"),
+    };
+
+    private sealed class ValueTupleComparer : IEqualityComparer<(string TermType, string Term)>
+    {
+        public static ValueTupleComparer Instance { get; } = new();
+
+        public bool Equals((string TermType, string Term) x, (string TermType, string Term) y) =>
+            StringComparer.OrdinalIgnoreCase.Equals(x.TermType, y.TermType)
+            && StringComparer.OrdinalIgnoreCase.Equals(x.Term, y.Term);
+
+        public int GetHashCode((string TermType, string Term) obj) =>
+            StringComparer.OrdinalIgnoreCase.GetHashCode(obj.TermType)
+            ^ StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Term);
     }
 
     private void EnsureHospital()

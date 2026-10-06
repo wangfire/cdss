@@ -922,6 +922,11 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                         .HasColumnType("nvarchar(1000)")
                         .HasColumnName("reason");
 
+                    b.Property<string>("RecallChannel")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("recall_channel");
+
                     b.Property<decimal>("RecallScore")
                         .HasColumnType("decimal(5,4)")
                         .HasColumnName("recall_score");
@@ -1467,6 +1472,141 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                         .HasDatabaseName("ux_hospital_code");
 
                     b.ToTable("hospital", (string)null);
+                });
+
+            modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.IcdIndexRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("FullIndexName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)")
+                        .HasColumnName("full_index_name");
+
+                    b.Property<string>("IndexCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("index_code");
+
+                    b.Property<int>("IndexLevel")
+                        .HasColumnType("int")
+                        .HasColumnName("index_level");
+
+                    b.Property<string>("IndexName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("index_name");
+
+                    b.Property<int>("LeadWordStatus")
+                        .HasColumnType("int")
+                        .HasColumnName("lead_word_status");
+
+                    b.Property<int>("ParentSeqNo")
+                        .HasColumnType("int")
+                        .HasColumnName("parent_seq_no");
+
+                    b.Property<string>("RawName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("raw_name");
+
+                    b.Property<string>("RawNameEn")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("raw_name_en");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion")
+                        .HasColumnName("row_version");
+
+                    b.Property<int>("SeqNo")
+                        .HasColumnType("int")
+                        .HasColumnName("seq_no");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IndexCode")
+                        .HasDatabaseName("ix_icd_index_code");
+
+                    b.HasIndex("LeadWordStatus")
+                        .HasDatabaseName("ix_icd_index_lead_word_status");
+
+                    b.HasIndex("SeqNo")
+                        .IsUnique()
+                        .HasDatabaseName("ux_icd_index_seq_no");
+
+                    b.ToTable("icd_index", (string)null);
+                });
+
+            modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.IcdTermSynonymRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("CanonicalTerm")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("canonical_term");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_enabled");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion")
+                        .HasColumnName("row_version");
+
+                    b.Property<string>("TermType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("term_type");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("VariantTerm")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("variant_term");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CanonicalTerm")
+                        .HasDatabaseName("ix_icd_term_synonym_canonical");
+
+                    b.HasIndex("TermType", "VariantTerm")
+                        .IsUnique()
+                        .HasDatabaseName("ux_icd_term_synonym_type_variant");
+
+                    b.ToTable("icd_term_synonym", (string)null);
                 });
 
             modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.InboxMessageRecord", b =>

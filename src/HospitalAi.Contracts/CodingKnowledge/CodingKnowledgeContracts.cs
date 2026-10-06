@@ -71,3 +71,59 @@ public sealed record CodingRuleImportItem(
 public sealed record ImportCodingRulesResponse(
     [property: JsonPropertyName("synonymCount")] int SynonymCount,
     [property: JsonPropertyName("ruleCount")] int RuleCount);
+
+/// <summary>
+/// ICD 索引库导入请求（全列保留，源自《ICD索引整理_编码规则修正版_最终版.xlsx》）。
+/// </summary>
+public sealed record ImportIcdIndexRequest(
+    [property: JsonPropertyName("items")] IReadOnlyList<IcdIndexImportItem> Items);
+
+/// <summary>
+/// ICD 索引库单条导入项。leadWordStatus：0=有效，1=无效。
+/// </summary>
+public sealed record IcdIndexImportItem(
+    [property: JsonPropertyName("seqNo")] int SeqNo,
+    [property: JsonPropertyName("rawName")] string RawName,
+    [property: JsonPropertyName("rawNameEn")] string? RawNameEn,
+    [property: JsonPropertyName("indexName")] string IndexName,
+    [property: JsonPropertyName("indexCode")] string? IndexCode,
+    [property: JsonPropertyName("indexLevel")] int IndexLevel,
+    [property: JsonPropertyName("parentSeqNo")] int ParentSeqNo,
+    [property: JsonPropertyName("fullIndexName")] string FullIndexName,
+    [property: JsonPropertyName("leadWordStatus")] int LeadWordStatus);
+
+/// <summary>
+/// ICD 索引库导入结果。
+/// </summary>
+public sealed record ImportIcdIndexResponse(
+    [property: JsonPropertyName("importedCount")] int ImportedCount,
+    [property: JsonPropertyName("updatedCount")] int UpdatedCount);
+
+/// <summary>
+/// 术语同义词组导入请求（termType：DIAGNOSIS=诊断、PROCEDURE=手术，两侧口径互不串用）。
+/// </summary>
+public sealed record ImportTermSynonymRequest(
+    [property: JsonPropertyName("items")] IReadOnlyList<TermSynonymGroupImportItem> Items);
+
+/// <summary>
+/// 单个同义词组：Variants 中每个变体词在索引匹配前被改写为 CanonicalTerm。
+/// </summary>
+public sealed record TermSynonymGroupImportItem(
+    [property: JsonPropertyName("termType")] string TermType,
+    [property: JsonPropertyName("canonicalTerm")] string CanonicalTerm,
+    [property: JsonPropertyName("variants")] IReadOnlyList<string> Variants);
+
+/// <summary>术语同义词导入结果。</summary>
+public sealed record ImportTermSynonymResponse(
+    [property: JsonPropertyName("importedCount")] int ImportedCount,
+    [property: JsonPropertyName("updatedCount")] int UpdatedCount);
+
+/// <summary>
+/// 单条索引链路同义词（页面增删改查用）。字段为空表示沿用库中原值，
+/// isEnabled 为 null 时不改动启停状态。
+/// </summary>
+public sealed record IcdTermSynonymInput(
+    [property: JsonPropertyName("termType")] string? TermType,
+    [property: JsonPropertyName("canonicalTerm")] string? CanonicalTerm,
+    [property: JsonPropertyName("variantTerm")] string? VariantTerm,
+    [property: JsonPropertyName("isEnabled")] bool? IsEnabled);

@@ -18,3 +18,7 @@ wb.json
 
 # Python
 __pycache__/
+
+# B1 仓库卫生（2026-10-06）：批量评测导出明细不入库；开发连接串含本机凭据（模板见同名 .template）
+data/exports/
+src/HospitalAi.Api/appsettings.Development.json

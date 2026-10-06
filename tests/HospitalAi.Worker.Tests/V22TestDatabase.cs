@@ -1,4 +1,6 @@
 using HospitalAi.Application.Abstractions;
+using HospitalAi.Application.Coding.IcdIndex;
+using HospitalAi.Application.Coding.Matching;
 using HospitalAi.Application.Coding.Preprocessing;
 using HospitalAi.Contracts.CodingTasks;
 using HospitalAi.Domain.CodingTasks;
@@ -77,10 +79,12 @@ public sealed class V22TestDatabase : IAsyncDisposable
 
     /// <summary>
     /// 允许注入模型网关与路由器，用于验证"模型接通但输出不合法"这条独立路径。
+    /// ICD 索引 / 字典快照直接读测试库：用例通过 Seed 行控制索引链路输入。
     /// </summary>
     public V22LiteCodingPipelineRunner CreateV22Runner(
         IModelGateway gateway,
-        IModelRouter router)
+        IModelRouter router,
+        V22PipelineOptions? options = null)
     {
         var context = CreateContext();
         return new V22LiteCodingPipelineRunner(
@@ -90,8 +94,60 @@ public sealed class V22TestDatabase : IAsyncDisposable
             gateway,
             router,
             new SimpleJsonSchemaValidator(),
-            Options.Create(new V22PipelineOptions()),
+            new ContextIcdIndexSource(context),
+            new ContextIcdDictionarySource(context),
+            new ContextIcdTermSynonymSource(context),
+            Options.Create(options ?? new V22PipelineOptions()),
             NullLogger<V22LiteCodingPipelineRunner>.Instance);
+    }
+
+    private sealed class ContextIcdIndexSource(HospitalAiDbContext context) : IIcdIndexSource
+    {
+        public IcdIndexSnapshot GetSnapshot(CancellationToken cancellationToken = default) =>
+            IcdIndexSnapshotBuilder.Build(context.IcdIndexes
+                .AsNoTracking()
+                .Select(item => new IcdIndexRow(
+                    item.SeqNo, item.IndexName, item.IndexCode,
+                    item.IndexLevel, item.ParentSeqNo, item.LeadWordStatus))
+                .ToList());
+
+        public void Invalidate()
+        {
+        }
+    }
+
+    private sealed class ContextIcdDictionarySource(HospitalAiDbContext context) : IIcdDictionarySource
+    {
+        public IcdDictionarySnapshot GetDictionary(
+            Guid hospitalId,
+            string codeSystemCode,
+            CancellationToken cancellationToken = default) =>
+            new(context.MedicalCodes
+                .AsNoTracking()
+                .Where(item => item.HospitalId == hospitalId
+                    && item.CodeSystemCode == codeSystemCode
+                    && item.IsEnabled)
+                .Select(item => new IcdDictionaryRow(
+                    item.CodeSystemCode, item.Code, item.Title, item.SearchText))
+                .ToList());
+
+        public void Invalidate()
+        {
+        }
+    }
+
+    private sealed class ContextIcdTermSynonymSource(HospitalAiDbContext context) : IIcdTermSynonymSource
+    {
+        public IcdTermSynonymSnapshot GetSnapshot(CancellationToken cancellationToken = default) =>
+            IcdTermSynonymSnapshot.Build(context.IcdTermSynonyms
+                .AsNoTracking()
+                .Where(item => item.IsEnabled)
+                .Select(item => new IcdTermSynonymRow(item.TermType, item.CanonicalTerm, item.VariantTerm))
+                .ToList());
+
+        public void Invalidate()
+        {
+        }
     }
 
     private static IModelRouter UnavailableRouter()
@@ -239,6 +295,36 @@ public sealed class V22TestDatabase : IAsyncDisposable
             CodeType = codeType ?? "诊断",
             SearchText = title,
             IsEnabled = true,
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        await context.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// 播种一条 ICD 索引行（icd_index 平台级表，序号全局唯一）。
+    /// </summary>
+    public async Task SeedIcdIndexRowAsync(
+        int seqNo,
+        string indexName,
+        string? indexCode,
+        int indexLevel = 0,
+        int parentSeqNo = 0,
+        int leadWordStatus = 0)
+    {
+        var now = DateTimeOffset.UtcNow;
+        await using var context = CreateContext();
+        context.IcdIndexes.Add(new IcdIndexRecord
+        {
+            Id = Guid.NewGuid(),
+            SeqNo = seqNo,
+            RawName = indexName,
+            IndexName = indexName,
+            IndexCode = indexCode,
+            IndexLevel = indexLevel,
+            ParentSeqNo = parentSeqNo,
+            FullIndexName = indexName,
+            LeadWordStatus = leadWordStatus,
             CreatedAt = now,
             UpdatedAt = now
         });

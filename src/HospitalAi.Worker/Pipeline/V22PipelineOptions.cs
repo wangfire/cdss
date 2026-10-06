@@ -22,6 +22,15 @@ public sealed class V22PipelineOptions
     /// <summary>同一诊断输入进入评分的最大候选数。</summary>
     public int MaxCandidatesPerInput { get; set; } = 3;
 
+    /// <summary>诊断侧 ICD 索引两段式链路开关；关闭时诊断输入不召回（不回退字典直匹配）。</summary>
+    public bool IcdIndexEnabled { get; set; } = true;
+
+    /// <summary>主导词召回保留条数（每条输入独立下钻）。</summary>
+    public int LeadWordTopK { get; set; } = 8;
+
+    /// <summary>索引展开后诊断字典的编码体系标识。</summary>
+    public string IndexDiagnosisCodeSystem { get; set; } = "ICD-10";
+
     /// <summary>是否启用规则引擎。默认启用；关闭时 RuleScore 视为缺省不参与。</summary>
     public bool RuleEngineEnabled { get; set; } = true;
 

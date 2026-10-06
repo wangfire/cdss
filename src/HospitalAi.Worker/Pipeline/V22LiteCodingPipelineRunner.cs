@@ -1,5 +1,7 @@
 using HospitalAi.Application.Abstractions;
 using HospitalAi.Application.Coding.Evidence;
+using HospitalAi.Application.Coding.IcdIndex;
+using HospitalAi.Application.Coding.Matching;
 using HospitalAi.Application.Coding.Preprocessing;
 using HospitalAi.Application.Coding.Rules;
 using HospitalAi.Application.Coding.Scoring;
@@ -18,6 +20,7 @@ namespace HospitalAi.Worker.Pipeline;
 
 /// <summary>
 /// 召回合并后的候选：保留各通道原始分与融合分，缺失通道为 null。
+/// RecallChannel：DICTIONARY=Exact/BM25 字典直匹配（手术通道）；ICD_INDEX=索引两段式链路。
 /// </summary>
 internal sealed record MergedCandidate(
     string CodeSystem,
@@ -25,7 +28,12 @@ internal sealed record MergedCandidate(
     string Title,
     decimal? ExactScore,
     decimal? Bm25Score,
-    decimal FusedScore);
+    decimal FusedScore,
+    string RecallChannel = "DICTIONARY",
+    string? IndexEvidencePath = null,
+    bool IsIndexFallback = false,
+    string? IndexNote = null,
+    decimal IndexTitleDepth = 0m);
 
 /// <summary>
 /// 模型解释校验结果：Validated 表示通过 Schema 校验，Supported 表示解释能被证据支持。
@@ -57,6 +65,9 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
     private readonly IModelGateway _modelGateway;
     private readonly IModelRouter _modelRouter;
     private readonly IJsonSchemaValidator _schemaValidator;
+    private readonly IIcdIndexSource _indexSource;
+    private readonly IIcdDictionarySource _dictionarySource;
+    private readonly IIcdTermSynonymSource _termSynonymSource;
     private readonly IOptions<V22PipelineOptions> _options;
     private readonly ILogger<V22LiteCodingPipelineRunner> _logger;
 
@@ -67,6 +78,9 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         IModelGateway modelGateway,
         IModelRouter modelRouter,
         IJsonSchemaValidator schemaValidator,
+        IIcdIndexSource indexSource,
+        IIcdDictionarySource dictionarySource,
+        IIcdTermSynonymSource termSynonymSource,
         IOptions<V22PipelineOptions> options,
         ILogger<V22LiteCodingPipelineRunner> logger)
     {
@@ -76,6 +90,9 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         _modelGateway = modelGateway;
         _modelRouter = modelRouter;
         _schemaValidator = schemaValidator;
+        _indexSource = indexSource;
+        _dictionarySource = dictionarySource;
+        _termSynonymSource = termSynonymSource;
         _options = options;
         _logger = logger;
     }
@@ -326,9 +343,15 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
             return;
         }
 
-        // Step 5：Exact Retrieval。
+        // 通道分流（ICD 索引改造）：诊断输入走索引两段式链路，不再字典直匹配召回（决策 2）；
+        // 手术输入维持 Exact/BM25 字典通道（暂无 ICD-9 索引数据，索引库后续提供）。
+        var procedureInputs = selectedInputs
+            .Where(input => input.SourceType.Contains("PROCEDURE", StringComparison.Ordinal))
+            .ToList();
+
+        // Step 5：Exact Retrieval（仅手术通道）。
         var exactResults = new Dictionary<Guid, IReadOnlyList<CodingKnowledgeHit>>();
-        foreach (var input in selectedInputs)
+        foreach (var input in procedureInputs)
         {
             exactResults[input.Id] = await _exactSearch.SearchAsync(
                 new ExactCodingKnowledgeQuery(
@@ -343,7 +366,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         var bm25Results = new Dictionary<Guid, IReadOnlyList<CodingKnowledgeHit>>();
         if (bm25Available)
         {
-            foreach (var input in selectedInputs)
+            foreach (var input in procedureInputs)
             {
                 bm25Results[input.Id] = await _bm25Search.SearchAsync(
                     new CodingKnowledgeSearchQuery(
@@ -356,9 +379,53 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     cancellationToken);
             }
         }
-        else
+        else if (procedureInputs.Count > 0)
         {
             degradedFlags.Add("DEGRADED.NO_BM25");
+        }
+
+        // Step 6.5：诊断侧 ICD 索引两段式（主导词召回 → 逐级下钻 → 索引编码 7 格式解析 → 字典展开）。
+        var indexStartedAt = DateTimeOffset.UtcNow;
+        var indexResults = new Dictionary<Guid, IReadOnlyList<DiagnosisIndexRecommendation>>();
+        var indexAttempted = settings.IcdIndexEnabled
+            && selectedInputs.Any(input => !input.SourceType.Contains("PROCEDURE", StringComparison.Ordinal));
+        var indexSucceeded = false;
+        if (indexAttempted)
+        {
+            try
+            {
+                var indexSnapshot = _indexSource.GetSnapshot(cancellationToken);
+                var diagnosisDictionary = _dictionarySource.GetDictionary(
+                    task.HospitalId, settings.IndexDiagnosisCodeSystem, cancellationToken);
+                var termSynonyms = _termSynonymSource.GetSnapshot(cancellationToken);
+                var resolver = new IcdIndexDiagnosisResolver(
+                    settings.LeadWordTopK, settings.MaxCandidatesPerInput, settings.IndexDiagnosisCodeSystem);
+                foreach (var input in selectedInputs)
+                {
+                    if (input.SourceType.Contains("PROCEDURE", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    var inputName = input.NormalizedText ?? input.OriginalText;
+                    IReadOnlyList<string>? aliasTexts = input.NormalizedText is { } normalized
+                        && normalized != input.OriginalText
+                        ? [input.OriginalText]
+                        : null;
+                    indexResults[input.Id] = resolver.Resolve(
+                        indexSnapshot, diagnosisDictionary, inputName, aliasTexts,
+                        termSynonyms, cancellationToken);
+                }
+
+                indexSucceeded = true;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // 快照加载失败按无推荐处理（不回退字典直匹配），降级标记进 Trace 与 Policy。
+                indexResults.Clear();
+                degradedFlags.Add("DEGRADED.NO_ICD_INDEX");
+                _logger.LogWarning(ex, "ICD 索引快照加载失败，本次运行诊断输入不召回。TaskId={TaskId}", task.Id);
+            }
         }
 
         // Step 7：向量检索（Lite 阶段未接入，禁止伪向量 / 随机向量 / 伪造 SemanticScore）。
@@ -407,44 +474,66 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
 
         foreach (var input in selectedInputs)
         {
-            var merged = MergeHits(exactResults[input.Id], bm25Results.GetValueOrDefault(input.Id) ?? []);
             var inputName = input.NormalizedText ?? input.OriginalText;
             // 类型隔离：手术输入只收 ICD-9 手术码、诊断输入只收 ICD-10 诊断码，
             // 否则 "腰椎间盘突出" 的诊断页会出现 "17.92650 腰椎间盘突出推拿治疗" 这类手术码。
             var procedureInput = input.SourceType.Contains("PROCEDURE", StringComparison.Ordinal);
-            merged = merged
-                .Where(candidate => IsProcedureCodeSystem(candidate.CodeSystem) == procedureInput)
-                // ICD 星号复合码（"2型糖尿病性肩关节周围炎 E11.600X015+M14.2*"）要求病历中有糖尿病主诊断；
-                // 输入未提糖尿病时这类候选即医生眼中的"糖尿病污染"，连精确分一并剔除。
-                .Where(candidate => !IsUnjustifiedDiabetesCompound(candidate.Title, inputName))
-                // 部位冲突："腰椎退行性病变" 召回 "颈椎/胸椎退行性病变"（字符覆盖 6/7、连续片段都挡不住），
-                // 标题出现的部位/限定词必须是输入已声明的，否则剔除。
-                .Where(candidate => !HasBodyPartConflict(candidate.Title, inputName))
-                .ToList();
-            var inputKey = NormalizeMatchKey(inputName);
-            if (inputKey.Length >= 2)
+            List<MergedCandidate> merged;
+            if (!procedureInput)
             {
-                // ICD 标题常为 "修饰语+核心词" 拼接，单字覆盖率挡不住 "甲周炎" 匹配 "肩周炎"。
-                // 要求标题对输入的"连续片段覆盖率"（输入被共享子串覆盖的字符比例）≥60%：
-                // "神经根型腰椎病" 与 "腰椎间盘突出伴神经根病" 共享 神经根+腰椎 = 5/7=0.71 通过，
-                // 而 "电针治疗" 与 "芒针治疗" 只有 针+治疗 = 3/4=0.5 剔除；
-                // 跨词二元组（根型/型腰）不参与打分，避免语序不同的正确 ICD 标题被误杀。
-                // MaxSegment≥3 剔除 "甲周炎"↔"肩周炎"（仅共享 周炎=2/3）；
-                // 但输入被多段完整覆盖（比例=1）时放行，否则 "子宫肌瘤"↔"子宫腺肌瘤"
-                // 这类 "子宫+肌瘤" 两段拼接的标准标题会被误杀。
-                merged = merged
-                    .Where(candidate => candidate.ExactScore is not null
-                        || TitleCoversInput(candidate.Title, inputName))
-                    .Select(candidate => (candidate, Contiguous: ContiguousCover(candidate.Title, inputName)))
-                    .Where(item => item.candidate.ExactScore is not null
-                        || (item.Contiguous.Ratio >= 0.6m
-                            && (inputKey.Length < 3
-                                || item.Contiguous.MaxSegment >= 3
-                                || item.Contiguous.Ratio >= 1.0m)))
-                    .OrderByDescending(item => item.Contiguous.Ratio)
-                    .ThenByDescending(item => item.candidate.FusedScore)
-                    .Select(item => item.candidate)
+                // 诊断通道：索引两段式产物已完成语义门控，不再叠加字典连续覆盖门槛。
+                merged = (indexResults.GetValueOrDefault(input.Id) ?? [])
+                    .Select(item => new MergedCandidate(
+                        item.CodeSystemCode,
+                        item.Code.Length > 64 ? item.Code[..64] : item.Code,
+                        item.Title.Length > 300 ? item.Title[..300] : item.Title,
+                        ExactScore: item.Score,
+                        Bm25Score: null,
+                        FusedScore: item.Score,
+                        RecallChannel: "ICD_INDEX",
+                        IndexEvidencePath: item.EvidencePath,
+                        IsIndexFallback: item.IsIndexFallback,
+                        IndexNote: item.Note,
+                        IndexTitleDepth: item.WholeTitleDepth))
                     .ToList();
+            }
+            else
+            {
+                merged = MergeHits(exactResults[input.Id], bm25Results.GetValueOrDefault(input.Id) ?? [])
+                    .Where(candidate => IsProcedureCodeSystem(candidate.CodeSystem))
+                    // ICD 星号复合码（"2型糖尿病性肩关节周围炎 E11.600X015+M14.2*"）要求病历中有糖尿病主诊断；
+                    // 输入未提糖尿病时这类候选即医生眼中的"糖尿病污染"，连精确分一并剔除。
+                    .Where(candidate => !TextMatch.IsUnjustifiedDiabetesCompound(candidate.Title, inputName))
+                    // 部位冲突："腰椎退行性病变" 召回 "颈椎/胸椎退行性病变"（字符覆盖 6/7、连续片段都挡不住），
+                    // 标题出现的部位/限定词必须是输入已声明的，否则剔除。
+                    .Where(candidate => !TextMatch.HasBodyPartConflict(candidate.Title, inputName))
+                    .ToList();
+                var inputKey = TextMatch.NormalizeKey(inputName);
+                if (inputKey.Length >= 2)
+                {
+                    // ICD 标题常为 "修饰语+核心词" 拼接，单字覆盖率挡不住 "甲周炎" 匹配 "肩周炎"。
+                    // 要求标题对输入的"连续片段覆盖率"（输入被共享子串覆盖的字符比例）≥60%：
+                    // "神经根型腰椎病" 与 "腰椎间盘突出伴神经根病" 共享 神经根+腰椎 = 5/7=0.71 通过，
+                    // 而 "电针治疗" 与 "芒针治疗" 只有 针+治疗 = 3/4=0.5 剔除；
+                    // 跨词二元组（根型/型腰）不参与打分，避免语序不同的正确 ICD 标题被误杀。
+                    // MaxSegment≥3 剔除 "甲周炎"↔"肩周炎"（仅共享 周炎=2/3）；
+                    // 但输入被多段完整覆盖（比例=1）时放行，否则 "子宫肌瘤"↔"子宫腺肌瘤"
+                    // 这类 "子宫+肌瘤" 两段拼接的标准标题会被误杀。
+                    merged = merged
+                        .Where(candidate => candidate.ExactScore is not null
+                            || TextMatch.TitleCoversInput(candidate.Title, inputName))
+                        .Select(candidate => (candidate, Contiguous:
+                            TextMatch.CoverageOf(inputKey, TextMatch.NormalizeKey(candidate.Title))))
+                        .Where(item => item.candidate.ExactScore is not null
+                            || (item.Contiguous.Ratio >= 0.6m
+                                && (inputKey.Length < 3
+                                    || item.Contiguous.MaxSegment >= 3
+                                    || item.Contiguous.Ratio >= 1.0m)))
+                        .OrderByDescending(item => item.Contiguous.Ratio)
+                        .ThenByDescending(item => item.candidate.FusedScore)
+                        .Select(item => item.candidate)
+                        .ToList();
+                }
             }
 
             var evidenceForInput = evidences
@@ -502,8 +591,11 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                 scored.Add((candidate, computed.FinalScore, ruleResult, computed));
             }
 
+            // 索引通道的整标题逐字贴合度先于七维分：标题被输入逐字连续包含（且解释掉 ≥75% 输入字符）
+            // 时，编码员认定的就是这一条，粒度加权的相关性分只能在其后参与比较（字典/手术通道该值恒为 0）。
             var ranked = scored
-                .OrderByDescending(item => item.Final)
+                .OrderByDescending(item => item.Candidate.IndexTitleDepth)
+                .ThenByDescending(item => item.Final)
                 .Take(settings.MaxCandidatesPerInput)
                 .ToList();
             var margin = ranked.Count >= 2 ? ranked[0].Final - ranked[1].Final : 0m;
@@ -563,7 +655,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     CodeSystem = item.Candidate.CodeSystem,
                     Code = item.Candidate.Code,
                     Title = item.Candidate.Title,
-                    RecallSource = "COMBINED",
+                    RecallSource = item.Candidate.RecallChannel,
                     ExactScore = item.Candidate.ExactScore,
                     Bm25Score = item.Candidate.Bm25Score,
                     VectorScore = null,
@@ -615,6 +707,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     Code = item.Candidate.Code,
                     Title = item.Candidate.Title,
                     Rank = rank,
+                    RecallChannel = item.Candidate.RecallChannel,
                     RecallScore = item.Candidate.FusedScore,
                     RuleScore = item.Rule.RuleScore,
                     ConfidenceScore = item.Final,
@@ -680,6 +773,28 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     });
                 }
 
+                // 索引链路溯源证据：主导词→修饰词命中路径与索引编码写入推荐证据，
+                // 使医生能核对 "为什么推荐这个码"（字典通道无此链路）。
+                if (item.Candidate.RecallChannel == "ICD_INDEX"
+                    && item.Candidate.IndexEvidencePath is { Length: > 0 } indexPath)
+                {
+                    recommendationEvidences.Add(new RecommendationEvidenceRecord
+                    {
+                        Id = Guid.NewGuid(),
+                        HospitalId = task.HospitalId,
+                        CodingRecommendationId = recommendationId,
+                        DocumentSectionId = null,
+                        PipelineRunId = runId,
+                        EvidenceLevel = null,
+                        SourceType = "ICD_INDEX",
+                        SourceText = indexPath + (item.Candidate.IndexNote is { } note ? $"；{note}" : string.Empty),
+                        MatchText = matchedTitle,
+                        Score = item.Candidate.FusedScore,
+                        CreatedAt = now,
+                        UpdatedAt = now
+                    });
+                }
+
                 rank++;
             }
 
@@ -700,9 +815,17 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         recorder.Record("EXACT_RETRIEVAL", "SUCCESS", null, startedAt);
         recorder.Record(
             "BM25_RETRIEVAL",
-            bm25Available ? "SUCCESS" : "DEGRADED",
-            bm25Available ? null : "DEGRADED.NO_BM25",
+            bm25Available || procedureInputs.Count == 0 ? "SUCCESS" : "DEGRADED",
+            bm25Available || procedureInputs.Count == 0 ? null : "DEGRADED.NO_BM25",
             startedAt);
+        if (indexAttempted)
+        {
+            recorder.Record(
+                "ICD_INDEX_RETRIEVAL",
+                indexSucceeded ? "SUCCESS" : "DEGRADED",
+                indexSucceeded ? null : "DEGRADED.NO_ICD_INDEX",
+                indexStartedAt);
+        }
         recorder.Record("RULE", "SUCCESS", null, startedAt);
         recorder.Record(
             "SCORE",
@@ -772,162 +895,6 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         return title.Length >= 2
             && !string.IsNullOrWhiteSpace(evidenceText)
             && evidenceText.Contains(title, StringComparison.Ordinal);
-    }
-
-    /// <summary>
-    /// 候选标题对输入名的字符覆盖率须达到 60% 才算相关。
-    /// BM25 只按词频打分，"神经根型腰椎病" 会召回 "1型糖尿病伴神经根神经病变"（覆盖率约 0.43），
-    /// 这类条目医生一眼就是"错误推荐"，宁缺毋滥。
-    /// </summary>
-    private static bool TitleCoversInput(string? title, string? inputText)
-    {
-        var normalizedTitle = NormalizeMatchKey(title);
-        var normalizedInput = NormalizeMatchKey(inputText);
-        if (normalizedTitle.Length == 0 || normalizedInput.Length == 0)
-        {
-            return false;
-        }
-
-        var titleCharacters = normalizedTitle.Distinct().ToHashSet();
-        var inputCharacters = normalizedInput.Distinct().ToArray();
-        var covered = inputCharacters.Count(character => titleCharacters.Contains(character));
-        return (decimal)covered / inputCharacters.Length >= 0.6m;
-    }
-
-    /// <summary>
-    /// 部位 / 特殊人群限定词。候选标题声明了输入没有的部位（"颈椎退行性病变" vs 输入 "腰椎退行性病变"、
-    /// "角膜针刺术" vs 输入 "针刺"、"妊娠合并X" vs 普通输入）即视为冲突剔除；
-    /// 标题不含任何限定词（"脊椎退行性病变"）则放行。
-    /// </summary>
-    /// <summary>
-    /// 标题对输入的连续片段覆盖率：反复取输入与标题的最长公共子串，标记输入中已覆盖位置，
-    /// 直到公共子串长度 &lt;2 为止，返回被覆盖的输入字符比例。
-    /// 二元组命中率会因 ICD 标题语序与输入不同（"神经根型" 在标题里是 "伴神经根病"）被跨词片段拖低，
-    /// 连续片段覆盖只认真正共享的词，既保住正确候选又挡住 "芒针治疗" 这类换字近码。
-    /// </summary>
-    private static (decimal Ratio, int MaxSegment) ContiguousCover(string? title, string? inputText)
-    {
-        var inputKey = NormalizeMatchKey(inputText);
-        var titleKey = NormalizeMatchKey(title);
-        if (inputKey.Length == 0)
-        {
-            return (0m, 0);
-        }
-
-        if (inputKey.Length == 1)
-        {
-            return titleKey.Contains(inputKey, StringComparison.Ordinal) ? (1m, 1) : (0m, 0);
-        }
-
-        var covered = new bool[inputKey.Length];
-        var coveredCount = 0;
-        var maxSegment = 0;
-        var currentTitle = titleKey;
-        while (true)
-        {
-            var (start, length) = LongestCommonSubstring(inputKey, currentTitle);
-            if (length < 2)
-            {
-                break;
-            }
-
-            maxSegment = Math.Max(maxSegment, length);
-            for (var index = start; index < start + length; index++)
-            {
-                if (!covered[index])
-                {
-                    covered[index] = true;
-                    coveredCount++;
-                }
-            }
-
-            // 从标题中去掉该片段，避免同一子串反复贡献。
-            currentTitle = currentTitle.Remove(
-                currentTitle.IndexOf(inputKey.AsSpan(start, length)), length);
-        }
-
-        return (coveredCount / (decimal)inputKey.Length, maxSegment);
-    }
-
-    private static (int Start, int Length) LongestCommonSubstring(string left, string right)
-    {
-        if (left.Length == 0 || right.Length == 0)
-        {
-            return (0, 0);
-        }
-
-        var previous = new int[right.Length + 1];
-        var bestStart = 0;
-        var bestLength = 0;
-        for (var i = left.Length - 1; i >= 0; i--)
-        {
-            var currentRow = new int[right.Length + 1];
-            for (var j = right.Length - 1; j >= 0; j--)
-            {
-                if (left[i] == right[j])
-                {
-                    currentRow[j] = previous[j + 1] + 1;
-                    if (currentRow[j] > bestLength)
-                    {
-                        bestLength = currentRow[j];
-                        bestStart = i;
-                    }
-                }
-            }
-
-            previous = currentRow;
-        }
-
-        return (bestStart, bestLength);
-    }
-
-    /// <summary>
-    /// 部位 / 特殊人群限定词。候选标题声明了输入没有的部位（"颈椎退行性病变" vs 输入 "腰椎退行性病变"、
-    /// "角膜针刺术" vs 输入 "针刺"、"妊娠合并X" vs 普通输入）即视为冲突剔除；
-    /// 标题不含任何限定词（"脊椎退行性病变"）则放行。
-    /// </summary>
-    private static readonly string[] BodyQualifiers =
-        ["颈", "胸", "腰", "骶", "尾", "肩", "肘", "腕", "髋", "膝", "踝", "足", "手",
-            "头", "腹", "耳", "鼻", "牙", "眼", "角膜", "妊娠"];
-
-    private static bool HasBodyPartConflict(string? title, string? inputText)
-    {
-        var titleQualifiers = ExtractQualifiers(title);
-        return titleQualifiers.Count > 0
-            && !titleQualifiers.IsSubsetOf(ExtractQualifiers(inputText));
-    }
-
-    private static HashSet<string> ExtractQualifiers(string? text)
-    {
-        var normalized = NormalizeMatchKey(text);
-        return BodyQualifiers
-            .Where(word => normalized.Contains(word, StringComparison.Ordinal))
-            .ToHashSet(StringComparer.Ordinal);
-    }
-
-    private static bool IsUnjustifiedDiabetesCompound(string? title, string? inputText)
-    {
-        var titleKey = NormalizeMatchKey(title);
-        if (!titleKey.Contains("糖尿病", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        var inputKey = NormalizeMatchKey(inputText);
-        return !inputKey.Contains("糖尿病", StringComparison.Ordinal);
-    }
-
-    private static string NormalizeMatchKey(string? text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return string.Empty;
-        }
-
-        return new string(text
-            .Where(character => !char.IsPunctuation(character) && !char.IsWhiteSpace(character))
-            .ToArray())
-            .ToLowerInvariant();
     }
 
     private static bool IsProcedureCodeSystem(string? codeSystem)
@@ -1143,7 +1110,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         // 同键优先 FRONT_PAGE：入院 / 出院重名时两条输入并存是预期，
         // 出院段抽取出的事实必须挂到出院输入，否则推荐会串进入院页签。
         var byText = existing
-            .GroupBy(item => NormalizeMatchKey(item.OriginalText), StringComparer.Ordinal)
+            .GroupBy(item => TextMatch.NormalizeKey(item.OriginalText), StringComparer.Ordinal)
             .ToDictionary(
                 group => group.Key,
                 group => group
@@ -1159,7 +1126,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         {
             // 医生已在结构化输入里写过的诊断，文档自动条目不得再建一条：
             // 按标点归一化后比较，否则 "2型糖尿病" 与 "2型糖尿病（E11900）" 会各建一个输入，推荐翻倍。
-            if (byText.ContainsKey(NormalizeMatchKey(fact.FactName)))
+            if (byText.ContainsKey(TextMatch.NormalizeKey(fact.FactName)))
             {
                 continue;
             }
@@ -1189,7 +1156,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
             };
             _dbContext.CodingDiagnosisInputs.Add(record);
             existing.Add(record);
-            byText[NormalizeMatchKey(record.OriginalText)] = record;
+            byText[TextMatch.NormalizeKey(record.OriginalText)] = record;
             createdIds.Add(record.Id);
             order++;
         }
@@ -1348,7 +1315,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         // 全部端给医生就是用户看到的"重复推荐"。
         return merged.Values
             .OrderByDescending(item => item.FusedScore)
-            .GroupBy(item => NormalizeMatchKey(item.Title), StringComparer.Ordinal)
+            .GroupBy(item => TextMatch.NormalizeKey(item.Title), StringComparer.Ordinal)
             .Select(group => group.First())
             .OrderByDescending(item => item.FusedScore)
             .ToList();

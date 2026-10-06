@@ -34,8 +34,12 @@ public sealed class V22LitePipelineTests
     private static readonly string[] ExpectedStages =
     [
         "QUALITY_GATE", "DOCUMENT_VERSION", "CHUNK", "FACT", "EVIDENCE",
-        "EXACT_RETRIEVAL", "BM25_RETRIEVAL", "RULE", "SCORE", "POLICY", "PERSIST"
+        "EXACT_RETRIEVAL", "BM25_RETRIEVAL", "ICD_INDEX_RETRIEVAL", "RULE", "SCORE", "POLICY", "PERSIST"
     ];
+
+    /// <summary>诊断输入走索引两段式：播种一条以诊断原文为主导词、直接给出目标编码的索引行。</summary>
+    private static Task SeedFractureIndexAsync(V22TestDatabase database) =>
+        database.SeedIcdIndexRowAsync(900001, Fracture, FractureCode);
 
     [Fact]
     public async Task 无诊断输入_不产出任何推荐并标记原因()
@@ -62,11 +66,12 @@ public sealed class V22LitePipelineTests
     }
 
     [Fact]
-    public async Task 命中编码_产出候选七维分数证据与11个Trace阶段()
+    public async Task 命中编码_产出候选七维分数证据与12个Trace阶段()
     {
         await using var database = await V22TestDatabase.CreateAsync();
         var (hospitalId, taskId, message) = await database.SeedV22TaskAsync(FullDocumentText);
         await database.SeedCodeAsync(hospitalId, "ICD-10", FractureCode, Fracture);
+        await SeedFractureIndexAsync(database);
 
         await database.CreateV22Runner().RunAsync(message);
 
@@ -97,9 +102,9 @@ public sealed class V22LitePipelineTests
         Assert.Null(candidate.VectorScore);
         Assert.Null(candidate.RerankScore);
         Assert.Null(score.SemanticScore);
-        // Trace 覆盖全部 11 个阶段（同一次运行的 CreatedAt 可能同刻，按阶段名称校验集合）。
+        // Trace 覆盖全部 12 个阶段（同一次运行的 CreatedAt 可能同刻，按阶段名称校验集合）。
         var stages = await context.PipelineTraceSteps.Select(item => item.Stage).ToListAsync();
-        Assert.Equal(11, stages.Count);
+        Assert.Equal(12, stages.Count);
         foreach (var stage in ExpectedStages)
         {
             Assert.Contains(stage, stages);
@@ -118,6 +123,7 @@ public sealed class V22LitePipelineTests
         await using var database = await V22TestDatabase.CreateAsync();
         var (hospitalId, taskId, message) = await database.SeedV22TaskAsync(FullDocumentText);
         await database.SeedCodeAsync(hospitalId, "ICD-10", FractureCode, Fracture);
+        await SeedFractureIndexAsync(database);
         var runner = database.CreateV22Runner();
 
         await runner.RunAsync(message);
@@ -152,6 +158,7 @@ public sealed class V22LitePipelineTests
         await using var database = await V22TestDatabase.CreateAsync();
         var (hospitalId, taskId, message) = await database.SeedV22TaskAsync(FullDocumentText);
         await database.SeedCodeAsync(hospitalId, "ICD-10", FractureCode, Fracture);
+        await SeedFractureIndexAsync(database);
         var runner = database.CreateV22Runner();
 
         await runner.RunAsync(message);
@@ -202,6 +209,7 @@ public sealed class V22LitePipelineTests
             "【出院诊断】否认高血压；" + Fracture + "。");
         await database.SeedCodeAsync(hospitalId, "ICD-10", "I10", "高血压");
         await database.SeedCodeAsync(hospitalId, "ICD-10", FractureCode, Fracture);
+        await SeedFractureIndexAsync(database);
 
         await database.CreateV22Runner().RunAsync(message);
 
@@ -226,6 +234,7 @@ public sealed class V22LitePipelineTests
         await using var database = await V22TestDatabase.CreateAsync();
         var (hospitalId, taskId, message) = await database.SeedV22TaskAsync(FullDocumentText);
         await database.SeedCodeAsync(hospitalId, "ICD-10", FractureCode, Fracture);
+        await SeedFractureIndexAsync(database);
         await database.SeedBlockingRuleAsync(hospitalId, FractureCode);
 
         await database.CreateV22Runner().RunAsync(message);
@@ -571,6 +580,7 @@ public sealed class V22LitePipelineTests
         await using var database = await V22TestDatabase.CreateAsync();
         var (hospitalId, taskId, message) = await database.SeedV22TaskAsync(FullDocumentText);
         await database.SeedCodeAsync(hospitalId, "ICD-10", FractureCode, Fracture);
+        await SeedFractureIndexAsync(database);
 
         // 模型路由可用，但网关始终返回不满足 Schema 的输出。
         var runner = database.CreateV22Runner(
@@ -587,7 +597,7 @@ public sealed class V22LitePipelineTests
         Assert.Contains(
             issues,
             item => item.IssueType == QualityIssueType.LlmOutputInvalid);
-        // 11 个阶段仍然全部记录：模型问题不中断流水线。
+        // 12 个阶段仍然全部记录：模型问题不中断流水线。
         var stages = traceSteps.Select(item => item.Stage).ToList();
         foreach (var stage in ExpectedStages)
         {
@@ -598,6 +608,63 @@ public sealed class V22LitePipelineTests
         Assert.DoesNotContain(
             recommendations,
             item => item.Outcome == "HIGH_CONFIDENCE");
+    }
+
+    [Fact]
+    public async Task 诊断侧已删除字典直匹配_无索引行时不产出推荐()
+    {
+        await using var database = await V22TestDatabase.CreateAsync();
+        var (hospitalId, taskId, message) = await database.SeedV22TaskAsync(FullDocumentText);
+        // 只播种字典（旧直匹配可命中），不播种索引行：决策 2 下诊断输入必须零推荐。
+        await database.SeedCodeAsync(hospitalId, "ICD-10", FractureCode, Fracture);
+
+        await database.CreateV22Runner().RunAsync(message);
+
+        await using var context = database.CreateContext();
+        Assert.Empty(await context.CodingRecommendations.ToListAsync());
+        Assert.Empty(await context.CodingCandidates.ToListAsync());
+    }
+
+    [Fact]
+    public async Task 黄金用例_老年型阿尔茨海默病性痴呆走完整流水线()
+    {
+        const string input = "阿尔茨海默病引起痴呆(老年型)";
+        await using var database = await V22TestDatabase.CreateAsync();
+        var (hospitalId, taskId, message) = await database.SeedV22TaskAsync("【出院诊断】" + input + "。");
+
+        // 真实索引树 seq 65-72 与真实 ICD-10 字典行。
+        await database.SeedIcdIndexRowAsync(65, "阿尔茨海默病或硬化", "G30.9");
+        await database.SeedIcdIndexRowAsync(66, "－早期发病(早老性)", "G30.0", indexLevel: 1, parentSeqNo: 65);
+        await database.SeedIcdIndexRowAsync(67, "－晚期发病(老年性)", "G30.1", indexLevel: 1, parentSeqNo: 65);
+        await database.SeedIcdIndexRowAsync(68, "－特指的 NEC", "G30.8", indexLevel: 1, parentSeqNo: 65);
+        await database.SeedIcdIndexRowAsync(69, "－引起痴呆", "G30.9† F00.9*", indexLevel: 1, parentSeqNo: 65);
+        await database.SeedIcdIndexRowAsync(70, "－－早期发病(早老性)", "G30.0† F00.0*", indexLevel: 2, parentSeqNo: 69);
+        await database.SeedIcdIndexRowAsync(71, "－－晚期发病(老年性)", "G30.1† F00.1*", indexLevel: 2, parentSeqNo: 69);
+        await database.SeedIcdIndexRowAsync(72, "－－非典型型或混合型", "G30.8† F00.2*", indexLevel: 2, parentSeqNo: 69);
+        await database.SeedCodeAsync(hospitalId, "ICD-10", "G30.100X002+F00.1*", "家族性阿尔茨海默病性痴呆(老年型)");
+        await database.SeedCodeAsync(hospitalId, "ICD-10", "G30.100X003+F00.1*", "阿尔茨海默病性痴呆(老年型)");
+        await database.SeedCodeAsync(hospitalId, "ICD-10", "G30.100X001", "阿尔茨海默病(老年型)");
+
+        await database.CreateV22Runner().RunAsync(message);
+
+        await using var context = database.CreateContext();
+        var recommendations = await context.CodingRecommendations
+            .Include(item => item.Evidences)
+            .OrderBy(item => item.Rank)
+            .ToListAsync();
+
+        Assert.Equal(
+            new[] { "G30.100X002+F00.1*", "G30.100X003+F00.1*" },
+            recommendations.Select(item => item.Code).OrderBy(code => code).ToArray());
+        Assert.All(recommendations, item => Assert.Equal("ICD_INDEX", item.RecallChannel));
+        // 命中路径写入推荐证据，医生可核对索引推导过程。
+        Assert.All(
+            recommendations,
+            item => Assert.Contains(
+                item.Evidences,
+                evidence => evidence.SourceType == "ICD_INDEX"
+                    && evidence.SourceText.Contains("引起痴呆", StringComparison.Ordinal)
+                    && evidence.SourceText.Contains("索引编码: G30.1† F00.1*", StringComparison.Ordinal)));
     }
 
     private sealed class LegacyStubRunner : ICodingTaskPipelineRunner, ICodingTaskPipelineCapabilities

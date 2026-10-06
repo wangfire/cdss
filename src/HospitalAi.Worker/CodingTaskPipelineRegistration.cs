@@ -24,6 +24,11 @@ public static class CodingTaskPipelineRegistration
         {
             configuration.GetSection(PipelineDispatchOptions.SectionName).Bind(options);
         });
+
+        // ICD 索引两段式链路：平台级索引树快照 + 医院字典快照（单例内存缓存，导入后失效重建）。
+        services.AddSingleton<Application.Coding.IcdIndex.IIcdIndexSource, EfIcdIndexSnapshotSource>();
+        services.AddSingleton<Application.Coding.IcdIndex.IIcdDictionarySource, EfIcdDictionarySource>();
+        services.AddSingleton<Application.Coding.Matching.IIcdTermSynonymSource, EfIcdTermSynonymSource>();
         // 与 API 共用同一份灰度配置：新建编码任务缺省使用的 PipelineVersion。
         services.AddSingleton(
             _ => Infrastructure.CodingTasks.CodingTaskPipelineOptions.FromConfiguration(configuration));

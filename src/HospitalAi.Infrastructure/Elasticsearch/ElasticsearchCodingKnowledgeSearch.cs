@@ -101,7 +101,9 @@ public sealed class ElasticsearchCodingKnowledgeSearch : ICodingKnowledgeSearch
                     "ES BM25 检索失败，Status={StatusCode}, Index={Index}",
                     (int)response.StatusCode,
                     index);
-                return [];
+                // 显式抛出而非返回空列表：失败必须由调用方映射为降级标记，不得混入"无命中"。
+                throw new ElasticsearchUnavailableException(
+                    $"ES BM25 检索失败，Status={(int)response.StatusCode}, Index={index}");
             }
 
             var body = await response.Content
@@ -126,6 +128,10 @@ public sealed class ElasticsearchCodingKnowledgeSearch : ICodingKnowledgeSearch
                     "BM25"))
                 .ToList();
         }
+        catch (ElasticsearchUnavailableException)
+        {
+            throw;
+        }
         catch (Exception exception)
         {
             _logger.LogWarning(
@@ -133,7 +139,9 @@ public sealed class ElasticsearchCodingKnowledgeSearch : ICodingKnowledgeSearch
                 "ES BM25 检索异常，Index={Index}, ElapsedMs={ElapsedMs}",
                 index,
                 stopwatch.ElapsedMilliseconds);
-            return [];
+            throw new ElasticsearchUnavailableException(
+                $"ES BM25 检索异常，Index={index}, ElapsedMs={stopwatch.ElapsedMilliseconds}",
+                exception);
         }
     }
 

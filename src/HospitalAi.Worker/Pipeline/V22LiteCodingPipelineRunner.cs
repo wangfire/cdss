@@ -9,6 +9,7 @@ using HospitalAi.Application.Common;
 using HospitalAi.Contracts.CodingTasks;
 using HospitalAi.Contracts.Models;
 using HospitalAi.Domain.CodingTasks;
+using HospitalAi.Infrastructure.Elasticsearch;
 using HospitalAi.Infrastructure.SqlServer;
 using HospitalAi.Worker.Tracing;
 using Microsoft.EntityFrameworkCore;
@@ -361,26 +362,42 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                 cancellationToken);
         }
 
-        // Step 6：BM25（ES 不可用时标记降级；未命中即 NO_SAFE_RECOMMENDATION，不回退 SQL 全量扫描）。
+        // Step 6：BM25（ES 不可用/检索失败都标记降级；未命中即 NO_SAFE_RECOMMENDATION，不回退 SQL 全量扫描）。
         var bm25Available = _bm25Search.IsAvailable;
+        var bm25Degraded = false;
         var bm25Results = new Dictionary<Guid, IReadOnlyList<CodingKnowledgeHit>>();
         if (bm25Available)
         {
             foreach (var input in procedureInputs)
             {
-                bm25Results[input.Id] = await _bm25Search.SearchAsync(
-                    new CodingKnowledgeSearchQuery(
-                        task.HospitalId,
-                        input.NormalizedText ?? input.OriginalText,
-                        settings.CodingVersion,
-                        settings.KnowledgeVersion,
-                        settings.DocumentVersion,
-                        ContentHash: null),
-                    cancellationToken);
+                try
+                {
+                    bm25Results[input.Id] = await _bm25Search.SearchAsync(
+                        new CodingKnowledgeSearchQuery(
+                            task.HospitalId,
+                            input.NormalizedText ?? input.OriginalText,
+                            settings.CodingVersion,
+                            settings.KnowledgeVersion,
+                            settings.DocumentVersion,
+                            ContentHash: null),
+                        cancellationToken);
+                }
+                catch (ElasticsearchUnavailableException exception)
+                {
+                    // ES 启用但检索失败：显式降级，不得混入"知识库无命中"口径；已成功的输入保留其结果。
+                    bm25Degraded = true;
+                    degradedFlags.Add("DEGRADED.NO_BM25");
+                    _logger.LogWarning(
+                        exception,
+                        "ES BM25 检索失败，本次运行手术通道降级。TaskId={TaskId}",
+                        task.Id);
+                    break;
+                }
             }
         }
         else if (procedureInputs.Count > 0)
         {
+            bm25Degraded = true;
             degradedFlags.Add("DEGRADED.NO_BM25");
         }
 
@@ -815,8 +832,8 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         recorder.Record("EXACT_RETRIEVAL", "SUCCESS", null, startedAt);
         recorder.Record(
             "BM25_RETRIEVAL",
-            bm25Available || procedureInputs.Count == 0 ? "SUCCESS" : "DEGRADED",
-            bm25Available || procedureInputs.Count == 0 ? null : "DEGRADED.NO_BM25",
+            bm25Degraded ? "DEGRADED" : "SUCCESS",
+            bm25Degraded ? "DEGRADED.NO_BM25" : null,
             startedAt);
         if (indexAttempted)
         {

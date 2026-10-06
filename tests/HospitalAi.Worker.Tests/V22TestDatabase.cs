@@ -82,17 +82,18 @@ public sealed class V22TestDatabase : IAsyncDisposable
     /// ICD 索引 / 字典快照直接读测试库：用例通过 Seed 行控制索引链路输入。
     /// </summary>
     public V22LiteCodingPipelineRunner CreateV22Runner(
-        IModelGateway gateway,
-        IModelRouter router,
-        V22PipelineOptions? options = null)
+        IModelGateway? gateway = null,
+        IModelRouter? router = null,
+        V22PipelineOptions? options = null,
+        ICodingKnowledgeSearch? bm25Search = null)
     {
         var context = CreateContext();
         return new V22LiteCodingPipelineRunner(
             context,
             new SqlServerExactCodingKnowledgeSearch(context),
-            new UnavailableCodingKnowledgeSearch(),
-            gateway,
-            router,
+            bm25Search ?? new UnavailableCodingKnowledgeSearch(),
+            gateway ?? new UnavailableModelGateway(),
+            router ?? UnavailableRouter(),
             new SimpleJsonSchemaValidator(),
             new ContextIcdIndexSource(context),
             new ContextIcdDictionarySource(context),

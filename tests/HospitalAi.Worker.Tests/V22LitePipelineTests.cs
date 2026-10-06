@@ -475,6 +475,63 @@ public sealed class V22LitePipelineTests
     }
 
     [Fact]
+    public async Task ES启用但检索失败_必须抛出不可用异常而非空命中()
+    {
+        var search = new ElasticsearchCodingKnowledgeSearch(
+            new HttpClient(new FailingElasticsearchHandler()),
+            new ElasticsearchOptions { Enabled = true, Url = "http://localhost:9201" },
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<ElasticsearchCodingKnowledgeSearch>.Instance);
+
+        // 失败必须显式抛异常，由调用方映射为 DEGRADED.NO_BM25，不得混入"知识库无命中"。
+        await Assert.ThrowsAsync<ElasticsearchUnavailableException>(() => search.SearchAsync(
+            new CodingKnowledgeSearchQuery(Guid.NewGuid(), Fracture, "v1", "v1", "v1", ContentHash: null)));
+    }
+
+    [Fact]
+    public async Task ES启用但检索失败_手术通道显式降级且不留高置信推荐()
+    {
+        await using var database = await V22TestDatabase.CreateAsync();
+        var (hospitalId, taskId, message) = await database.SeedV22TaskAsync(
+            "【出院诊断】" + Fracture + "。【手术操作】" + Fracture + "切开复位内固定术。");
+
+        var runner = database.CreateV22Runner(bm25Search: new ThrowingCodingKnowledgeSearch());
+
+        await runner.RunAsync(message);
+
+        await using var context = database.CreateContext();
+        var step = await context.PipelineTraceSteps.SingleAsync(item => item.Stage == "BM25_RETRIEVAL");
+        Assert.Equal("DEGRADED", step.Status);
+        Assert.Equal("DEGRADED.NO_BM25", step.ErrorCode);
+        // 降级不得产生高置信结果：检索通道不完整时宁缺毋滥。
+        var recommendations = await context.CodingRecommendations.ToListAsync();
+        Assert.DoesNotContain(recommendations, item => item.Outcome == "HIGH_CONFIDENCE");
+    }
+
+    /// <summary>模拟 ES 已启用但服务宕机（任何请求都返回 503）。</summary>
+    private sealed class FailingElasticsearchHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable));
+        }
+    }
+
+    /// <summary>模拟 ES 启用但检索调用抛出不可用异常。</summary>
+    private sealed class ThrowingCodingKnowledgeSearch : ICodingKnowledgeSearch
+    {
+        public bool IsAvailable => true;
+
+        public Task<IReadOnlyList<CodingKnowledgeHit>> SearchAsync(
+            CodingKnowledgeSearchQuery query,
+            CancellationToken cancellationToken = default)
+        {
+            throw new ElasticsearchUnavailableException("模拟 ES 宕机");
+        }
+    }
+
+    [Fact]
     public async Task ModelRouter_未接通模型时明确报告不可用()
     {
         var router = new StaticModelRouter(Options.Create(new ModelGatewayOptions

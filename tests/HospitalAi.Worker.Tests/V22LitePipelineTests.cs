@@ -10,6 +10,7 @@ using HospitalAi.Infrastructure.ModelGateways;
 using HospitalAi.Infrastructure.SqlServer;
 using HospitalAi.Worker.Pipeline;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -472,6 +473,28 @@ public sealed class V22LitePipelineTests
             "v1",
             "v1",
             ContentHash: null)));
+    }
+
+    [Fact]
+    public async Task 进程内派发器_接管Pending任务并完成流水线()
+    {
+        await using var database = await V22TestDatabase.CreateAsync();
+        var (hospitalId, taskId, _) = await database.SeedV22TaskAsync(FullDocumentText);
+        await database.SeedCodeAsync(hospitalId, "ICD-10", FractureCode, Fracture);
+        await SeedFractureIndexAsync(database);
+
+        // RabbitMQ 禁用时的进程内兜底通道（WP-B2-3）：直调派发批处理方法，
+        // 走与托管轮询完全相同的认领与消费逻辑。
+        var dispatcher = new PendingCodingTaskDispatcher(
+            new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<PendingCodingTaskDispatcher>.Instance);
+        await using var dispatchContext = database.CreateContext();
+        await dispatcher.DispatchPendingBatchAsync(dispatchContext, database.CreateConsumer());
+
+        await using var verifyContext = database.CreateContext();
+        var task = await verifyContext.CodingTasks.SingleAsync(item => item.Id == taskId);
+        Assert.NotEqual(CodingTaskStatus.Pending, task.Status);
+        Assert.NotEmpty(await verifyContext.CodingRecommendations.ToListAsync());
     }
 
     [Fact]

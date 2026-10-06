@@ -8,7 +8,9 @@ using HospitalAi.Infrastructure.CodingKnowledge;
 using HospitalAi.Infrastructure.Elasticsearch;
 using HospitalAi.Infrastructure.ModelGateways;
 using HospitalAi.Infrastructure.SqlServer;
+using HospitalAi.Worker.Consumers;
 using HospitalAi.Worker.Pipeline;
+using HospitalAi.Worker.Retry;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -154,6 +156,37 @@ public sealed class V22TestDatabase : IAsyncDisposable
     private static IModelRouter UnavailableRouter()
     {
         return new StaticModelRouter(Options.Create(new ModelGatewayOptions()));
+    }
+
+    /// <summary>
+    /// 构造与生产同构的任务消费者：真实 Dispatcher + Lite Runner + 真实重试等待。
+    /// consumer 与 runner 必须共享同一 DbContext（生产 DI 同 scope 即同一实例），
+    /// 否则 runner 更新任务行后 consumer 的旧实体 SaveChanges 会撞 rowversion。
+    /// </summary>
+    public CodingTaskCreatedConsumer CreateConsumer()
+    {
+        var context = CreateContext();
+        var runner = new V22LiteCodingPipelineRunner(
+            context,
+            new SqlServerExactCodingKnowledgeSearch(context),
+            new UnavailableCodingKnowledgeSearch(),
+            new UnavailableModelGateway(),
+            UnavailableRouter(),
+            new SimpleJsonSchemaValidator(),
+            new ContextIcdIndexSource(context),
+            new ContextIcdDictionarySource(context),
+            new ContextIcdTermSynonymSource(context),
+            Options.Create(new V22PipelineOptions()),
+            NullLogger<V22LiteCodingPipelineRunner>.Instance);
+        var pipelineDispatcher = new CodingTaskPipelineDispatcher(
+            [runner],
+            Options.Create(new PipelineDispatchOptions { DefaultPipelineVersion = PipelineVersions.Lite }),
+            NullLogger<CodingTaskPipelineDispatcher>.Instance);
+        return new CodingTaskCreatedConsumer(
+            context,
+            pipelineDispatcher,
+            new TaskRetryDelay(),
+            NullLogger<CodingTaskCreatedConsumer>.Instance);
     }
 
     /// <summary>

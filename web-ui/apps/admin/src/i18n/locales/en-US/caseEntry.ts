@@ -3,7 +3,7 @@
  */
 export default {
   title: 'Case Entry',
-  subtitle: 'Enter a single case with diagnoses / procedures, then run AI coding recommendation immediately',
+  subtitle: 'Enter a single case with diagnoses / procedures; AI coding runs asynchronously after submission',
 
   basicInfo: 'Basic Info',
   patientName: 'Name',
@@ -25,8 +25,13 @@ export default {
   additionalDocumentPlaceholder: 'Free text (e.g. admission note) used as supplementary evidence…',
 
   submit: 'Submit & Run AI Recommendation',
-  submitting: 'Pipeline running, please wait…',
-  submitTimeoutHint: 'May take a while (retrieval & scoring). Do not close the page',
+  submitting: 'Submitting…',
+  submitTimeoutHint: 'Accepted. AI coding is running — do not close the page',
+
+  acceptedTitle: 'Case Accepted',
+  processing: 'AI is generating coding recommendations…',
+  taskFailed: 'AI coding failed, check the run log in the Workbench',
+  taskTimeout: 'Timed out waiting for AI coding, check the Workbench later',
 
   successTitle: 'Case Created',
   inputCount: 'Diagnosis Inputs',

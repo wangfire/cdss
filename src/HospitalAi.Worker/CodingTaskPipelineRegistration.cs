@@ -1,6 +1,9 @@
 using HospitalAi.Infrastructure.CodingKnowledge;
 using HospitalAi.Infrastructure.ModelGateways;
+using HospitalAi.Infrastructure.RabbitMq;
+using HospitalAi.Worker.Consumers;
 using HospitalAi.Worker.Pipeline;
+using HospitalAi.Worker.Retry;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -47,6 +50,20 @@ public static class CodingTaskPipelineRegistration
         services.AddModelGateways(configuration);
         services.AddCodingKnowledgeSearch(configuration);
         services.AddScoped<ICodingTaskPipelineDispatcher, CodingTaskPipelineDispatcher>();
+
+        // WP-B2-3（决策 1）：病例录入只落任务 + Outbox，不再在 HTTP 请求内同步执行流水线。
+        // RabbitMQ 禁用（本地/单机）时注册进程内兜底派发器，与 MQ 消费者按配置互斥；
+        // 消费者与其重试等待器在此统一注册，供派发器复用同一套处理逻辑。
+        services.AddScoped<IRetryDelay, TaskRetryDelay>();
+        services.AddScoped<CodingTaskCreatedConsumer>();
+        if (!bool.TryParse(
+                configuration[$"{RabbitMqOptions.SectionName}:Enabled"],
+                out var rabbitMqEnabled)
+            || !rabbitMqEnabled)
+        {
+            services.AddHostedService<PendingCodingTaskDispatcher>();
+        }
+
         return services;
     }
 }

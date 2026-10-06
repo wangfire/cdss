@@ -3,7 +3,7 @@
  */
 export default {
   title: '病例录入',
-  subtitle: '录入单条病案基本信息与诊断 / 手术，确认后即刻运行 AI 推荐编码',
+  subtitle: '录入单条病案基本信息与诊断 / 手术，受理后由 AI 异步生成推荐编码',
 
   basicInfo: '基本信息',
   patientName: '姓名',
@@ -25,8 +25,13 @@ export default {
   additionalDocumentPlaceholder: '入院记录等自由文本，作为补充证据进入流水线…',
 
   submit: '确认录入并 AI 推荐',
-  submitting: '流水线执行中，请稍候…',
-  submitTimeoutHint: '执行时间较长（含检索与评分），请勿关闭页面',
+  submitting: '提交中…',
+  submitTimeoutHint: '已受理，AI 编码执行中，请勿关闭页面',
+
+  acceptedTitle: '录入已受理',
+  processing: 'AI 正在生成编码推荐，请稍候…',
+  taskFailed: 'AI 编码处理失败，请到工作台查看运行记录',
+  taskTimeout: '等待 AI 编码超时，请稍后到工作台查看结果',
 
   successTitle: '录入完成',
   inputCount: '诊断输入',

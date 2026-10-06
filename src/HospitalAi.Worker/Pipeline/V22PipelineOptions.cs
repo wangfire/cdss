@@ -40,6 +40,12 @@ public sealed class V22PipelineOptions
     /// <summary>向量候选入池的余弦相似度下限（低于该值的语义近似不参与推荐）。</summary>
     public double VectorMinScore { get; set; } = 0.45;
 
+    /// <summary>交叉编码 Rerank 开关（WP-B3-2）。模型缺失或打分失败时显式降级 DEGRADED.NO_RERANK。</summary>
+    public bool RerankEnabled { get; set; } = true;
+
+    /// <summary>每条输入进入 Rerank 的候选条数。</summary>
+    public int RerankTopK { get; set; } = 8;
+
     /// <summary>是否启用规则引擎。默认启用；关闭时 RuleScore 视为缺省不参与。</summary>
     public bool RuleEngineEnabled { get; set; } = true;
 

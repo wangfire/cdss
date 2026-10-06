@@ -152,7 +152,7 @@ public sealed class OnnxEmbeddingProvider : IEmbeddingProvider
     }
 
     /// <summary>相对路径解析：从程序目录向上回溯（API/Worker/工具的内容根深度不同）。</summary>
-    private static string? ResolvePath(string path)
+    internal static string? ResolvePath(string path)
     {
         if (Path.IsPathRooted(path))
         {

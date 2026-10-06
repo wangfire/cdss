@@ -52,6 +52,8 @@ public static class CodingTaskPipelineRegistration
         services.AddCodingKnowledgeSearch(configuration);
         // WP-B3-1：本地 ONNX 嵌入 + 内存向量检索（CPU 小模型先行，决策 2）。
         services.AddVectorSearch(configuration);
+        // WP-B3-2：交叉编码 Rerank（bge-reranker ONNX）。
+        services.AddRerank(configuration);
         services.AddScoped<ICodingTaskPipelineDispatcher, CodingTaskPipelineDispatcher>();
 
         // WP-B2-3（决策 1）：病例录入只落任务 + Outbox，不再在 HTTP 请求内同步执行流水线。

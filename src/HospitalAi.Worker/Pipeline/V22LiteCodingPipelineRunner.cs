@@ -35,7 +35,8 @@ internal sealed record MergedCandidate(
     bool IsIndexFallback = false,
     string? IndexNote = null,
     decimal IndexTitleDepth = 0m,
-    decimal? VectorScore = null);
+    decimal? VectorScore = null,
+    decimal? RerankScore = null);
 
 /// <summary>
 /// 模型解释校验结果：Validated 表示通过 Schema 校验，Supported 表示解释能被证据支持。
@@ -65,6 +66,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
     private readonly IExactCodingKnowledgeSearch _exactSearch;
     private readonly ICodingKnowledgeSearch _bm25Search;
     private readonly IVectorSearch _vectorSearch;
+    private readonly IReranker _reranker;
     private readonly IModelGateway _modelGateway;
     private readonly IModelRouter _modelRouter;
     private readonly IJsonSchemaValidator _schemaValidator;
@@ -79,6 +81,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         IExactCodingKnowledgeSearch exactSearch,
         ICodingKnowledgeSearch bm25Search,
         IVectorSearch vectorSearch,
+        IReranker reranker,
         IModelGateway modelGateway,
         IModelRouter modelRouter,
         IJsonSchemaValidator schemaValidator,
@@ -92,6 +95,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         _exactSearch = exactSearch;
         _bm25Search = bm25Search;
         _vectorSearch = vectorSearch;
+        _reranker = reranker;
         _modelGateway = modelGateway;
         _modelRouter = modelRouter;
         _schemaValidator = schemaValidator;
@@ -540,6 +544,9 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         var recommendations = new List<CodingRecommendationRecord>();
         var recommendationEvidences = new List<RecommendationEvidenceRecord>();
 
+        // Step 8.5 的运行级标记：任一输入尝试过 Rerank 即记口径。
+        var rerankAttempted = false;
+        var rerankSucceeded = false;
         foreach (var input in selectedInputs)
         {
             var inputName = input.NormalizedText ?? input.OriginalText;
@@ -637,6 +644,43 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     NegationOrTemporalViolation: false))
                 : null;
 
+            // Step 8.5（每输入）：交叉编码 Rerank——候选池 Top-K 精排，分数入七维 Rerank 槽位（WP-B3-2）。
+            // 交叉编码看的是 query-doc 全注意力，能修正双塔向量的语义近似误差（如"心房梗死"混入）。
+            if (merged.Count > 0 && settings.RerankEnabled)
+            {
+                rerankAttempted = true;
+                if (_reranker.IsAvailable)
+                {
+                    try
+                    {
+                        var rerankCandidates = merged.Take(settings.RerankTopK).ToList();
+                        var scores = _reranker.Score(
+                            inputName,
+                            rerankCandidates.Select(item => item.Title).ToList());
+                        if (scores is not null)
+                        {
+                            for (var i = 0; i < rerankCandidates.Count && i < scores.Length; i++)
+                            {
+                                var index = merged.IndexOf(rerankCandidates[i]);
+                                if (index >= 0)
+                                {
+                                    merged[index] = rerankCandidates[i] with { RerankScore = (decimal)scores[i] };
+                                }
+                            }
+
+                            rerankSucceeded = true;
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _logger.LogWarning(
+                            ex,
+                            "Rerank 打分失败，本输入候选无精排分。TaskId={TaskId}",
+                            task.Id);
+                    }
+                }
+            }
+
             var scored = new List<(MergedCandidate Candidate, decimal Final, RuleEvaluationResult Rule, ScoreComputation Score)>();
             foreach (var candidate in merged.Take(settings.MaxCandidatesPerInput))
             {
@@ -669,7 +713,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     ExactScore: candidate.ExactScore,
                     SemanticScore: candidate.VectorScore,
                     RetrievalScore: candidate.FusedScore,
-                    RerankScore: null,
+                    RerankScore: candidate.RerankScore,
                     RuleScore: ruleResult.RuleScore,
                     EvidenceScore: evidenceScore,
                     LlmScore: ComputeLlmScore()));
@@ -745,7 +789,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     ExactScore = item.Candidate.ExactScore,
                     Bm25Score = item.Candidate.Bm25Score,
                     VectorScore = item.Candidate.VectorScore,
-                    RerankScore = null,
+                    RerankScore = item.Candidate.RerankScore,
                     RuleScore = item.Rule.RuleScore,
                     EvidenceScore = evidenceScore,
                     FinalScore = item.Final,
@@ -764,7 +808,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     ExactScore = item.Candidate.ExactScore,
                     SemanticScore = item.Candidate.VectorScore,
                     RetrievalScore = item.Candidate.FusedScore,
-                    RerankScore = null,
+                    RerankScore = item.Candidate.RerankScore,
                     RuleScore = item.Rule.RuleScore,
                     EvidenceScore = evidenceScore,
                     LlmScore = ComputeLlmScore(),
@@ -937,6 +981,11 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
             "VECTOR_RETRIEVAL",
             vectorSucceeded ? "SUCCESS" : diagnosisInputCount > 0 ? "DEGRADED" : "SUCCESS",
             vectorSucceeded || diagnosisInputCount == 0 ? null : "DEGRADED.NO_VECTOR",
+            startedAt);
+        recorder.Record(
+            "RERANK",
+            rerankSucceeded ? "SUCCESS" : rerankAttempted ? "DEGRADED" : "SUCCESS",
+            rerankSucceeded || !rerankAttempted ? null : "DEGRADED.NO_RERANK",
             startedAt);
         recorder.Record("RULE", "SUCCESS", null, startedAt);
         recorder.Record(

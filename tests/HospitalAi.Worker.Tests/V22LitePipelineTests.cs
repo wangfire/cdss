@@ -36,7 +36,7 @@ public sealed class V22LitePipelineTests
     private static readonly string[] ExpectedStages =
     [
         "QUALITY_GATE", "DOCUMENT_VERSION", "CHUNK", "FACT", "EVIDENCE",
-        "EXACT_RETRIEVAL", "BM25_RETRIEVAL", "ICD_INDEX_RETRIEVAL", "VECTOR_RETRIEVAL", "RULE", "SCORE", "POLICY", "PERSIST"
+        "EXACT_RETRIEVAL", "BM25_RETRIEVAL", "ICD_INDEX_RETRIEVAL", "VECTOR_RETRIEVAL", "RERANK", "RULE", "SCORE", "POLICY", "PERSIST"
     ];
 
     /// <summary>诊断输入走索引两段式：播种一条以诊断原文为主导词、直接给出目标编码的索引行。</summary>
@@ -104,9 +104,9 @@ public sealed class V22LitePipelineTests
         Assert.Null(candidate.VectorScore);
         Assert.Null(candidate.RerankScore);
         Assert.Null(score.SemanticScore);
-        // Trace 覆盖全部 13 个阶段（同一次运行的 CreatedAt 可能同刻，按阶段名称校验集合）。
+        // Trace 覆盖全部 14 个阶段（同一次运行的 CreatedAt 可能同刻，按阶段名称校验集合）。
         var stages = await context.PipelineTraceSteps.Select(item => item.Stage).ToListAsync();
-        Assert.Equal(13, stages.Count);
+        Assert.Equal(14, stages.Count);
         foreach (var stage in ExpectedStages)
         {
             Assert.Contains(stage, stages);
@@ -671,6 +671,107 @@ public sealed class V22LitePipelineTests
         Assert.Equal("DEGRADED", step.Status);
         Assert.Equal("DEGRADED.NO_VECTOR", step.ErrorCode);
         Assert.Empty(await context.CodingRecommendations.ToListAsync());
+    }
+
+    [Fact]
+    public void Unigram分词器_Viterbi切分与未知回退()
+    {
+        // 临时最小 tokenizer.json（Unigram 结构）：id = added_tokens 定义或 vocab 序。
+        var path = Path.Combine(Path.GetTempPath(), $"tok-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, """
+        {
+          "version": "1.0",
+          "added_tokens": [
+            {"id": 0, "content": "<s>", "special": true},
+            {"id": 2, "content": "</s>", "special": true}
+          ],
+          "model": {
+            "type": "Unigram",
+            "unk_id": 3,
+            "vocab": [
+              ["<s>", 0], ["<pad>", 0], ["</s>", 0], ["<unk>", 0],
+              ["▁急", -1.0], ["性", -2.0], ["心肌", -1.5], ["梗死", -1.2], ["▁", -3.0]
+            ],
+            "byte_fallback": false
+          }
+        }
+        """);
+        try
+        {
+            var tokenizer = new XlmRUnigramTokenizer(path, 32);
+
+            var (ids, mask) = tokenizer.Encode("急性心肌梗死");
+
+            // ▁急(4) 性(5) 心肌(6) 梗死(7)，首尾 <s>(0) </s>(2)。
+            Assert.Equal([0, 4, 5, 6, 7, 2], ids);
+            Assert.All(mask, item => Assert.Equal(1, item));
+            // "脑" 不在词表：▁(8) + <unk>(3)。
+            var (unkIds, _) = tokenizer.Encode("脑");
+            Assert.Equal([0, 8, 3, 2], unkIds);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Rerank接入_精排分写入候选与评分()
+    {
+        await using var database = await V22TestDatabase.CreateAsync();
+        var (_, _, message) = await database.SeedV22TaskAsync(FullDocumentText);
+
+        var runner = database.CreateV22Runner(
+            vectorSearch: new StubVectorSearch(true,
+            [
+                new VectorSearchHit("ICD-10", "I21.900", "急性心肌梗死", 0.72),
+                new VectorSearchHit("ICD-10", "I21.901", "急性透壁性心肌梗死", 0.66),
+            ]),
+            reranker: new StubReranker([0.91, 0.12]));
+
+        await runner.RunAsync(message);
+
+        await using var context = database.CreateContext();
+        var candidates = await context.CodingCandidates.OrderBy(item => item.Rank).ToListAsync();
+        Assert.Equal(2, candidates.Count);
+        Assert.All(candidates, item => Assert.NotNull(item.RerankScore));
+        // 精排分 0.91 给到第一条候选（列表顺序对齐）。
+        Assert.Equal(0.91m, candidates[0].RerankScore);
+        var scores = await context.RecommendationScores.ToListAsync();
+        Assert.All(scores, item => Assert.NotNull(item.RerankScore));
+        var step = await context.PipelineTraceSteps.SingleAsync(item => item.Stage == "RERANK");
+        Assert.Equal("SUCCESS", step.Status);
+    }
+
+    [Fact]
+    public async Task Rerank不可用_显式降级不伪造精排分()
+    {
+        await using var database = await V22TestDatabase.CreateAsync();
+        var (_, _, message) = await database.SeedV22TaskAsync(FullDocumentText);
+
+        // 默认 Runner 注入不可用 Reranker（生产缺模型文件的形态）。
+        await database.CreateV22Runner(vectorSearch: new StubVectorSearch(true,
+        [
+            new VectorSearchHit("ICD-10", "I21.900", "急性心肌梗死", 0.72),
+        ])).RunAsync(message);
+
+        await using var context = database.CreateContext();
+        var step = await context.PipelineTraceSteps.SingleAsync(item => item.Stage == "RERANK");
+        Assert.Equal("DEGRADED", step.Status);
+        Assert.Equal("DEGRADED.NO_RERANK", step.ErrorCode);
+        var candidates = await context.CodingCandidates.ToListAsync();
+        Assert.NotEmpty(candidates);
+        Assert.All(candidates, item => Assert.Null(item.RerankScore));
+    }
+
+    /// <summary>Rerank 桩：按传入顺序返回固定分数。</summary>
+    private sealed class StubReranker(double[] scores) : IReranker
+    {
+        public bool IsAvailable => true;
+
+        public string ModelCode => "stub";
+
+        public double[]? Score(string query, IReadOnlyList<string> documents) => scores;
     }
 
     /// <summary>向量检索桩：固定命中集合，用于验证混合召回与落库口径。</summary>

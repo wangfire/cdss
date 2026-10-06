@@ -6,9 +6,12 @@ import type {
   ImportCodeSystemResponse,
   ImportCodingRulesRequest,
   ImportCodingRulesResponse,
+  IcdIndexChildrenResponse,
+  IcdIndexDto,
+  IcdTermSynonymGroupDto,
+  IcdTermSynonymInputDto,
   MedicalCodeDto,
   PagedResult,
-  TermSynonymDto,
 } from './types-cdss'
 
 export const knowledgeApi = {
@@ -24,9 +27,25 @@ export const knowledgeApi = {
   getMedicalCodes: (params?: { page?: number; pageSize?: number; codeSystem?: string; keyword?: string }) =>
     http.get<PagedResult<MedicalCodeDto>>('/api/v1/knowledge/medical-codes', params),
 
-  getTermSynonyms: (params?: { page?: number; pageSize?: number; keyword?: string }) =>
-    http.get<PagedResult<TermSynonymDto>>('/api/v1/knowledge/term-synonyms', params),
+  getTermSynonyms: (params?: { termType?: string; keyword?: string }) =>
+    http.get<{ total: number; items: IcdTermSynonymGroupDto[] }>(
+      '/api/v1/knowledge/icd-term-synonym', params),
+
+  createTermSynonym: (data: IcdTermSynonymInputDto) =>
+    http.post<{ id: string }>('/api/v1/knowledge/icd-term-synonym', data),
+
+  updateTermSynonym: (id: string, data: IcdTermSynonymInputDto) =>
+    http.put<{ id: string }>(`/api/v1/knowledge/icd-term-synonym/${id}`, data),
+
+  deleteTermSynonym: (id: string) =>
+    http.delete<{ deleted: boolean }>(`/api/v1/knowledge/icd-term-synonym/${id}`),
 
   getCodingRules: (params?: { page?: number; pageSize?: number; codeSystem?: string }) =>
     http.get<PagedResult<CodingRuleDto>>('/api/v1/knowledge/coding-rules', params),
+
+  getIcdIndex: (params?: { page?: number; pageSize?: number; keyword?: string; leadWordStatus?: number; indexLevel?: number }) =>
+    http.get<PagedResult<IcdIndexDto>>('/api/v1/knowledge/icd-index', params),
+
+  getIcdIndexChildren: (params: { parentSeqNo?: number; leadWordStatus?: number; offset?: number; limit?: number }) =>
+    http.get<IcdIndexChildrenResponse>('/api/v1/knowledge/icd-index/children', params),
 }

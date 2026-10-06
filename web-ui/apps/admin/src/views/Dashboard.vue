@@ -120,7 +120,30 @@ const greeting = computed(() => {
 /* ============== 真实 CDSS 数据 ============== */
 const loading = ref(true)
 const healthStatus = ref<string>('unknown')
-const serviceChecks = ref<Record<string, { status: string; latencyMs?: number }>>({})
+const serviceChecks = ref<Record<string, { status: string; error?: string | null }>>({})
+
+// readiness 契约：healthy / degraded / unhealthy；网络失败时为 unknown
+const HEALTH_LABEL_KEYS: Record<string, string> = {
+  healthy: 'dashboard.operational',
+  degraded: 'dashboard.degraded',
+  unhealthy: 'dashboard.unhealthy',
+  unknown: 'dashboard.statusUnknown',
+}
+const healthLabel = (status: string) => {
+  const key = HEALTH_LABEL_KEYS[status.toLowerCase()]
+  return key ? t(key) : status
+}
+const isHealthy = computed(() => healthStatus.value.toLowerCase() === 'healthy')
+const DEPENDENCY_LABEL_KEYS: Record<string, string> = {
+  sqlServer: 'dashboard.database',
+  redis: 'dashboard.cacheService',
+  rabbitMq: 'dashboard.messageQueue',
+  elasticsearch: 'dashboard.searchEngine',
+}
+const dependencyLabel = (name: string) => {
+  const key = DEPENDENCY_LABEL_KEYS[name]
+  return key ? t(key) : name
+}
 const tasks = ref<WorkbenchTaskResponse[]>([])
 const tasksLoading = ref(true)
 
@@ -190,7 +213,7 @@ async function loadData() {
     ])
     if (health.status === 'fulfilled') {
       healthStatus.value = health.value.status
-      serviceChecks.value = health.value.checks || {}
+      serviceChecks.value = health.value.dependencies || {}
     }
     if (taskList.status === 'fulfilled') {
       tasks.value = taskList.value
@@ -326,8 +349,8 @@ const quickActions = [
                 <span class="text-sm font-medium text-muted-foreground">{{ t('dashboard.systemStatus') }}</span>
               </div>
               <div class="text-2xl font-bold tracking-tight mb-1">
-                <Badge :variant="healthStatus === 'Healthy' ? 'default' : 'destructive'" class="text-sm">
-                  {{ healthStatus === 'Healthy' ? t('dashboard.operational') : healthStatus }}
+                <Badge :variant="isHealthy ? 'default' : 'destructive'" class="text-sm">
+                  {{ healthLabel(healthStatus) }}
                 </Badge>
               </div>
               <p class="text-xs text-muted-foreground truncate">
@@ -369,9 +392,9 @@ const quickActions = [
           <CardHeader class="pb-4">
             <div class="flex items-center justify-between">
               <CardTitle class="text-base">{{ t('dashboard.systemStatus') }}</CardTitle>
-              <Badge variant="outline" class="text-emerald-500 border-emerald-500/20 bg-emerald-500/10">
-                <div class="w-1.5 h-1.5 bg-emerald-500 mr-1.5 animate-pulse rounded-full" />
-                {{ healthStatus === 'Healthy' ? t('dashboard.operational') : healthStatus }}
+              <Badge variant="outline" :class="isHealthy ? 'text-emerald-500 border-emerald-500/20 bg-emerald-500/10' : 'text-red-500 border-red-500/20 bg-red-500/10'">
+                <div class="w-1.5 h-1.5 mr-1.5 animate-pulse rounded-full" :class="isHealthy ? 'bg-emerald-500' : 'bg-red-500'" />
+                {{ healthLabel(healthStatus) }}
               </Badge>
             </div>
           </CardHeader>
@@ -379,10 +402,10 @@ const quickActions = [
             <div class="space-y-3">
               <div v-for="(check, name) in serviceChecks" :key="name" class="flex items-center justify-between p-3 bg-muted/50 hover:bg-muted transition-colors rounded-lg">
                 <div class="flex items-center gap-3">
-                  <div class="w-2 h-2 rounded-full" :class="check.status === 'Healthy' ? 'bg-emerald-500' : 'bg-red-500'" />
-                  <span class="text-sm font-medium">{{ name }}</span>
+                  <div class="w-2 h-2 rounded-full" :class="check.status === 'healthy' ? 'bg-emerald-500' : check.status === 'disabled' ? 'bg-slate-400' : 'bg-red-500'" />
+                  <span class="text-sm font-medium">{{ dependencyLabel(String(name)) }}</span>
                 </div>
-                <span class="text-xs text-muted-foreground">{{ check.status }}</span>
+                <span class="text-xs text-muted-foreground" :title="check.error || undefined">{{ healthLabel(check.status) }}</span>
               </div>
               <div v-if="Object.keys(serviceChecks).length === 0" class="text-sm text-muted-foreground text-center py-4">
                 {{ t('common.loading') }}

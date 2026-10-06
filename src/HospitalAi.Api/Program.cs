@@ -2,6 +2,7 @@ using HospitalAi.Api;
 using HospitalAi.Api.Observability;
 using HospitalAi.Api.Security;
 using HospitalAi.Application.Abstractions;
+using HospitalAi.Application.Common;
 using HospitalAi.Application.Security;
 using HospitalAi.Contracts.CodingTasks;
 using HospitalAi.Contracts.CodingKnowledge;
@@ -201,9 +202,11 @@ app.MapPost(
     async (
         ImportCodeSystemRequest request,
         ICodingKnowledgeService service,
+        HospitalAi.Application.Coding.IcdIndex.IIcdDictionarySource dictionarySource,
         CancellationToken cancellationToken) =>
     {
         var response = await service.ImportCodeSystemAsync(request, cancellationToken);
+        dictionarySource.Invalidate();
         return Results.Ok(ApiEnvelope.Create(response));
     });
 
@@ -212,9 +215,12 @@ app.MapPost(
     async (
         ImportCodingRulesRequest request,
         ICodingKnowledgeService service,
+        HospitalAi.Application.Coding.Matching.IIcdTermSynonymSource synonymSource,
         CancellationToken cancellationToken) =>
     {
         var response = await service.ImportCodingRulesAsync(request, cancellationToken);
+        // 同义词同时写入 icd_term_synonym（索引链路词库），导入后立即生效。
+        synonymSource.Invalidate();
         return Results.Ok(ApiEnvelope.Create(response));
     });
 
@@ -311,6 +317,410 @@ app.MapGet(
             .ToListAsync(cancellationToken);
 
         return Results.Ok(ApiEnvelope.Create(new { total, page = pageNum, pageSize = size, items }));
+    });
+
+// ICD 索引库导入（按序号 upsert，全列保留）。
+app.MapPost(
+    "/api/v1/icd-index/import",
+    async (
+        ImportIcdIndexRequest request,
+        HospitalAiDbContext db,
+        HospitalAi.Application.Coding.IcdIndex.IIcdIndexSource indexSource,
+        CancellationToken cancellationToken) =>
+    {
+        var now = DateTimeOffset.UtcNow;
+        var seqNos = request.Items.Select(item => item.SeqNo).ToArray();
+        var existing = await db.IcdIndexes
+            .Where(item => seqNos.Contains(item.SeqNo))
+            .ToDictionaryAsync(item => item.SeqNo, cancellationToken);
+
+        var imported = 0;
+        var updated = 0;
+        foreach (var item in request.Items)
+        {
+            if (existing.TryGetValue(item.SeqNo, out var record))
+            {
+                record.RawName = item.RawName;
+                record.RawNameEn = item.RawNameEn;
+                record.IndexName = item.IndexName;
+                record.IndexCode = item.IndexCode;
+                record.IndexLevel = item.IndexLevel;
+                record.ParentSeqNo = item.ParentSeqNo;
+                record.FullIndexName = item.FullIndexName;
+                record.LeadWordStatus = item.LeadWordStatus;
+                record.UpdatedAt = now;
+                updated++;
+            }
+            else
+            {
+                db.IcdIndexes.Add(new IcdIndexRecord
+                {
+                    Id = Guid.NewGuid(),
+                    SeqNo = item.SeqNo,
+                    RawName = item.RawName,
+                    RawNameEn = item.RawNameEn,
+                    IndexName = item.IndexName,
+                    IndexCode = item.IndexCode,
+                    IndexLevel = item.IndexLevel,
+                    ParentSeqNo = item.ParentSeqNo,
+                    FullIndexName = item.FullIndexName,
+                    LeadWordStatus = item.LeadWordStatus,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                });
+                imported++;
+            }
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        indexSource.Invalidate();
+        return Results.Ok(ApiEnvelope.Create(
+            new ImportIcdIndexResponse(imported, updated)));
+    });
+
+// 查询 ICD 索引库（leadWordStatus：0=有效，1=无效，缺省返回全部）。
+app.MapGet(
+    "/api/v1/knowledge/icd-index",
+    async (
+        HospitalAiDbContext db,
+        int? page,
+        int? pageSize,
+        string? keyword,
+        int? leadWordStatus,
+        int? indexLevel,
+        CancellationToken cancellationToken) =>
+    {
+        var query = db.IcdIndexes.AsQueryable();
+        if (!string.IsNullOrEmpty(keyword))
+        {
+            query = query.Where(item =>
+                item.RawName.Contains(keyword)
+                || item.IndexName.Contains(keyword)
+                || item.FullIndexName.Contains(keyword)
+                || (item.IndexCode != null && item.IndexCode.Contains(keyword))
+                || (item.RawNameEn != null && item.RawNameEn.Contains(keyword)));
+        }
+        if (leadWordStatus is int status)
+            query = query.Where(item => item.LeadWordStatus == status);
+        if (indexLevel is int level)
+            query = query.Where(item => item.IndexLevel == level);
+
+        var total = await query.CountAsync(cancellationToken);
+        var pageNum = page ?? 1;
+        var size = Math.Min(pageSize ?? 20, 200);
+        var items = await query
+            .OrderBy(item => item.SeqNo)
+            .Skip((pageNum - 1) * size)
+            .Take(size)
+            .Select(item => new
+            {
+                item.Id,
+                item.SeqNo,
+                item.RawName,
+                item.RawNameEn,
+                item.IndexName,
+                item.IndexCode,
+                item.IndexLevel,
+                item.ParentSeqNo,
+                item.FullIndexName,
+                item.LeadWordStatus,
+            })
+            .ToListAsync(cancellationToken);
+
+        return Results.Ok(ApiEnvelope.Create(new { total, page = pageNum, pageSize = size, items }));
+    });
+
+// ICD 索引库节点树：按父序号取直接子节点，并标记 each 节点是否还有下一级。
+app.MapGet(
+    "/api/v1/knowledge/icd-index/children",
+    async (
+        HospitalAiDbContext db,
+        int? parentSeqNo,
+        int? leadWordStatus,
+        int? offset,
+        int? limit,
+        CancellationToken cancellationToken) =>
+    {
+        var parentId = parentSeqNo ?? 0;
+        var take = Math.Min(limit ?? 500, 1000);
+        var query = db.IcdIndexes.Where(item => item.ParentSeqNo == parentId);
+        if (leadWordStatus is int status)
+            query = query.Where(item => item.LeadWordStatus == status);
+
+        var total = await query.CountAsync(cancellationToken);
+        var children = await query
+            .OrderBy(item => item.SeqNo)
+            .Skip(offset ?? 0)
+            .Take(take)
+            .Select(item => new
+            {
+                item.Id,
+                item.SeqNo,
+                item.RawName,
+                item.RawNameEn,
+                item.IndexName,
+                item.IndexCode,
+                item.IndexLevel,
+                item.ParentSeqNo,
+                item.FullIndexName,
+                item.LeadWordStatus,
+            })
+            .ToListAsync(cancellationToken);
+
+        var seqNos = children.Select(item => item.SeqNo).ToArray();
+        var parentsWithChildren = await db.IcdIndexes
+            .Where(item => seqNos.Contains(item.ParentSeqNo))
+            .Select(item => item.ParentSeqNo)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        var parentSet = parentsWithChildren.ToHashSet();
+
+        var items = children.Select(item => new
+        {
+            item.Id,
+            item.SeqNo,
+            item.RawName,
+            item.RawNameEn,
+            item.IndexName,
+            item.IndexCode,
+            item.IndexLevel,
+            item.ParentSeqNo,
+            item.FullIndexName,
+            item.LeadWordStatus,
+            hasChildren = parentSet.Contains(item.SeqNo),
+        });
+
+        return Results.Ok(ApiEnvelope.Create(new { parentSeqNo = parentId, total, items }));
+    });
+
+app.MapPost(
+    "/api/v1/icd-term-synonym/import",
+    async (
+        ImportTermSynonymRequest request,
+        HospitalAiDbContext db,
+        HospitalAi.Application.Coding.Matching.IIcdTermSynonymSource synonymSource,
+        CancellationToken cancellationToken) =>
+    {
+        var now = DateTimeOffset.UtcNow;
+        var pairs = request.Items
+            .Where(item => !string.IsNullOrWhiteSpace(item.CanonicalTerm))
+            .SelectMany(item => item.Variants
+                .Where(variant => !string.IsNullOrWhiteSpace(variant))
+                .Select(variant => new { item.TermType, Canonical = item.CanonicalTerm.Trim(), Variant = variant.Trim() }))
+            .GroupBy(pair => new { pair.TermType, pair.Variant })
+            .Select(group => group.First())
+            .ToList();
+
+        var typeKeys = pairs.Select(pair => pair.TermType).Distinct().ToArray();
+        var variantKeys = pairs.Select(pair => pair.Variant).ToArray();
+        var existing = await db.IcdTermSynonyms
+            .Where(item => typeKeys.Contains(item.TermType) && variantKeys.Contains(item.VariantTerm))
+            .ToListAsync(cancellationToken);
+        var existingMap = existing.ToDictionary(item => (item.TermType, item.VariantTerm));
+
+        var imported = 0;
+        var updated = 0;
+        foreach (var pair in pairs)
+        {
+            if (existingMap.TryGetValue((pair.TermType, pair.Variant), out var record))
+            {
+                if (!record.IsEnabled || record.CanonicalTerm != pair.Canonical)
+                {
+                    record.CanonicalTerm = pair.Canonical;
+                    record.IsEnabled = true;
+                    record.UpdatedAt = now;
+                    updated++;
+                }
+            }
+            else
+            {
+                db.IcdTermSynonyms.Add(new IcdTermSynonymRecord
+                {
+                    Id = Guid.NewGuid(),
+                    TermType = pair.TermType,
+                    CanonicalTerm = pair.Canonical,
+                    VariantTerm = pair.Variant,
+                    IsEnabled = true,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                });
+                imported++;
+            }
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        synonymSource.Invalidate();
+        return Results.Ok(ApiEnvelope.Create(new ImportTermSynonymResponse(imported, updated)));
+    });
+
+// 术语同义词组查询（按 类型+规范词 聚合展示，停用行一并返回供页面维护）。
+app.MapGet(
+    "/api/v1/knowledge/icd-term-synonym",
+    async (
+        string? termType,
+        string? keyword,
+        HospitalAiDbContext db,
+        CancellationToken cancellationToken) =>
+    {
+        var query = db.IcdTermSynonyms.AsQueryable();
+        if (!string.IsNullOrEmpty(termType))
+            query = query.Where(item => item.TermType == termType);
+        if (!string.IsNullOrEmpty(keyword))
+            query = query.Where(item =>
+                item.CanonicalTerm.Contains(keyword) || item.VariantTerm.Contains(keyword));
+
+        var rows = await query
+            .OrderBy(item => item.TermType)
+            .ThenBy(item => item.CanonicalTerm)
+            .ThenBy(item => item.VariantTerm)
+            .ToListAsync(cancellationToken);
+
+        var groups = rows
+            .GroupBy(item => new { item.TermType, item.CanonicalTerm })
+            .Select(group => new
+            {
+                termType = group.Key.TermType,
+                canonicalTerm = group.Key.CanonicalTerm,
+                variants = group
+                    .Select(item => new { item.Id, item.VariantTerm, item.IsEnabled })
+                    .ToList(),
+            })
+            .ToList();
+
+        return Results.Ok(ApiEnvelope.Create(new { total = groups.Count, items = groups }));
+    });
+
+// 单条同义词新增：在等价类里补一个等同词（类内任意两词在匹配时可互换）。
+app.MapPost(
+    "/api/v1/knowledge/icd-term-synonym",
+    async (
+        IcdTermSynonymInput input,
+        HospitalAiDbContext db,
+        HospitalAi.Application.Coding.Matching.IIcdTermSynonymSource synonymSource,
+        CancellationToken cancellationToken) =>
+    {
+        var termType = (input.TermType ?? string.Empty).Trim().ToUpperInvariant();
+        var canonical = (input.CanonicalTerm ?? string.Empty).Trim();
+        var variant = (input.VariantTerm ?? string.Empty).Trim();
+        if (termType != HospitalAi.Application.Coding.Matching.TermSynonymTypes.Diagnosis
+            && termType != HospitalAi.Application.Coding.Matching.TermSynonymTypes.Procedure)
+        {
+            throw new ValidationException("termType 只能是 DIAGNOSIS（诊断）或 PROCEDURE（手术）。");
+        }
+
+        if (canonical.Length == 0 || variant.Length == 0)
+        {
+            throw new ValidationException("规范词与等同词都不能为空。");
+        }
+
+        if (string.Equals(canonical, variant, StringComparison.Ordinal))
+        {
+            throw new ValidationException("等同词与规范词相同，无需登记。");
+        }
+
+        // (term_type, variant_term) 是库内唯一索引：一个等同词只能归属一个等价类。
+        if (await db.IcdTermSynonyms.AnyAsync(
+                item => item.TermType == termType && item.VariantTerm == variant,
+                cancellationToken))
+        {
+            throw new ValidationException($"「{variant}」在 {termType} 通道已登记，请直接编辑该条或换用其它规范词。");
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var record = new IcdTermSynonymRecord
+        {
+            Id = Guid.NewGuid(),
+            TermType = termType,
+            CanonicalTerm = canonical,
+            VariantTerm = variant,
+            IsEnabled = input.IsEnabled ?? true,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+        db.IcdTermSynonyms.Add(record);
+        await db.SaveChangesAsync(cancellationToken);
+        synonymSource.Invalidate();
+        return Results.Ok(ApiEnvelope.Create(new { id = record.Id }));
+    });
+
+// 单条同义词修改：改等同词/规范词、换通道或启停（null 字段沿用原值）。
+app.MapPut(
+    "/api/v1/knowledge/icd-term-synonym/{id:guid}",
+    async (
+        Guid id,
+        IcdTermSynonymInput input,
+        HospitalAiDbContext db,
+        HospitalAi.Application.Coding.Matching.IIcdTermSynonymSource synonymSource,
+        CancellationToken cancellationToken) =>
+    {
+        var record = await db.IcdTermSynonyms.FirstOrDefaultAsync(
+            item => item.Id == id, cancellationToken);
+        if (record is null)
+        {
+            return Results.NotFound();
+        }
+
+        var termType = string.IsNullOrWhiteSpace(input.TermType)
+            ? record.TermType
+            : input.TermType.Trim().ToUpperInvariant();
+        if (termType != HospitalAi.Application.Coding.Matching.TermSynonymTypes.Diagnosis
+            && termType != HospitalAi.Application.Coding.Matching.TermSynonymTypes.Procedure)
+        {
+            throw new ValidationException("termType 只能是 DIAGNOSIS（诊断）或 PROCEDURE（手术）。");
+        }
+
+        var canonical = string.IsNullOrWhiteSpace(input.CanonicalTerm)
+            ? record.CanonicalTerm
+            : input.CanonicalTerm.Trim();
+        var variant = string.IsNullOrWhiteSpace(input.VariantTerm)
+            ? record.VariantTerm
+            : input.VariantTerm.Trim();
+        if (canonical.Length == 0 || variant.Length == 0)
+        {
+            throw new ValidationException("规范词与等同词都不能为空。");
+        }
+
+        if (string.Equals(canonical, variant, StringComparison.Ordinal))
+        {
+            throw new ValidationException("等同词与规范词相同，无需登记。");
+        }
+
+        if (await db.IcdTermSynonyms.AnyAsync(
+                item => item.Id != id && item.TermType == termType && item.VariantTerm == variant,
+                cancellationToken))
+        {
+            throw new ValidationException($"「{variant}」在 {termType} 通道已登记，一个等同词只能归属一个等价类。");
+        }
+
+        record.TermType = termType;
+        record.CanonicalTerm = canonical;
+        record.VariantTerm = variant;
+        record.IsEnabled = input.IsEnabled ?? record.IsEnabled;
+        record.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+        synonymSource.Invalidate();
+        return Results.Ok(ApiEnvelope.Create(new { id = record.Id, updated = true }));
+    });
+
+app.MapDelete(
+    "/api/v1/knowledge/icd-term-synonym/{id:guid}",
+    async (
+        Guid id,
+        HospitalAiDbContext db,
+        HospitalAi.Application.Coding.Matching.IIcdTermSynonymSource synonymSource,
+        CancellationToken cancellationToken) =>
+    {
+        var record = await db.IcdTermSynonyms.FirstOrDefaultAsync(
+            item => item.Id == id, cancellationToken);
+        if (record is null)
+        {
+            return Results.NotFound();
+        }
+
+        db.IcdTermSynonyms.Remove(record);
+        await db.SaveChangesAsync(cancellationToken);
+        synonymSource.Invalidate();
+        return Results.Ok(ApiEnvelope.Create(new { deleted = true }));
     });
 
 app.MapGet(

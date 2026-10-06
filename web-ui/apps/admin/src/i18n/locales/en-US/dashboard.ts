@@ -44,6 +44,10 @@ export default {
   // System status
   systemStatus: 'System Status',
   operational: 'Operational',
+  degraded: 'Degraded',
+  unhealthy: 'Unhealthy',
+  statusUnknown: 'Unknown',
+  searchEngine: 'Search Engine',
   apiService: 'API Service',
   database: 'Database',
   cacheService: 'Cache Service',

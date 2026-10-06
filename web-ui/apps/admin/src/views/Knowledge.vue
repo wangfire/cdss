@@ -2,25 +2,29 @@
 import {
   BookOpen,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Database,
   Download,
   FileJson,
   Loader2,
+  Plus,
   Search,
   Upload,
+  X,
 } from 'lucide-vue-next'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ApiError, knowledgeApi } from '@/api'
 import type {
   CodeSystemDto,
   CodingRuleDto,
+  IcdIndexDto,
+  IcdTermSynonymGroupDto,
   ImportCodeSystemResponse,
   ImportCodingRulesResponse,
   MedicalCodeDto,
-  TermSynonymDto,
 } from '@/api'
 import {
   Badge,
@@ -30,6 +34,13 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   Input,
   Label,
   Select,
@@ -38,6 +49,7 @@ import {
   SelectTrigger,
   SelectValue,
   Separator,
+  Switch,
   Tabs,
   TabsContent,
   TabsList,
@@ -106,7 +118,7 @@ function onMedicalCodeFilterChange() {
 }
 
 /* ============== 数据浏览 — 同义词 ============== */
-const synonyms = ref<TermSynonymDto[]>([])
+const synonyms = ref<IcdTermSynonymGroupDto[]>([])
 const synonymsTotal = ref(0)
 const synonymsPage = ref(1)
 const synonymsPageSize = 20
@@ -117,12 +129,21 @@ const synonymsTotalPages = computed(() =>
   Math.max(1, Math.ceil(synonymsTotal.value / synonymsPageSize)),
 )
 
+const pagedSynonyms = computed(() => {
+  const start = (synonymsPage.value - 1) * synonymsPageSize
+  return synonyms.value.slice(start, start + synonymsPageSize)
+})
+
+function synonymTermTypeLabel(termType: string) {
+  return termType === 'PROCEDURE'
+    ? t('knowledge.termTypeProcedure')
+    : t('knowledge.termTypeDiagnosis')
+}
+
 async function loadSynonyms() {
   synonymsLoading.value = true
   try {
     const result = await knowledgeApi.getTermSynonyms({
-      page: synonymsPage.value,
-      pageSize: synonymsPageSize,
       keyword: synonymsKeyword.value || undefined,
     })
     synonyms.value = result.items
@@ -138,6 +159,161 @@ function onSynonymSearchInput() {
     synonymsPage.value = 1
     loadSynonyms()
   }, 400)
+}
+
+/* ============== 同义词组增删改（单条记录粒度） ============== */
+interface SynonymMemberDraft {
+  /** 库内记录 id；为空表示新增的等同词。 */
+  id: string | null
+  variantTerm: string
+  isEnabled: boolean
+}
+
+const synonymDialogOpen = ref(false)
+const synonymSaving = ref(false)
+const synonymDraft = ref<{
+  /** 编辑中的组原始通道+规范词，用于判断是否需要逐条 PUT 重指向。 */
+  originalTermType: string
+  originalCanonical: string
+  termType: string
+  canonicalTerm: string
+  members: SynonymMemberDraft[]
+} | null>(null)
+
+function openSynonymCreate() {
+  synonymDraft.value = {
+    originalTermType: 'DIAGNOSIS',
+    originalCanonical: '',
+    termType: 'DIAGNOSIS',
+    canonicalTerm: '',
+    members: [{ id: null, variantTerm: '', isEnabled: true }],
+  }
+  synonymDialogOpen.value = true
+}
+
+function openSynonymEdit(group: IcdTermSynonymGroupDto) {
+  synonymDraft.value = {
+    originalTermType: group.termType,
+    originalCanonical: group.canonicalTerm,
+    termType: group.termType,
+    canonicalTerm: group.canonicalTerm,
+    members: group.variants.map(variant => ({
+      id: variant.id,
+      variantTerm: variant.variantTerm,
+      isEnabled: variant.isEnabled,
+    })),
+  }
+  synonymDialogOpen.value = true
+}
+
+function addSynonymMember() {
+  synonymDraft.value?.members.push({ id: null, variantTerm: '', isEnabled: true })
+}
+
+function removeSynonymMember(index: number) {
+  const draft = synonymDraft.value
+  if (!draft) return
+  draft.members.splice(index, 1)
+  if (draft.members.length === 0) {
+    draft.members.push({ id: null, variantTerm: '', isEnabled: true })
+  }
+}
+
+/** 等价类要求组内至少有一个与规范词不同的等同词。 */
+function validateSynonymDraft(draft: NonNullable<typeof synonymDraft.value>) {
+  const canonical = draft.canonicalTerm.trim()
+  const members = draft.members.map(member => member.variantTerm.trim())
+  if (!canonical) return t('knowledge.canonicalTermRequired')
+  if (members.length === 0 || members.every(member => !member)) {
+    return t('knowledge.atLeastOneVariantRequired')
+  }
+  if (members.some(member => member === canonical)) {
+    return t('knowledge.variantEqualsCanonical')
+  }
+  const distinct = new Set(members.filter(Boolean))
+  if (distinct.size !== members.filter(Boolean).length) {
+    return t('knowledge.duplicateVariantTerm')
+  }
+  return ''
+}
+
+async function saveSynonymDraft() {
+  const draft = synonymDraft.value
+  if (!draft) return
+  const message = validateSynonymDraft(draft)
+  if (message) {
+    toast.error(message)
+    return
+  }
+
+  const canonical = draft.canonicalTerm.trim()
+  const keptIds = new Set(
+    draft.members
+      .filter(member => member.id)
+      .map(member => member.id as string),
+  )
+  synonymSaving.value = true
+  try {
+    // 1) 组内被移出的等同词逐条删除（一行就是一条等同边）。
+    if (draft.originalCanonical) {
+      const removed = synonyms.value
+        .flatMap(group => group.variants.map(variant => ({ group, variant })))
+        .filter(({ group, variant }) =>
+          group.termType === draft.originalTermType
+          && group.canonicalTerm === draft.originalCanonical
+          && !keptIds.has(variant.id))
+        .map(({ variant }) => variant.id)
+      for (const id of removed) {
+        await knowledgeApi.deleteTermSynonym(id)
+      }
+    }
+
+    // 2) 已有记录就地改词/改组/启停，新记录逐条新增。
+    for (const member of draft.members) {
+      const variantTerm = member.variantTerm.trim()
+      if (!variantTerm) continue
+      const payload = {
+        termType: draft.termType,
+        canonicalTerm: canonical,
+        variantTerm,
+        isEnabled: member.isEnabled,
+      }
+      if (member.id) {
+        await knowledgeApi.updateTermSynonym(member.id, payload)
+      } else {
+        await knowledgeApi.createTermSynonym(payload)
+      }
+    }
+
+    synonymDialogOpen.value = false
+    toast.success(t('knowledge.synonymSaved'))
+    synonymsPage.value = 1
+    loadSynonyms()
+  } catch (error) {
+    toast.error(error instanceof ApiError ? error.message : t('knowledge.saveFailed'))
+  } finally {
+    synonymSaving.value = false
+  }
+}
+
+async function deleteSynonymGroup(group: IcdTermSynonymGroupDto) {
+  if (!window.confirm(t('knowledge.deleteGroupConfirm', {
+    canonical: group.canonicalTerm,
+    count: group.variants.length,
+  }))) {
+    return
+  }
+
+  try {
+    for (const variant of group.variants) {
+      await knowledgeApi.deleteTermSynonym(variant.id)
+    }
+    toast.success(t('knowledge.synonymDeleted'))
+    synonymsPage.value = 1
+    loadSynonyms()
+  } catch (error) {
+    toast.error(error instanceof ApiError ? error.message : t('knowledge.deleteFailed'))
+  }
 }
 
 /* ============== 数据浏览 — 编码规则 ============== */
@@ -171,6 +347,187 @@ function onCodingRuleFilterChange() {
   loadCodingRules()
 }
 
+/* ============== 数据浏览 — ICD 索引库（节点树 + 关键词搜索） ============== */
+interface IcdIndexTreeNode extends IcdIndexDto {
+  hasChildren: boolean
+}
+interface IcdIndexVisibleRow {
+  node: IcdIndexTreeNode
+  depth: number
+}
+
+const icdIndexKeyword = ref('')
+const icdIndexStatusFilter = ref('__ALL__')
+const icdIndexIsSearch = computed(() => icdIndexKeyword.value.trim() !== '')
+
+/* 表格固定为视口剩余高度，只在表格容器内滚动，避免外层页面出现滚动条 */
+const icdIndexTableWrap = ref<HTMLElement | null>(null)
+const icdIndexTableHeight = ref(480)
+
+async function updateIcdIndexTableHeight() {
+  const el = icdIndexTableWrap.value
+  if (!el) return
+  let panel: HTMLElement | null = el.parentElement
+  while (panel && !/(auto|scroll)/.test(getComputedStyle(panel).overflowY))
+    panel = panel.parentElement
+  panel?.scrollTo({ top: 0 })
+  // ICD 卡片带负下外边距抵掉面板下边距与页面内边距，外层为固定高度 flex 滚动区，
+  // 因此直接把表格增高到卡片底缘距视口底约 10px，超高部分只会在面板内滚动
+  const card = el.parentElement?.parentElement?.parentElement ?? null
+  for (let i = 0; i < 4; i++) {
+    const rect = (card ?? el).getBoundingClientRect()
+    const gap = window.innerHeight - rect.bottom
+    if (gap > 12) {
+      icdIndexTableHeight.value += Math.floor(gap - 10)
+      await nextTick()
+    } else if (gap < 6) {
+      icdIndexTableHeight.value = Math.max(120, icdIndexTableHeight.value + Math.ceil(gap - 10))
+      await nextTick()
+    } else {
+      break
+    }
+  }
+}
+
+watch(icdIndexTableWrap, () => {
+  nextTick(updateIcdIndexTableHeight)
+  // 数据渲染完成后浏览器可能仍在稳定布局，延时再量一次避免高度偏小
+  setTimeout(updateIcdIndexTableHeight, 150)
+})
+
+function icdIndexStatusParam() {
+  return icdIndexStatusFilter.value !== '__ALL__' ? Number(icdIndexStatusFilter.value) : undefined
+}
+
+/* 树模式：根节点分页加载，子节点按父序号懒加载 */
+const icdIndexTreeLoading = ref(false)
+const icdIndexMoreLoading = ref(false)
+const icdIndexRoots = ref<IcdIndexTreeNode[]>([])
+const icdIndexRootTotal = ref(0)
+const icdIndexRootPageSize = 200
+const icdIndexChildrenMap = ref<Record<number, IcdIndexTreeNode[]>>({})
+const icdIndexExpanded = ref<Record<number, boolean>>({})
+const icdIndexNodeLoading = ref<Record<number, boolean>>({})
+
+const icdIndexVisibleRows = computed<IcdIndexVisibleRow[]>(() => {
+  const rows: IcdIndexVisibleRow[] = []
+  const walk = (nodes: IcdIndexTreeNode[], depth: number) => {
+    for (const node of nodes) {
+      rows.push({ node, depth })
+      if (icdIndexExpanded.value[node.seqNo])
+        walk(icdIndexChildrenMap.value[node.seqNo] ?? [], depth + 1)
+    }
+  }
+  walk(icdIndexRoots.value, 0)
+  return rows
+})
+
+async function loadIcdIndexTree() {
+  icdIndexTreeLoading.value = true
+  try {
+    const result = await knowledgeApi.getIcdIndexChildren({
+      parentSeqNo: 0,
+      leadWordStatus: icdIndexStatusParam(),
+      offset: 0,
+      limit: icdIndexRootPageSize,
+    })
+    icdIndexRoots.value = result.items
+    icdIndexRootTotal.value = result.total
+    icdIndexChildrenMap.value = {}
+    icdIndexExpanded.value = {}
+    icdIndexNodeLoading.value = {}
+  } catch { toast.error(t('knowledge.loadFailed')) }
+  finally { icdIndexTreeLoading.value = false }
+}
+
+async function loadMoreIcdIndexRoots() {
+  if (icdIndexMoreLoading.value) return
+  icdIndexMoreLoading.value = true
+  try {
+    const result = await knowledgeApi.getIcdIndexChildren({
+      parentSeqNo: 0,
+      leadWordStatus: icdIndexStatusParam(),
+      offset: icdIndexRoots.value.length,
+      limit: icdIndexRootPageSize,
+    })
+    icdIndexRoots.value = [...icdIndexRoots.value, ...result.items]
+    icdIndexRootTotal.value = result.total
+  } catch { toast.error(t('knowledge.loadFailed')) }
+  finally { icdIndexMoreLoading.value = false }
+}
+
+async function toggleIcdIndexNode(node: IcdIndexTreeNode) {
+  if (icdIndexExpanded.value[node.seqNo]) {
+    icdIndexExpanded.value = { ...icdIndexExpanded.value, [node.seqNo]: false }
+    return
+  }
+  if (!icdIndexChildrenMap.value[node.seqNo]) {
+    icdIndexNodeLoading.value = { ...icdIndexNodeLoading.value, [node.seqNo]: true }
+    try {
+      const result = await knowledgeApi.getIcdIndexChildren({
+        parentSeqNo: node.seqNo,
+        leadWordStatus: icdIndexStatusParam(),
+        limit: 1000,
+      })
+      icdIndexChildrenMap.value = { ...icdIndexChildrenMap.value, [node.seqNo]: result.items }
+    } catch { toast.error(t('knowledge.loadFailed')) }
+    finally {
+      const next = { ...icdIndexNodeLoading.value }
+      delete next[node.seqNo]
+      icdIndexNodeLoading.value = next
+    }
+  }
+  icdIndexExpanded.value = { ...icdIndexExpanded.value, [node.seqNo]: true }
+}
+
+/* 搜索模式：关键词命中时按平铺分页结果展示 */
+const icdIndex = ref<IcdIndexDto[]>([])
+const icdIndexTotal = ref(0)
+const icdIndexPage = ref(1)
+const icdIndexPageSize = 20
+const icdIndexLoading = ref(false)
+
+const icdIndexTotalPages = computed(() =>
+  Math.max(1, Math.ceil(icdIndexTotal.value / icdIndexPageSize)),
+)
+
+async function loadIcdIndexSearch() {
+  icdIndexLoading.value = true
+  try {
+    const result = await knowledgeApi.getIcdIndex({
+      page: icdIndexPage.value,
+      pageSize: icdIndexPageSize,
+      keyword: icdIndexKeyword.value.trim(),
+      leadWordStatus: icdIndexStatusParam(),
+    })
+    icdIndex.value = result.items
+    icdIndexTotal.value = result.total
+  } catch { toast.error(t('knowledge.loadFailed')) }
+  finally { icdIndexLoading.value = false }
+}
+
+let icdIndexSearchTimer: ReturnType<typeof setTimeout> | null = null
+function onIcdIndexSearchInput() {
+  if (icdIndexSearchTimer) clearTimeout(icdIndexSearchTimer)
+  icdIndexSearchTimer = setTimeout(() => {
+    if (icdIndexIsSearch.value) {
+      icdIndexPage.value = 1
+      loadIcdIndexSearch()
+    } else {
+      icdIndex.value = []
+    }
+  }, 400)
+}
+
+function onIcdIndexStatusFilterChange() {
+  if (icdIndexIsSearch.value) {
+    icdIndexPage.value = 1
+    loadIcdIndexSearch()
+  } else {
+    loadIcdIndexTree()
+  }
+}
+
 /* ============== 浏览 Tab 切换加载 ============== */
 const browseTab = ref('code-systems')
 
@@ -179,10 +536,17 @@ watch(browseTab, (tab) => {
   if (tab === 'medical-codes' && medicalCodes.value.length === 0) loadMedicalCodes()
   if (tab === 'synonyms' && synonyms.value.length === 0) loadSynonyms()
   if (tab === 'rules' && codingRules.value.length === 0) loadCodingRules()
+  if (tab === 'icd-index' && icdIndexRoots.value.length === 0) loadIcdIndexTree()
+  if (tab === 'icd-index') nextTick(updateIcdIndexTableHeight)
 })
 
 onMounted(() => {
   loadCodeSystems()
+  window.addEventListener('resize', updateIcdIndexTableHeight)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', updateIcdIndexTableHeight)
 })
 
 /* ============== 统计 ============== */
@@ -329,8 +693,8 @@ async function handleImportRules() {
 
 <template>
   <div class="space-y-6">
-    <!-- 页面标题 -->
-    <div class="flex items-center gap-4">
+    <!-- 页面标题（ICD索引库树/搜索模式隐藏，让表格占满可视高度） -->
+    <div v-if="!(activeMainTab === 'browse' && browseTab === 'icd-index')" class="flex items-center gap-4">
       <div class="p-2 rounded-lg bg-emerald-500/10">
         <BookOpen class="h-5 w-5 text-emerald-500" />
       </div>
@@ -349,8 +713,8 @@ async function handleImportRules() {
 
       <!-- ============ 数据浏览 ============ -->
       <TabsContent value="browse" class="space-y-6">
-        <!-- 统计卡片 -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <!-- 统计卡片（ICD索引库树模式隐藏，让表格占满可视高度） -->
+        <div v-if="browseTab !== 'icd-index'" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <Card class="border-border/40">
             <CardContent class="pt-6 flex items-center gap-3">
               <div class="p-2 rounded-lg bg-blue-500/10">
@@ -404,6 +768,7 @@ async function handleImportRules() {
             <TabsTrigger value="medical-codes">{{ t('knowledge.medicalCodes') }}</TabsTrigger>
             <TabsTrigger value="synonyms">{{ t('knowledge.termSynonyms') }}</TabsTrigger>
             <TabsTrigger value="rules">{{ t('knowledge.codingRulesTab') }}</TabsTrigger>
+            <TabsTrigger value="icd-index">{{ t('knowledge.icdIndexTab') }}</TabsTrigger>
           </TabsList>
 
           <!-- 编码体系列表 -->
@@ -524,15 +889,22 @@ async function handleImportRules() {
 
           <!-- 同义词列表 -->
           <TabsContent value="synonyms" class="space-y-4">
-            <div class="relative max-w-md">
-              <Search class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                v-model="synonymsKeyword"
-                :placeholder="t('knowledge.searchSynonymPlaceholder')"
-                class="pl-9"
-                @input="onSynonymSearchInput"
-              />
+            <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+              <div class="relative max-w-md flex-1">
+                <Search class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  v-model="synonymsKeyword"
+                  :placeholder="t('knowledge.searchSynonymPlaceholder')"
+                  class="pl-9"
+                  @input="onSynonymSearchInput"
+                />
+              </div>
+              <Button size="sm" @click="openSynonymCreate">
+                <Plus class="h-4 w-4 mr-1" />
+                {{ t('knowledge.createSynonymGroup') }}
+              </Button>
             </div>
+            <p class="text-xs text-muted-foreground">{{ t('knowledge.equivalenceHint') }}</p>
 
             <Card class="border-border/40">
               <CardContent class="pt-6">
@@ -545,22 +917,34 @@ async function handleImportRules() {
                     <table class="w-full text-sm">
                       <thead>
                         <tr class="border-b border-border/40">
-                          <th class="text-left py-3 px-4 font-medium text-muted-foreground">{{ t('knowledge.termColumn') }}</th>
-                          <th class="text-left py-3 px-4 font-medium text-muted-foreground">{{ t('knowledge.normalizedTermColumn') }}</th>
+                          <th class="text-left py-3 px-4 font-medium text-muted-foreground">{{ t('knowledge.equivalenceGroupColumn') }}</th>
                           <th class="text-left py-3 px-4 font-medium text-muted-foreground">{{ t('knowledge.entityTypeColumn') }}</th>
-                          <th class="text-left py-3 px-4 font-medium text-muted-foreground">{{ t('knowledge.relatedCodeColumn') }}</th>
+                          <th class="text-right py-3 px-4 font-medium text-muted-foreground">{{ t('knowledge.actionsColumn') }}</th>
                         </tr>
                       </thead>
                       <tbody>
-                        <tr v-for="syn in synonyms" :key="syn.id" class="border-b border-border/20 hover:bg-muted/30 transition-colors">
-                          <td class="py-3 px-4">{{ syn.term }}</td>
-                          <td class="py-3 px-4">{{ syn.normalizedTerm }}</td>
+                        <tr v-for="syn in pagedSynonyms" :key="`${syn.termType}:${syn.canonicalTerm}`" class="border-b border-border/20 hover:bg-muted/30 transition-colors align-top">
                           <td class="py-3 px-4">
-                            <Badge variant="outline">{{ syn.entityType }}</Badge>
+                            <div class="flex flex-wrap gap-1.5">
+                              <Badge variant="secondary">{{ syn.canonicalTerm }}</Badge>
+                              <Badge
+                                v-for="variant in syn.variants"
+                                :key="variant.id"
+                                variant="outline"
+                                :class="variant.isEnabled ? '' : 'line-through text-muted-foreground'"
+                              >{{ variant.variantTerm }}</Badge>
+                            </div>
                           </td>
-                          <td class="py-3 px-4 text-muted-foreground text-xs">
-                            <span v-if="syn.codeSystemCode && syn.code">{{ syn.codeSystemCode }}: {{ syn.code }}</span>
-                            <span v-else>-</span>
+                          <td class="py-3 px-4">
+                            <Badge variant="outline">{{ synonymTermTypeLabel(syn.termType) }}</Badge>
+                          </td>
+                          <td class="py-3 px-4 text-right whitespace-nowrap">
+                            <Button variant="ghost" size="sm" @click="openSynonymEdit(syn)">
+                              {{ t('knowledge.edit') }}
+                            </Button>
+                            <Button variant="ghost" size="sm" class="text-destructive" @click="deleteSynonymGroup(syn)">
+                              {{ t('knowledge.delete') }}
+                            </Button>
                           </td>
                         </tr>
                       </tbody>
@@ -584,6 +968,64 @@ async function handleImportRules() {
                 </div>
               </CardContent>
             </Card>
+
+            <Dialog v-model:open="synonymDialogOpen">
+              <DialogContent class="sm:max-w-lg">
+                <DialogHeader>
+                  <DialogTitle>{{ synonymDraft?.originalCanonical ? t('knowledge.editSynonymGroup') : t('knowledge.createSynonymGroup') }}</DialogTitle>
+                  <DialogDescription>{{ t('knowledge.equivalenceHint') }}</DialogDescription>
+                </DialogHeader>
+                <div v-if="synonymDraft" class="space-y-4">
+                  <div class="grid grid-cols-2 gap-3">
+                    <div class="space-y-2">
+                      <Label>{{ t('knowledge.entityTypeColumn') }}</Label>
+                      <Select v-model="synonymDraft.termType">
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="DIAGNOSIS">{{ t('knowledge.termTypeDiagnosis') }}</SelectItem>
+                          <SelectItem value="PROCEDURE">{{ t('knowledge.termTypeProcedure') }}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div class="space-y-2">
+                      <Label>{{ t('knowledge.normalizedTermColumn') }}</Label>
+                      <Input v-model="synonymDraft.canonicalTerm" :placeholder="t('knowledge.canonicalTermPlaceholder')" />
+                    </div>
+                  </div>
+
+                  <div class="space-y-2">
+                    <Label>{{ t('knowledge.variantTermsColumn') }}</Label>
+                    <div
+                      v-for="(member, index) in synonymDraft.members"
+                      :key="member.id ?? `new-${index}`"
+                      class="flex items-center gap-2"
+                    >
+                      <Input v-model="member.variantTerm" :placeholder="t('knowledge.variantTermPlaceholder')" class="flex-1" />
+                      <div class="flex items-center gap-1 shrink-0">
+                        <Switch v-model="member.isEnabled" :aria-label="t('knowledge.enabled')" />
+                        <Button variant="ghost" size="sm" @click="removeSynonymMember(index)">
+                          <X class="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                    <Button variant="outline" size="sm" @click="addSynonymMember">
+                      <Plus class="h-4 w-4 mr-1" />
+                      {{ t('knowledge.addVariantTerm') }}
+                    </Button>
+                  </div>
+
+                  <DialogFooter>
+                    <DialogClose as-child>
+                      <Button type="button" variant="outline" :disabled="synonymSaving">{{ t('common.cancel') }}</Button>
+                    </DialogClose>
+                    <Button type="button" :disabled="synonymSaving" @click="saveSynonymDraft">
+                      <Loader2 v-if="synonymSaving" class="h-4 w-4 mr-2 animate-spin" />
+                      {{ t('knowledge.save') }}
+                    </Button>
+                  </DialogFooter>
+                </div>
+              </DialogContent>
+            </Dialog>
           </TabsContent>
 
           <!-- 编码规则列表 -->
@@ -656,6 +1098,151 @@ async function handleImportRules() {
                         <ChevronRight class="h-4 w-4 ml-1" />
                       </Button>
                     </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <!-- ICD 索引库列表 -->
+          <TabsContent value="icd-index" class="space-y-4">
+            <div class="flex flex-col sm:flex-row gap-3">
+              <div class="relative flex-1">
+                <Search class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  v-model="icdIndexKeyword"
+                  :placeholder="t('knowledge.searchIcdIndexPlaceholder')"
+                  class="pl-9"
+                  @input="onIcdIndexSearchInput"
+                />
+              </div>
+              <Select v-model="icdIndexStatusFilter" @update:model-value="onIcdIndexStatusFilterChange">
+                <SelectTrigger class="w-full sm:w-[200px]">
+                  <SelectValue :placeholder="t('knowledge.filterByLeadWordStatus')" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__ALL__">{{ t('knowledge.allLeadWordStatus') }}</SelectItem>
+                  <SelectItem value="0">{{ t('knowledge.leadWordValid') }}</SelectItem>
+                  <SelectItem value="1">{{ t('knowledge.leadWordInvalid') }}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <!-- 搜索模式：关键词命中的平铺结果 -->
+            <Card v-if="icdIndexIsSearch" class="border-border/40 -mb-[38px]">
+              <CardContent class="pt-2">
+                <div v-if="icdIndexLoading" class="flex items-center justify-center py-12">
+                  <Loader2 class="h-5 w-5 animate-spin text-muted-foreground mr-2" />
+                  <span class="text-sm text-muted-foreground">{{ t('knowledge.loading') }}</span>
+                </div>
+                <div v-else-if="icdIndex.length === 0" class="text-center py-12 text-muted-foreground text-sm">
+                  {{ t('knowledge.noIcdIndex') }}
+                </div>
+                <div v-else class="space-y-4">
+                  <div ref="icdIndexTableWrap" class="overflow-auto" :style="{ height: `${icdIndexTableHeight}px` }">
+                    <table class="w-full table-fixed text-sm">
+                      <thead>
+                        <tr class="border-b border-border/40">
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[8%]">{{ t('knowledge.seqNoColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[26%]">{{ t('knowledge.indexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[16%]">{{ t('knowledge.indexCodeColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[36%]">{{ t('knowledge.fullIndexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[16%]">{{ t('knowledge.leadWordStatusColumn') }}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="row in icdIndex" :key="row.id" class="border-b border-border/20 hover:bg-muted/30 transition-colors">
+                          <td class="py-3 px-4 font-mono text-xs whitespace-nowrap">{{ row.seqNo }}</td>
+                          <td class="py-3 px-4 truncate" :title="row.indexName">{{ row.indexName }}</td>
+                          <td class="py-3 px-4 font-mono text-xs">{{ row.indexCode || '-' }}</td>
+                          <td class="py-3 px-4 text-muted-foreground text-xs truncate" :title="row.fullIndexName">{{ row.fullIndexName }}</td>
+                          <td class="py-3 px-4">
+                            <Badge v-if="row.leadWordStatus === 0" variant="default" class="bg-emerald-500/15 text-emerald-700">{{ t('knowledge.leadWordValid') }}</Badge>
+                            <Badge v-else variant="secondary">{{ t('knowledge.leadWordInvalid') }}</Badge>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div class="flex items-center justify-between" data-icd-footer>
+                    <span class="text-sm text-muted-foreground">{{ t('knowledge.totalRecords', { total: icdIndexTotal }) }}</span>
+                    <div class="flex items-center gap-2">
+                      <Button variant="outline" size="sm" :disabled="icdIndexPage <= 1" @click="icdIndexPage--; loadIcdIndexSearch()">
+                        <ChevronLeft class="h-4 w-4 mr-1" />
+                        {{ t('knowledge.previousPage') }}
+                      </Button>
+                      <span class="text-sm text-muted-foreground">{{ t('knowledge.pagination', { page: icdIndexPage, totalPages: icdIndexTotalPages }) }}</span>
+                      <Button variant="outline" size="sm" :disabled="icdIndexPage >= icdIndexTotalPages" @click="icdIndexPage++; loadIcdIndexSearch()">
+                        {{ t('knowledge.nextPage') }}
+                        <ChevronRight class="h-4 w-4 ml-1" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <!-- 树模式：按父节点层级展开 -->
+            <Card v-else class="border-border/40 -mb-[38px]">
+              <CardContent class="pt-2">
+                <div v-if="icdIndexTreeLoading" class="flex items-center justify-center py-12">
+                  <Loader2 class="h-5 w-5 animate-spin text-muted-foreground mr-2" />
+                  <span class="text-sm text-muted-foreground">{{ t('knowledge.loading') }}</span>
+                </div>
+                <div v-else-if="icdIndexRoots.length === 0" class="text-center py-12 text-muted-foreground text-sm">
+                  {{ t('knowledge.noIcdIndex') }}
+                </div>
+                <div v-else class="space-y-4">
+                  <div ref="icdIndexTableWrap" class="overflow-auto" :style="{ height: `${icdIndexTableHeight}px` }">
+                    <table class="w-full table-fixed text-sm">
+                      <thead>
+                        <tr class="border-b border-border/40">
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[26%]">{{ t('knowledge.indexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[8%]">{{ t('knowledge.seqNoColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[16%]">{{ t('knowledge.indexCodeColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[36%]">{{ t('knowledge.fullIndexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[16%]">{{ t('knowledge.leadWordStatusColumn') }}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="row in icdIndexVisibleRows" :key="row.node.seqNo" class="border-b border-border/20 hover:bg-muted/30 transition-colors">
+                          <td class="py-2 pr-4 pl-4">
+                            <div class="flex items-center min-w-0" :style="{ paddingLeft: `${row.depth * 24}px` }">
+                              <button
+                                v-if="row.node.hasChildren"
+                                class="p-0.5 rounded hover:bg-muted/50 text-muted-foreground shrink-0"
+                                :title="icdIndexExpanded[row.node.seqNo] ? t('knowledge.collapseNode') : t('knowledge.expandNode')"
+                                @click="toggleIcdIndexNode(row.node)"
+                              >
+                                <ChevronDown v-if="icdIndexExpanded[row.node.seqNo]" class="h-4 w-4" />
+                                <ChevronRight v-else class="h-4 w-4" />
+                              </button>
+                              <span v-else class="w-5 shrink-0" />
+                              <span v-if="icdIndexNodeLoading[row.node.seqNo]" class="mr-1.5 shrink-0">
+                                <Loader2 class="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                              </span>
+                              <span class="truncate min-w-0 flex-1" :title="row.node.indexName">{{ row.node.indexName }}</span>
+                            </div>
+                          </td>
+                          <td class="py-2 px-4 font-mono text-xs">{{ row.node.seqNo }}</td>
+                          <td class="py-2 px-4 font-mono text-xs">{{ row.node.indexCode || '-' }}</td>
+                          <td class="py-2 px-4 text-muted-foreground text-xs truncate" :title="row.node.fullIndexName">{{ row.node.fullIndexName }}</td>
+                          <td class="py-2 px-4">
+                            <Badge v-if="row.node.leadWordStatus === 0" variant="default" class="bg-emerald-500/15 text-emerald-700">{{ t('knowledge.leadWordValid') }}</Badge>
+                            <Badge v-else variant="secondary">{{ t('knowledge.leadWordInvalid') }}</Badge>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div class="flex items-center justify-between" data-icd-footer>
+                    <span class="text-sm text-muted-foreground">{{ t('knowledge.icdIndexRootProgress', { loaded: icdIndexRoots.length, total: icdIndexRootTotal }) }}</span>
+                    <Button variant="outline" size="sm" :disabled="icdIndexRoots.length >= icdIndexRootTotal || icdIndexMoreLoading" @click="loadMoreIcdIndexRoots">
+                      <Loader2 v-if="icdIndexMoreLoading" class="h-4 w-4 mr-1 animate-spin" />
+                      {{ t('knowledge.loadMoreRoots') }}
+                    </Button>
                   </div>
                 </div>
               </CardContent>

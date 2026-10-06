@@ -44,6 +44,10 @@ export default {
   // 系统状态
   systemStatus: '系统状态',
   operational: '正常运行',
+  degraded: '部分降级',
+  unhealthy: '异常',
+  statusUnknown: '状态未知',
+  searchEngine: '检索引擎',
   apiService: 'API 服务',
   database: '数据库',
   cacheService: '缓存服务',

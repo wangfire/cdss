@@ -171,13 +171,49 @@ export interface MedicalCodeDto {
   isEnabled: boolean
 }
 
-export interface TermSynonymDto {
+/** ICD 索引库条目（全列保留；leadWordStatus 0=有效，1=无效）。 */
+export interface IcdIndexDto {
   id: string
-  term: string
-  normalizedTerm: string
-  entityType: string
-  codeSystemCode: string | null
-  code: string | null
+  seqNo: number
+  rawName: string
+  rawNameEn: string | null
+  indexName: string
+  indexCode: string | null
+  indexLevel: number
+  parentSeqNo: number
+  fullIndexName: string
+  leadWordStatus: number
+}
+
+/** ICD 索引库节点树子节点响应。 */
+export interface IcdIndexChildrenResponse {
+  parentSeqNo: number
+  total: number
+  items: (IcdIndexDto & { hasChildren: boolean })[]
+}
+
+export interface IcdTermSynonymVariantDto {
+  id: string
+  variantTerm: string
+  isEnabled: boolean
+}
+
+/**
+ * ICD 索引链路同义词组（表 icd_term_synonym，诊断/手术通道分开，推荐链路实际读取的就是这张表）。
+ * 一行 (规范词, 等同词) 是一条等同边，快照按连通分量合成等价类，类内任意两词匹配时可互换。
+ */
+export interface IcdTermSynonymGroupDto {
+  termType: string
+  canonicalTerm: string
+  variants: IcdTermSynonymVariantDto[]
+}
+
+/** 单条同义词增改入参；字段留空表示沿用库中原值。 */
+export interface IcdTermSynonymInputDto {
+  termType?: string
+  canonicalTerm?: string
+  variantTerm?: string
+  isEnabled?: boolean
 }
 
 export interface CodingRuleDto {
@@ -294,7 +330,13 @@ export interface HealthResponse {
   traceId: string
 }
 
+export interface DependencyStatusInfo {
+  status: 'healthy' | 'unhealthy' | 'disabled'
+  error: string | null
+}
+
+/** /api/v1/health/ready 裸 JSON（不走 ApiEnvelope），HTTP 200/503 均携带该结构 */
 export interface ReadinessResponse {
-  status: string
-  checks: Record<string, { status: string; latencyMs?: number }>
+  status: 'healthy' | 'degraded' | 'unhealthy'
+  dependencies: Record<string, DependencyStatusInfo>
 }

@@ -117,6 +117,25 @@ const reviewComment = ref('')
 const reviewSubmitting = ref(false)
 const selectedCodes = ref<Set<string>>(new Set())
 
+// 证据链悬浮框默认在行下方（top-full）；当行到滚动容器底边的空间放不下悬浮框时，
+// 翻转到行上方（bottom-full），避免被 overflow 裁剪导致悬浮框看不到。
+const evidenceFlipUp = ref<Set<string>>(new Set())
+function onEvidenceRowEnter(recId: string, evCount: number, ev: MouseEvent) {
+  const rowEl = ev.currentTarget as HTMLElement | null
+  const row = rowEl?.getBoundingClientRect()
+  if (!row) return
+  // 悬浮框高度估算：标题行 + 每条证据约 56px（最多显示 6 条）
+  const popHeight = 30 + Math.min(evCount, 6) * 56 + 16
+  const scroller = rowEl!.closest('.overflow-y-auto') as HTMLElement | null
+  const sRect = scroller?.getBoundingClientRect()
+  const spaceBelow = (sRect ? sRect.bottom : window.innerHeight) - row.bottom
+  const spaceAbove = row.top - (sRect ? sRect.top : 0)
+  const next = new Set(evidenceFlipUp.value)
+  if (spaceBelow < popHeight && spaceAbove > spaceBelow) next.add(recId)
+  else next.delete(recId)
+  evidenceFlipUp.value = next
+}
+
 const selectedTask = computed(() => tasks.value.find(t => t.taskId === selectedTaskId.value))
 
 /* ============== 推荐分类 ============== */
@@ -709,6 +728,7 @@ const canReview = computed(() => {
                         v-for="rec in grp.recs"
                         :key="rec.id"
                         class="group relative px-3 py-2 hover:bg-muted/30 transition-colors"
+                        @mouseenter="onEvidenceRowEnter(rec.id, rec.evidences.length, $event)"
                       >
                         <!-- 行：推荐诊断名称 | 选择 + 推荐编码 + 置信度 -->
                         <div class="flex items-center justify-between gap-2">
@@ -734,9 +754,10 @@ const canReview = computed(() => {
                             </span>
                           </div>
                         </div>
-                        <!-- 证据链：鼠标悬停显示（完整推荐名称 + 证据），不占列表高度 -->
+                        <!-- 证据链：鼠标悬停显示（完整推荐名称 + 证据），不占列表高度；下方空间不足时翻转到上方 -->
                         <div
-                          class="hidden group-hover:block absolute left-0 right-0 top-full z-20 mt-1 rounded-md border border-border/60 bg-popover p-2 shadow-lg"
+                          class="hidden group-hover:block absolute left-0 right-0 z-20 rounded-md border border-border/60 bg-popover p-2 shadow-lg"
+                          :class="evidenceFlipUp.has(rec.id) ? 'bottom-full mb-1' : 'top-full mt-1'"
                         >
                           <template v-if="rec.evidences.length > 0">
                             <p class="text-xs font-medium text-muted-foreground mb-1">

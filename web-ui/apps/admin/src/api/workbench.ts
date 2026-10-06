@@ -1,6 +1,7 @@
 import { http } from './http'
 import type {
   WorkbenchTaskResponse,
+  CodingTaskResponse,
   CodingTaskRecommendationsResponse,
   ReviewCodingTaskRequest,
   CodingReviewResponse,
@@ -11,6 +12,9 @@ import type {
 export const workbenchApi = {
   listTasks: (status?: CodingTaskStatus) =>
     http.get<WorkbenchTaskResponse[]>('/api/v1/workbench/tasks', status ? { status } : undefined),
+
+  getTask: (taskId: string) =>
+    http.get<CodingTaskResponse>(`/api/v1/coding-tasks/${taskId}`),
 
   getRecommendations: (taskId: string) =>
     http.get<CodingTaskRecommendationsResponse>(

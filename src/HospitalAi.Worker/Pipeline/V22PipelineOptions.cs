@@ -31,6 +31,15 @@ public sealed class V22PipelineOptions
     /// <summary>索引展开后诊断字典的编码体系标识。</summary>
     public string IndexDiagnosisCodeSystem { get; set; } = "ICD-10";
 
+    /// <summary>向量语义召回开关（WP-B3-1）。模型文件缺失或检索失败时显式降级 DEGRADED.NO_VECTOR。</summary>
+    public bool VectorEnabled { get; set; } = true;
+
+    /// <summary>每条诊断输入的向量召回条数。</summary>
+    public int VectorTopK { get; set; } = 6;
+
+    /// <summary>向量候选入池的余弦相似度下限（低于该值的语义近似不参与推荐）。</summary>
+    public double VectorMinScore { get; set; } = 0.45;
+
     /// <summary>是否启用规则引擎。默认启用；关闭时 RuleScore 视为缺省不参与。</summary>
     public bool RuleEngineEnabled { get; set; } = true;
 

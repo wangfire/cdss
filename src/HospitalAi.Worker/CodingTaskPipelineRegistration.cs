@@ -1,4 +1,5 @@
 using HospitalAi.Infrastructure.CodingKnowledge;
+using HospitalAi.Infrastructure.Embeddings;
 using HospitalAi.Infrastructure.ModelGateways;
 using HospitalAi.Infrastructure.RabbitMq;
 using HospitalAi.Worker.Consumers;
@@ -49,6 +50,8 @@ public static class CodingTaskPipelineRegistration
 
         services.AddModelGateways(configuration);
         services.AddCodingKnowledgeSearch(configuration);
+        // WP-B3-1：本地 ONNX 嵌入 + 内存向量检索（CPU 小模型先行，决策 2）。
+        services.AddVectorSearch(configuration);
         services.AddScoped<ICodingTaskPipelineDispatcher, CodingTaskPipelineDispatcher>();
 
         // WP-B2-3（决策 1）：病例录入只落任务 + Outbox，不再在 HTTP 请求内同步执行流水线。

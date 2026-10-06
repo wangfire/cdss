@@ -14,6 +14,7 @@
     </PackageReference>
     <!-- JWT：认证服务签发 Bearer 令牌（登录 /me 端点）；7.7.1 为离线缓存可用版本。 -->
     <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="7.7.1" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" />
     <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="7.7.1" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
     <!-- MassTransit：RabbitMQ 消息发布/消费框架，供 Outbox → RabbitMq 事件总线使用。 -->

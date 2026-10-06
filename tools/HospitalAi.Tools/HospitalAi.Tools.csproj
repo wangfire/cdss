@@ -6,8 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
-    <!-- 归档工具：迁移 / 回填 / 评测脚本统一放 tools/ 下，不参与发布的运行时镜像。 -->
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- 归档工具：迁移 / 回填 / 评测脚本统一放 tools/ 下，不参与发布的运行时镜像。
+         不开 InvariantGlobalization：分词器依赖 Unicode 规范化（FormD 去重音），需要 ICU。 -->
   </PropertyGroup>
 
   <ItemGroup>

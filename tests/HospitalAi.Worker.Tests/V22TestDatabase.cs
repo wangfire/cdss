@@ -87,13 +87,15 @@ public sealed class V22TestDatabase : IAsyncDisposable
         IModelGateway? gateway = null,
         IModelRouter? router = null,
         V22PipelineOptions? options = null,
-        ICodingKnowledgeSearch? bm25Search = null)
+        ICodingKnowledgeSearch? bm25Search = null,
+        IVectorSearch? vectorSearch = null)
     {
         var context = CreateContext();
         return new V22LiteCodingPipelineRunner(
             context,
             new SqlServerExactCodingKnowledgeSearch(context),
             bm25Search ?? new UnavailableCodingKnowledgeSearch(),
+            vectorSearch ?? new UnavailableVectorSearch(),
             gateway ?? new UnavailableModelGateway(),
             router ?? UnavailableRouter(),
             new SimpleJsonSchemaValidator(),
@@ -158,6 +160,23 @@ public sealed class V22TestDatabase : IAsyncDisposable
         return new StaticModelRouter(Options.Create(new ModelGatewayOptions()));
     }
 
+    /// <summary>向量检索不可用桩：对应生产默认形态（模型文件缺失时显式降级）。</summary>
+    private sealed class UnavailableVectorSearch : IVectorSearch
+    {
+        public bool IsAvailable => false;
+
+        public Task<IReadOnlyList<VectorSearchHit>> SearchAsync(
+            Guid hospitalId,
+            string codeSystemCode,
+            string queryText,
+            int topK,
+            CancellationToken cancellationToken = default)
+        {
+            IReadOnlyList<VectorSearchHit> empty = [];
+            return Task.FromResult(empty);
+        }
+    }
+
     /// <summary>
     /// 构造与生产同构的任务消费者：真实 Dispatcher + Lite Runner + 真实重试等待。
     /// consumer 与 runner 必须共享同一 DbContext（生产 DI 同 scope 即同一实例），
@@ -170,6 +189,7 @@ public sealed class V22TestDatabase : IAsyncDisposable
             context,
             new SqlServerExactCodingKnowledgeSearch(context),
             new UnavailableCodingKnowledgeSearch(),
+            new UnavailableVectorSearch(),
             new UnavailableModelGateway(),
             UnavailableRouter(),
             new SimpleJsonSchemaValidator(),

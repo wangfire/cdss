@@ -22,3 +22,6 @@ __pycache__/
 # B1 仓库卫生（2026-10-06）：批量评测导出明细不入库；开发连接串含本机凭据（模板见同名 .template）
 data/exports/
 src/HospitalAi.Api/appsettings.Development.json
+
+# WP-B3-1：本地嵌入模型文件（约 24MB，hf-mirror 下载，见 docs/2026-10-06 计划 §6）
+models/

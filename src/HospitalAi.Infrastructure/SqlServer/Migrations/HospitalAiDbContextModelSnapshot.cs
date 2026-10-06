@@ -1663,6 +1663,75 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                     b.ToTable("inbox_message", (string)null);
                 });
 
+            modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.MedicalCodeEmbeddingRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("code");
+
+                    b.Property<string>("CodeSystemCode")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("code_system_code");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("created_at");
+
+                    b.Property<int>("Dim")
+                        .HasColumnType("int")
+                        .HasColumnName("dim");
+
+                    b.Property<Guid>("HospitalId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("hospital_id");
+
+                    b.Property<string>("ModelCode")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("model_code");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion")
+                        .HasColumnName("row_version");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)")
+                        .HasColumnName("title");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("updated_at");
+
+                    b.Property<byte[]>("Vector")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)")
+                        .HasColumnName("vector");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("HospitalId", "ModelCode")
+                        .HasDatabaseName("ix_medical_code_embedding_hospital_model");
+
+                    b.HasIndex("HospitalId", "ModelCode", "CodeSystemCode", "Code")
+                        .IsUnique()
+                        .HasDatabaseName("ux_medical_code_embedding_lookup");
+
+                    b.ToTable("medical_code_embedding", (string)null);
+                });
+
             modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.MedicalCodeRecord", b =>
                 {
                     b.Property<Guid>("Id")

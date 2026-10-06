@@ -6,6 +6,7 @@ using HospitalAi.Contracts.CodingTasks;
 using HospitalAi.Contracts.Models;
 using HospitalAi.Domain.CodingTasks;
 using HospitalAi.Infrastructure.Elasticsearch;
+using HospitalAi.Infrastructure.Embeddings;
 using HospitalAi.Infrastructure.ModelGateways;
 using HospitalAi.Infrastructure.SqlServer;
 using HospitalAi.Worker.Pipeline;
@@ -35,7 +36,7 @@ public sealed class V22LitePipelineTests
     private static readonly string[] ExpectedStages =
     [
         "QUALITY_GATE", "DOCUMENT_VERSION", "CHUNK", "FACT", "EVIDENCE",
-        "EXACT_RETRIEVAL", "BM25_RETRIEVAL", "ICD_INDEX_RETRIEVAL", "RULE", "SCORE", "POLICY", "PERSIST"
+        "EXACT_RETRIEVAL", "BM25_RETRIEVAL", "ICD_INDEX_RETRIEVAL", "VECTOR_RETRIEVAL", "RULE", "SCORE", "POLICY", "PERSIST"
     ];
 
     /// <summary>诊断输入走索引两段式：播种一条以诊断原文为主导词、直接给出目标编码的索引行。</summary>
@@ -99,13 +100,13 @@ public sealed class V22LitePipelineTests
         Assert.All(
             recommendation.Evidences,
             item => Assert.Contains(Fracture, item.SourceText, StringComparison.Ordinal));
-        // 未接入向量与重排：缺失维度必须保持 null，不得填默认值。
+        // 未接入重排与本次无向量命中：缺失维度必须保持 null，不得填默认值。
         Assert.Null(candidate.VectorScore);
         Assert.Null(candidate.RerankScore);
         Assert.Null(score.SemanticScore);
-        // Trace 覆盖全部 12 个阶段（同一次运行的 CreatedAt 可能同刻，按阶段名称校验集合）。
+        // Trace 覆盖全部 13 个阶段（同一次运行的 CreatedAt 可能同刻，按阶段名称校验集合）。
         var stages = await context.PipelineTraceSteps.Select(item => item.Stage).ToListAsync();
-        Assert.Equal(12, stages.Count);
+        Assert.Equal(13, stages.Count);
         foreach (var stage in ExpectedStages)
         {
             Assert.Contains(stage, stages);
@@ -555,6 +556,175 @@ public sealed class V22LitePipelineTests
     }
 
     [Fact]
+    public void Bert分词器_Cjk单字切分与特殊词元()
+    {
+        // 临时小词表：id 即行号（[PAD]=0 [UNK]=1 [CLS]=2 [SEP]=3），断言完全确定。
+        var vocabPath = Path.Combine(Path.GetTempPath(), $"vocab-{Guid.NewGuid():N}.txt");
+        File.WriteAllLines(
+            vocabPath,
+            ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "急", "性", "心", "肌", "梗", "死"]);
+        try
+        {
+            var tokenizer = new BertWordPieceTokenizer(vocabPath, 64);
+
+            var (inputIds, attentionMask) = tokenizer.Encode("急性心肌梗死");
+
+            Assert.Equal(inputIds.Length, attentionMask.Length);
+            Assert.Equal(2, inputIds[0]);   // [CLS]
+            Assert.Equal(3, inputIds[^1]);  // [SEP]
+            Assert.Equal(8, inputIds.Length); // 6 个汉字按 BERT 基础分词逐字独立
+            var (unkIds, _) = tokenizer.Encode("ZZZZ");
+            Assert.Equal([2, 1, 3], unkIds); // 词表未覆盖 → [UNK]
+        }
+        finally
+        {
+            File.Delete(vocabPath);
+        }
+    }
+
+    [Fact]
+    public async Task 向量检索_余弦排序与医院隔离()
+    {
+        await using var database = await V22TestDatabase.CreateAsync();
+        var (hospitalId, _, _) = await database.SeedV22TaskAsync(FullDocumentText);
+        var otherHospital = Guid.NewGuid();
+        await using (var context = database.CreateContext())
+        {
+            var now = DateTimeOffset.UtcNow;
+            context.MedicalCodeEmbeddings.AddRange(
+                new MedicalCodeEmbeddingRecord
+                {
+                    Id = Guid.NewGuid(), HospitalId = hospitalId, CodeSystemCode = "ICD-10",
+                    Code = "I21.900", ModelCode = "stub", Title = "急性心肌梗死", Dim = 2,
+                    Vector = ToBytes([1f, 0f]), CreatedAt = now, UpdatedAt = now
+                },
+                new MedicalCodeEmbeddingRecord
+                {
+                    Id = Guid.NewGuid(), HospitalId = hospitalId, CodeSystemCode = "ICD-10",
+                    Code = "I10.X04", ModelCode = "stub", Title = "高血压", Dim = 2,
+                    Vector = ToBytes([0f, 1f]), CreatedAt = now, UpdatedAt = now
+                },
+                new MedicalCodeEmbeddingRecord
+                {
+                    Id = Guid.NewGuid(), HospitalId = otherHospital, CodeSystemCode = "ICD-10",
+                    Code = "I21.900", ModelCode = "stub", Title = "急性心肌梗死", Dim = 2,
+                    Vector = ToBytes([1f, 0f]), CreatedAt = now, UpdatedAt = now
+                });
+            await context.SaveChangesAsync();
+        }
+
+        var services = new ServiceCollection();
+        services.AddDbContext<HospitalAiDbContext>(options => options.UseSqlServer(database.ConnectionString));
+        await using var provider = services.BuildServiceProvider();
+        var search = new InMemoryVectorSearch(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            new StubEmbeddingProvider([1f, 0f]),
+            NullLogger<InMemoryVectorSearch>.Instance);
+
+        var hits = await search.SearchAsync(hospitalId, "ICD-10", "急性心梗", 2);
+
+        // 正交向量点积为 0（无相关）被过滤，只返回同向的 I21.900。
+        Assert.Single(hits);
+        Assert.Equal("I21.900", hits[0].Code);
+        Assert.Equal(1.0, hits[0].Score, 3);
+        // 医院隔离：他院同码向量不得出现在本院检索结果中。
+        var otherHits = await search.SearchAsync(otherHospital, "ICD-10", "急性心梗", 2);
+        Assert.Single(otherHits);
+    }
+
+    [Fact]
+    public async Task 向量通道命中_索引未命中时语义候选出码()
+    {
+        await using var database = await V22TestDatabase.CreateAsync();
+        var (_, _, message) = await database.SeedV22TaskAsync(FullDocumentText);
+
+        var runner = database.CreateV22Runner(
+            vectorSearch: new StubVectorSearch(true,
+            [
+                new VectorSearchHit("ICD-10", "I21.900", "急性心肌梗死", 0.72),
+                new VectorSearchHit("ICD-10", "I21.901", "急性透壁性心肌梗死", 0.66),
+            ]));
+
+        await runner.RunAsync(message);
+
+        await using var context = database.CreateContext();
+        var recommendations = await context.CodingRecommendations.ToListAsync();
+        Assert.NotEmpty(recommendations);
+        Assert.All(recommendations, item => Assert.Equal("VECTOR", item.RecallChannel));
+        var candidates = await context.CodingCandidates.ToListAsync();
+        Assert.All(candidates, item => Assert.NotNull(item.VectorScore));
+        var step = await context.PipelineTraceSteps.SingleAsync(item => item.Stage == "VECTOR_RETRIEVAL");
+        Assert.Equal("SUCCESS", step.Status);
+    }
+
+    [Fact]
+    public async Task 向量不可用_显式降级不伪造语义候选()
+    {
+        await using var database = await V22TestDatabase.CreateAsync();
+        var (_, _, message) = await database.SeedV22TaskAsync(FullDocumentText);
+
+        // 默认 Runner 注入不可用向量检索（生产缺模型文件的形态）。
+        await database.CreateV22Runner().RunAsync(message);
+
+        await using var context = database.CreateContext();
+        var step = await context.PipelineTraceSteps.SingleAsync(item => item.Stage == "VECTOR_RETRIEVAL");
+        Assert.Equal("DEGRADED", step.Status);
+        Assert.Equal("DEGRADED.NO_VECTOR", step.ErrorCode);
+        Assert.Empty(await context.CodingRecommendations.ToListAsync());
+    }
+
+    /// <summary>向量检索桩：固定命中集合，用于验证混合召回与落库口径。</summary>
+    private sealed class StubVectorSearch(bool available, VectorSearchHit[] hits) : IVectorSearch
+    {
+        public bool IsAvailable => available;
+
+        public Task<IReadOnlyList<VectorSearchHit>> SearchAsync(
+            Guid hospitalId,
+            string codeSystemCode,
+            string queryText,
+            int topK,
+            CancellationToken cancellationToken = default)
+        {
+            IReadOnlyList<VectorSearchHit> result = hits.Take(topK).ToArray();
+            return Task.FromResult(result);
+        }
+    }
+
+    /// <summary>嵌入桩：任意文本返回同一固定向量。</summary>
+    private sealed class StubEmbeddingProvider(float[] vector) : IEmbeddingProvider
+    {
+        public bool IsAvailable => true;
+
+        public string ModelCode => "stub";
+
+        public float[]? Embed(string text) => vector;
+    }
+
+    private static byte[] ToBytes(float[] vector)
+    {
+        var bytes = new byte[vector.Length * sizeof(float)];
+        Buffer.BlockCopy(vector, 0, bytes, 0, bytes.Length);
+        return bytes;
+    }
+
+    private static string FindRepoFile(string relativePath)
+    {
+        var dir = AppContext.BaseDirectory;
+        for (var i = 0; i < 8 && dir is not null; i++)
+        {
+            var candidate = Path.Combine(dir, relativePath);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            dir = Path.GetDirectoryName(dir.TrimEnd(Path.DirectorySeparatorChar));
+        }
+
+        throw new FileNotFoundException($"未找到 {relativePath}（从 {AppContext.BaseDirectory} 向上回溯失败）。");
+    }
+
+    [Fact]
     public async Task ModelRouter_未接通模型时明确报告不可用()
     {
         var router = new StaticModelRouter(Options.Create(new ModelGatewayOptions
@@ -677,7 +847,7 @@ public sealed class V22LitePipelineTests
         Assert.Contains(
             issues,
             item => item.IssueType == QualityIssueType.LlmOutputInvalid);
-        // 12 个阶段仍然全部记录：模型问题不中断流水线。
+        // 13 个阶段仍然全部记录：模型问题不中断流水线。
         var stages = traceSteps.Select(item => item.Stage).ToList();
         foreach (var stage in ExpectedStages)
         {

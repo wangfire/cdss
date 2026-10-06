@@ -34,7 +34,8 @@ internal sealed record MergedCandidate(
     string? IndexEvidencePath = null,
     bool IsIndexFallback = false,
     string? IndexNote = null,
-    decimal IndexTitleDepth = 0m);
+    decimal IndexTitleDepth = 0m,
+    decimal? VectorScore = null);
 
 /// <summary>
 /// 模型解释校验结果：Validated 表示通过 Schema 校验，Supported 表示解释能被证据支持。
@@ -63,6 +64,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
     private readonly HospitalAiDbContext _dbContext;
     private readonly IExactCodingKnowledgeSearch _exactSearch;
     private readonly ICodingKnowledgeSearch _bm25Search;
+    private readonly IVectorSearch _vectorSearch;
     private readonly IModelGateway _modelGateway;
     private readonly IModelRouter _modelRouter;
     private readonly IJsonSchemaValidator _schemaValidator;
@@ -76,6 +78,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         HospitalAiDbContext dbContext,
         IExactCodingKnowledgeSearch exactSearch,
         ICodingKnowledgeSearch bm25Search,
+        IVectorSearch vectorSearch,
         IModelGateway modelGateway,
         IModelRouter modelRouter,
         IJsonSchemaValidator schemaValidator,
@@ -88,6 +91,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         _dbContext = dbContext;
         _exactSearch = exactSearch;
         _bm25Search = bm25Search;
+        _vectorSearch = vectorSearch;
         _modelGateway = modelGateway;
         _modelRouter = modelRouter;
         _schemaValidator = schemaValidator;
@@ -445,8 +449,55 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
             }
         }
 
-        // Step 7：向量检索（Lite 阶段未接入，禁止伪向量 / 随机向量 / 伪造 SemanticScore）。
-        degradedFlags.Add("DEGRADED.NO_VECTOR");
+        // Step 6.6：向量语义召回（WP-B3-1，决策 2：CPU 小模型先行）。
+        // 语义候选独立于索引两段式：索引未命中（如口语简称"心梗"）时由向量兜底，
+        // 索引命中时仅补充候选池，排序仍让位于索引整标题贴合（IndexTitleDepth）。
+        var vectorSucceeded = false;
+        var vectorResults = new Dictionary<Guid, IReadOnlyList<VectorSearchHit>>();
+        var diagnosisInputCount = selectedInputs.Count(item =>
+            !item.SourceType.Contains("PROCEDURE", StringComparison.Ordinal));
+        if (diagnosisInputCount > 0)
+        {
+            if (settings.VectorEnabled && _vectorSearch.IsAvailable)
+            {
+                try
+                {
+                    foreach (var input in selectedInputs)
+                    {
+                        if (input.SourceType.Contains("PROCEDURE", StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+
+                        var hits = await _vectorSearch.SearchAsync(
+                            task.HospitalId,
+                            settings.IndexDiagnosisCodeSystem,
+                            input.NormalizedText ?? input.OriginalText,
+                            settings.VectorTopK,
+                            cancellationToken);
+                        vectorResults[input.Id] = hits
+                            .Where(hit => hit.Score >= settings.VectorMinScore)
+                            .ToList();
+                    }
+
+                    vectorSucceeded = true;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    vectorResults.Clear();
+                    _logger.LogWarning(
+                        ex,
+                        "向量语义检索失败，本次运行诊断输入无向量候选。TaskId={TaskId}",
+                        task.Id);
+                }
+            }
+
+            if (!vectorSucceeded)
+            {
+                // 显式降级：向量通道缺失不得伪装成"语义无相关"。
+                degradedFlags.Add("DEGRADED.NO_VECTOR");
+            }
+        }
 
         // Step 8：规则引擎。
         var rules = settings.RuleEngineEnabled
@@ -513,6 +564,24 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                         IndexNote: item.Note,
                         IndexTitleDepth: item.WholeTitleDepth))
                     .ToList();
+                // 向量语义候选：索引命中之外的语义近似补充（口语简称 / 措辞差异），按余弦分入池。
+                var vectorHits = vectorResults.GetValueOrDefault(input.Id) ?? [];
+                if (vectorHits.Count > 0)
+                {
+                    var indexedCodes = merged.Select(item => item.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    merged.AddRange(vectorHits
+                        .Where(hit => !indexedCodes.Contains(hit.Code))
+                        .Select(hit => new MergedCandidate(
+                            hit.CodeSystemCode,
+                            hit.Code.Length > 64 ? hit.Code[..64] : hit.Code,
+                            hit.Title.Length > 300 ? hit.Title[..300] : hit.Title,
+                            ExactScore: null,
+                            Bm25Score: null,
+                            FusedScore: (decimal)hit.Score,
+                            RecallChannel: "VECTOR",
+                            IndexNote: "向量语义召回",
+                            VectorScore: (decimal)hit.Score)));
+                }
             }
             else
             {
@@ -598,7 +667,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
 
                 var computed = SevenDimensionScorer.Compute(scoringOptions, new CandidateScoreInput(
                     ExactScore: candidate.ExactScore,
-                    SemanticScore: null,
+                    SemanticScore: candidate.VectorScore,
                     RetrievalScore: candidate.FusedScore,
                     RerankScore: null,
                     RuleScore: ruleResult.RuleScore,
@@ -675,7 +744,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     RecallSource = item.Candidate.RecallChannel,
                     ExactScore = item.Candidate.ExactScore,
                     Bm25Score = item.Candidate.Bm25Score,
-                    VectorScore = null,
+                    VectorScore = item.Candidate.VectorScore,
                     RerankScore = null,
                     RuleScore = item.Rule.RuleScore,
                     EvidenceScore = evidenceScore,
@@ -693,7 +762,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     HospitalId = task.HospitalId,
                     RecommendationId = recommendationId,
                     ExactScore = item.Candidate.ExactScore,
-                    SemanticScore = null,
+                    SemanticScore = item.Candidate.VectorScore,
                     RetrievalScore = item.Candidate.FusedScore,
                     RerankScore = null,
                     RuleScore = item.Rule.RuleScore,
@@ -790,6 +859,27 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     });
                 }
 
+                // 向量通道溯源证据：语义相似度可核对（不伪造命中文本）。
+                if (item.Candidate.RecallChannel == "VECTOR"
+                    && item.Candidate.VectorScore is { } vectorScore)
+                {
+                    recommendationEvidences.Add(new RecommendationEvidenceRecord
+                    {
+                        Id = Guid.NewGuid(),
+                        HospitalId = task.HospitalId,
+                        CodingRecommendationId = recommendationId,
+                        DocumentSectionId = null,
+                        PipelineRunId = runId,
+                        EvidenceLevel = null,
+                        SourceType = "VECTOR",
+                        SourceText = $"向量语义召回：与诊断输入的余弦相似度 {vectorScore:0.####}",
+                        MatchText = matchedTitle,
+                        Score = vectorScore,
+                        CreatedAt = now,
+                        UpdatedAt = now
+                    });
+                }
+
                 // 索引链路溯源证据：主导词→修饰词命中路径与索引编码写入推荐证据，
                 // 使医生能核对 "为什么推荐这个码"（字典通道无此链路）。
                 if (item.Candidate.RecallChannel == "ICD_INDEX"
@@ -843,6 +933,11 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                 indexSucceeded ? null : "DEGRADED.NO_ICD_INDEX",
                 indexStartedAt);
         }
+        recorder.Record(
+            "VECTOR_RETRIEVAL",
+            vectorSucceeded ? "SUCCESS" : diagnosisInputCount > 0 ? "DEGRADED" : "SUCCESS",
+            vectorSucceeded || diagnosisInputCount == 0 ? null : "DEGRADED.NO_VECTOR",
+            startedAt);
         recorder.Record("RULE", "SUCCESS", null, startedAt);
         recorder.Record(
             "SCORE",

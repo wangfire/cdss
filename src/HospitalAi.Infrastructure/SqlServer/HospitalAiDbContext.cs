@@ -37,6 +37,8 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
 
     public DbSet<IcdTermSynonymRecord> IcdTermSynonyms => Set<IcdTermSynonymRecord>();
 
+    public DbSet<MedicalCodeEmbeddingRecord> MedicalCodeEmbeddings => Set<MedicalCodeEmbeddingRecord>();
+
     public DbSet<DocumentSectionRecord> DocumentSections => Set<DocumentSectionRecord>();
 
     public DbSet<ClinicalEntityRecord> ClinicalEntities => Set<ClinicalEntityRecord>();
@@ -89,6 +91,7 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
         ConfigureCodingRule(modelBuilder);
         ConfigureIcdIndex(modelBuilder);
         ConfigureIcdTermSynonym(modelBuilder);
+        ConfigureMedicalCodeEmbedding(modelBuilder);
         ConfigureDocumentSection(modelBuilder);
         ConfigureClinicalEntity(modelBuilder);
         ConfigureClinicalFact(modelBuilder);
@@ -402,6 +405,26 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
             .IsUnique();
         entity.HasIndex(item => item.CanonicalTerm)
             .HasDatabaseName("ix_icd_term_synonym_canonical");
+    }
+
+    private static void ConfigureMedicalCodeEmbedding(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<MedicalCodeEmbeddingRecord>();
+
+        entity.ToTable("medical_code_embedding");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.HospitalId).HasColumnName("hospital_id").IsRequired();
+        entity.Property(item => item.CodeSystemCode).HasColumnName("code_system_code").HasMaxLength(32).IsRequired();
+        entity.Property(item => item.Code).HasColumnName("code").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.ModelCode).HasColumnName("model_code").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.Title).HasColumnName("title").HasMaxLength(300).IsRequired();
+        entity.Property(item => item.Dim).HasColumnName("dim").IsRequired();
+        entity.Property(item => item.Vector).HasColumnName("vector").IsRequired();
+        entity.HasIndex(item => new { item.HospitalId, item.ModelCode, item.CodeSystemCode, item.Code })
+            .HasDatabaseName("ux_medical_code_embedding_lookup")
+            .IsUnique();
+        entity.HasIndex(item => new { item.HospitalId, item.ModelCode })
+            .HasDatabaseName("ix_medical_code_embedding_hospital_model");
     }
 
     private static void ConfigureCodingRule(ModelBuilder modelBuilder)    {

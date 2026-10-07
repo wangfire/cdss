@@ -23,7 +23,7 @@ namespace HospitalAi.Tools;
 /// </summary>
 public static class EvaluationCommand
 {
-    private const int ExpectedStageCount = 11;
+    private const int ExpectedStageCount = 14;
 
     public static async Task<int> RunAsync(IConfiguration configuration)
     {

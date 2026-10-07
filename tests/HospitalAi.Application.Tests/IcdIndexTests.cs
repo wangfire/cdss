@@ -103,6 +103,38 @@ public sealed class IcdIndexTests
         Assert.Equal("HIV", seeAlso.Term);
     }
 
+    /// <summary>单字主导词（痔）：单字输入精确命中主导词别名时放行下钻（B3-4）。</summary>
+    private static IcdIndexSnapshot HemorrhoidSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(201, "痔", "I84.9"),
+        ChildRow(202, 201, "－混合痔", "I84.2"),
+    ]);
+
+    [Fact]
+    public void 单字输入_精确命中主导词时下钻出码()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 8, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("I84.9", "痔"),
+            Dict("I84.2", "混合痔"),
+        ]);
+
+        var recommendations = resolver.Resolve(HemorrhoidSnapshot(), dictionary, "痔");
+
+        Assert.NotEmpty(recommendations);
+        Assert.Equal("I84.9", recommendations[0].Code);
+    }
+
+    [Fact]
+    public void 单字输入_未命中任何主导词时不召回()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 8, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+        var dictionary = new IcdDictionarySnapshot([Dict("I84.9", "痔")]);
+
+        var recommendations = resolver.Resolve(HemorrhoidSnapshot(), dictionary, "癌");
+
+        Assert.Empty(recommendations);
+    }
+
     [Fact]
     public void 快照构建_失效主导词进入重定向表()
     {

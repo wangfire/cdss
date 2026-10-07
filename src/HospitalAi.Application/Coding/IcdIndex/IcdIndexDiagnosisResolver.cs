@@ -95,6 +95,17 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         var inputKey = TextMatch.NormalizeKey(inputText);
         if (inputKey.Length < 2)
         {
+            // 单字输入（如"痔"、"疝"）：仅当精确命中有效主导词别名时放行——
+            // 逐字覆盖召回（MaxSegment≥3）天然挡住单字，但单字主导词与输入 1:1
+            // 相等不属于"甲周炎↔肩周炎"式误召回，直接锚定该主导词下钻。
+            var exactHit = FindSingleCharacterLeadHit(snapshot, inputKey);
+            if (exactHit is null)
+            {
+                return;
+            }
+
+            Collect(snapshot, dictionary, inputText,
+                IcdIndexMatcher.Drill(snapshot, exactHit, inputKey), exactHit.Alias.Weight, ranked);
             return;
         }
 
@@ -195,6 +206,24 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
                 item.Note,
                 item.WholeTitleDepth)));
         }
+    }
+
+    /// <summary>单字输入的精确主导词锚定：别名（含去装饰变体）与输入完全一致才命中。</summary>
+    private static LeadWordHit? FindSingleCharacterLeadHit(IcdIndexSnapshot snapshot, string inputKey)
+    {
+        foreach (var lead in snapshot.Leads)
+        {
+            foreach (var alias in lead.Aliases)
+            {
+                if (string.Equals(TextMatch.NormalizeKey(alias.Key), inputKey, StringComparison.Ordinal)
+                    || string.Equals(alias.MatchKey, inputKey, StringComparison.Ordinal))
+                {
+                    return new LeadWordHit(lead, alias, 1m, inputKey.Length);
+                }
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

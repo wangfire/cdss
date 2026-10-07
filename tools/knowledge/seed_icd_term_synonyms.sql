@@ -29,6 +29,8 @@ USING (VALUES
     (N'DIAGNOSIS', N'手术后',         N'术后'),
     (N'DIAGNOSIS', N'心肌梗死',       N'心梗'),
     (N'DIAGNOSIS', N'心肌梗死',       N'心肌梗塞'),
+    (N'DIAGNOSIS', N'慢性阻塞性肺病', N'慢性阻塞性肺疾病'),
+    (N'DIAGNOSIS', N'慢性阻塞性肺病', N'慢阻肺'),
     (N'DIAGNOSIS', N'胆囊的',         N'胆囊'),
     (N'DIAGNOSIS', N'泌尿',           N'尿路'),
     (N'DIAGNOSIS', N'冠状动脉',       N'冠脉'),

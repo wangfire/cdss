@@ -681,6 +681,14 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                 }
             }
 
+            // B3-4：把该输入对应的临床事实（按事实名与输入原文/规范名同形匹配）的
+            // 否定 / 确定性 / 时间归属传入规则上下文——此前恒为 null，规则无法感知这些维度。
+            var linkedFact = facts.FirstOrDefault(fact =>
+                string.Equals(fact.FactName, inputName, StringComparison.Ordinal)
+                || (input.NormalizedText is { } normalizedText
+                    && string.Equals(fact.FactName, normalizedText, StringComparison.Ordinal))
+                || string.Equals(fact.FactName, input.OriginalText, StringComparison.Ordinal));
+
             var scored = new List<(MergedCandidate Candidate, decimal Final, RuleEvaluationResult Rule, ScoreComputation Score)>();
             foreach (var candidate in merged.Take(settings.MaxCandidatesPerInput))
             {
@@ -688,9 +696,9 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     CandidateCode: candidate.Code,
                     CandidateCodeSystem: candidate.CodeSystem,
                     CandidateGranularity: DetermineGranularity(candidate.Code),
-                    FactNegation: null,
-                    FactCertainty: null,
-                    FactTemporality: null,
+                    FactNegation: linkedFact?.Negation,
+                    FactCertainty: linkedFact?.Certainty.ToString(),
+                    FactTemporality: linkedFact?.Temporality.ToString(),
                     FactFactType: nameof(ClinicalFactType.Diagnosis),
                     EvidenceLevel: null,
                     EvidenceScore: evidenceScore,
@@ -718,8 +726,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     EvidenceScore: evidenceScore,
                     LlmScore: ComputeLlmScore()));
 
-                scored.Add((candidate, computed.FinalScore, ruleResult, computed));
-            }
+                scored.Add((candidate, computed.FinalScore, ruleResult, computed));            }
 
             // 索引通道的整标题逐字贴合度先于七维分：标题被输入逐字连续包含（且解释掉 ≥75% 输入字符）
             // 时，编码员认定的就是这一条，粒度加权的相关性分只能在其后参与比较（字典/手术通道该值恒为 0）。

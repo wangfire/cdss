@@ -136,6 +136,45 @@ public sealed class IcdIndexTests
     }
 
     [Fact]
+    public void 同族括号变体_限定词未被满足时被剔除()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 8, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("I10.X04", "高血压2级"),
+            Dict("I10.X00X025", "高血压病2级(低危)"),
+            Dict("I10.X00X027", "高血压病2级(高危)"),
+        ]);
+        var snapshot = IcdIndexSnapshotBuilder.Build([LeadRow(300, "高血压", "I10")]);
+
+        var recommendations = resolver.Resolve(snapshot, dictionary, "高血压病2级");
+
+        // 族内存在限定词全部满足的标准名（高血压2级 ≈ 输入），带(低危)/(高危)括号的
+        // 变体在输入未提及时必须让位（B3-4 粒度纪律），Top-1 不得被重排噪声顶替。
+        Assert.NotEmpty(recommendations);
+        Assert.Equal("I10.X04", recommendations[0].Code);
+        Assert.DoesNotContain(recommendations, item => item.Code == "I10.X00X025");
+        Assert.DoesNotContain(recommendations, item => item.Code == "I10.X00X027");
+    }
+
+    [Fact]
+    public void 同族括号变体_限定词被满足时保留并参与排序()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 8, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("I21.900", "急性心肌梗死"),
+            Dict("I21.900X013", "急性膈面(下壁)心肌梗死"),
+        ]);
+        var snapshot = IcdIndexSnapshotBuilder.Build([LeadRow(400, "梗死，梗塞", "I21.9"),
+            ChildRow(401, 400, "－心肌(急性或伴有提及持续时间在4周或小于4周者)", "I21.9"),
+        ]);
+
+        var recommendations = resolver.Resolve(snapshot, dictionary, "急性下壁心肌梗死");
+
+        // 输入提及 下壁：带 (下壁) 括号限定词的特指变体必须保留（满足性过滤不误伤）。
+        Assert.Contains(recommendations, item => item.Code == "I21.900X013");
+    }
+
+    [Fact]
     public void 快照构建_失效主导词进入重定向表()
     {
         var snapshot = IcdIndexSnapshotBuilder.Build([

@@ -633,6 +633,30 @@ public sealed class V22LitePipelineTests
     }
 
     [Fact]
+    public async Task 同族括号变体_未满足限定词不凭重排噪声抢占标准名()
+    {
+        await using var database = await V22TestDatabase.CreateAsync();
+        var (hospitalId, taskId, message) = await database.SeedV22TaskAsync("【出院诊断】高血压病2级。");
+        await database.SeedIcdIndexRowAsync(300, "高血压", "I10");
+        await database.SeedCodeAsync(hospitalId, "ICD-10", "I10.X04", "高血压2级");
+        await database.SeedCodeAsync(hospitalId, "ICD-10", "I10.X00X025", "高血压病2级(低危)");
+        await database.SeedCodeAsync(hospitalId, "ICD-10", "I10.X00X027", "高血压病2级(高危)");
+
+        // 重排桩故意让最后的变体分最高（模拟 0.5B 重排噪声）——
+        // 括号限定词纪律必须在此之上守住族内秩序（B3-4 粒度调优）。
+        var runner = database.CreateV22Runner(reranker: new StubReranker([0.05, 0.1, 0.99]));
+
+        await runner.RunAsync(message);
+
+        await using var context = database.CreateContext();
+        var recommendations = await context.CodingRecommendations.OrderBy(item => item.Rank).ToListAsync();
+        Assert.NotEmpty(recommendations);
+        Assert.Equal("I10.X04", recommendations[0].Code);
+        Assert.DoesNotContain(recommendations, item => item.Code == "I10.X00X025");
+        Assert.DoesNotContain(recommendations, item => item.Code == "I10.X00X027");
+    }
+
+    [Fact]
     public async Task 向量通道命中_索引未命中时语义候选出码()
     {
         await using var database = await V22TestDatabase.CreateAsync();

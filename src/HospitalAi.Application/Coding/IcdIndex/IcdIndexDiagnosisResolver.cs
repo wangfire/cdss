@@ -31,7 +31,9 @@ public sealed record DiagnosisIndexRecommendation(
     string EvidencePath,
     string? Note,
     /// <summary>整标题逐字贴合度（标题长/输入长），供管道复排时保住"逐字完整标题优先"口径。</summary>
-    decimal WholeTitleDepth = 0m);
+    decimal WholeTitleDepth = 0m,
+    /// <summary>同族（同一索引编码展开批次）内的精排名次，供下游抗重排噪声。</summary>
+    int FamilyRank = 0);
 
 /// <summary>
 /// 诊断输入的两段式解析：主导词召回 → 逐级下钻 → 索引编码格式解析 → 字典展开。
@@ -77,9 +79,11 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
             .Select(group => group
                 .OrderByDescending(item => item.Recommendation.WholeTitleDepth)
                 .ThenByDescending(item => item.RawScore)
+                .ThenBy(item => item.Recommendation.FamilyRank)
                 .First())
             .OrderByDescending(item => item.Recommendation.WholeTitleDepth)
             .ThenByDescending(item => item.RawScore)
+            .ThenBy(item => item.Recommendation.FamilyRank)
             .Take(maxResults)
             .Select(item => item.Recommendation)
             .ToList();
@@ -189,23 +193,24 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
             return;
         }
 
-        foreach (var item in expanded)
-        {
-            // 排序用未截断分：Reported Score 上限 1.0 会把 "扁桃体息肉→J35.805"（标题全覆盖）
-            // 与 "→J03.901 急性化脓性扁桃体炎"（沾词）压成同分，取Top时只剩召回顺序。
-            var rawScore = item.Score * leadBoost * depthBoost * (0.5m + pathOverlap)
-                * (item.IsIndexFallback ? 0.8m : 1m);
-            ranked.Add((rawScore, new DiagnosisIndexRecommendation(
-                item.CodeSystemCode,
-                item.Code,
-                item.IsIndexFallback ? drill.Path[^1].Term : item.Title,
-                Math.Min(1m, rawScore),
-                item.IsIndexFallback,
-                item.IsConditionalAddOn,
-                pathDisplay + $" | 索引编码: {indexCode}",
-                item.Note,
-                item.WholeTitleDepth)));
-        }
+            foreach (var item in expanded)
+            {
+                // 排序用未截断分：Reported Score 上限 1.0 会把 "扁桃体息肉→J35.805"（标题全覆盖）
+                // 与 "→J03.901 急性化脓性扁桃体炎"（沾词）压成同分，取Top时只剩召回顺序。
+                var rawScore = item.Score * leadBoost * depthBoost * (0.5m + pathOverlap)
+                    * (item.IsIndexFallback ? 0.8m : 1m);
+                ranked.Add((rawScore, new DiagnosisIndexRecommendation(
+                    item.CodeSystemCode,
+                    item.Code,
+                    item.IsIndexFallback ? drill.Path[^1].Term : item.Title,
+                    Math.Min(1m, rawScore),
+                    item.IsIndexFallback,
+                    item.IsConditionalAddOn,
+                    pathDisplay + $" | 索引编码: {indexCode}",
+                    item.Note,
+                    item.WholeTitleDepth,
+                    item.FamilyRank)));
+            }
     }
 
     /// <summary>单字输入的精确主导词锚定：别名（含去装饰变体）与输入完全一致才命中。</summary>

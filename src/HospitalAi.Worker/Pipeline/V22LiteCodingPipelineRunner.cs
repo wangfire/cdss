@@ -36,7 +36,9 @@ internal sealed record MergedCandidate(
     string? IndexNote = null,
     decimal IndexTitleDepth = 0m,
     decimal? VectorScore = null,
-    decimal? RerankScore = null);
+    decimal? RerankScore = null,
+    /// <summary>索引同族展开批次内的名次（0 = 族内最优），注入 ExactScore 以抗重排噪声。</summary>
+    int FamilyRank = 0);
 
 /// <summary>
 /// 模型解释校验结果：Validated 表示通过 Schema 校验，Supported 表示解释能被证据支持。
@@ -569,7 +571,8 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                         IndexEvidencePath: item.EvidencePath,
                         IsIndexFallback: item.IsIndexFallback,
                         IndexNote: item.Note,
-                        IndexTitleDepth: item.WholeTitleDepth))
+                        IndexTitleDepth: item.WholeTitleDepth,
+                        FamilyRank: item.FamilyRank))
                     .ToList();
                 // 向量语义候选：索引命中之外的语义近似补充（口语简称 / 措辞差异），按余弦分入池。
                 var vectorHits = vectorResults.GetValueOrDefault(input.Id) ?? [];
@@ -718,7 +721,12 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                 }
 
                 var computed = SevenDimensionScorer.Compute(scoringOptions, new CandidateScoreInput(
-                    ExactScore: candidate.ExactScore,
+                    // 族内名次以每级 0.01 折入 ExactScore：同族分数钳位同分后，重排噪声
+                    // 曾能随意翻转族内秩序（实测 高血压病2级 被带括号变体顶替）；该幅度
+                    // 足以抗噪声，又不阻碍交叉编码的大幅合法改序（如 膈面=下壁 同义）。
+                    ExactScore: candidate.ExactScore is { } exactScore
+                        ? Math.Max(0m, exactScore - 0.01m * candidate.FamilyRank)
+                        : null,
                     SemanticScore: candidate.VectorScore,
                     RetrievalScore: candidate.FusedScore,
                     RerankScore: candidate.RerankScore,

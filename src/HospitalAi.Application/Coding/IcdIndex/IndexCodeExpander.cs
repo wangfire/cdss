@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using HospitalAi.Application.Coding.Matching;
 
 namespace HospitalAi.Application.Coding.IcdIndex;
@@ -57,7 +58,10 @@ public sealed record ExpandedItem(
     bool IsConditionalAddOn,
     string? Note,
     decimal TitleSpecificity = 0m,
-    decimal WholeTitleDepth = 0m);
+    decimal WholeTitleDepth = 0m,
+    /// <summary>同族（同一索引编码展开批次）内的精排名次：0 = 族内最优。
+    /// 分数同族普遍钳位到 1.0，该名次是把族内秩序带给下游评分的通道。</summary>
+    int FamilyRank = 0);
 
 /// <summary>
 /// 索引编码 → 字典详码展开器。联合码优先、三级回退：
@@ -316,8 +320,7 @@ public static class IndexCodeExpander
 
         var results = new List<ExpandedItem>();
         foreach (var row in rows)
-        {
-            if (TextMatch.IsUnjustifiedDiabetesCompound(row.Title, inputText)
+        {            if (TextMatch.IsUnjustifiedDiabetesCompound(row.Title, inputText)
                 || TextMatch.HasDiabetesTypeConflict(row.Title, row.Code, inputText, inAlternatives)
                 || TextMatch.HasNegationPoleConflict(row.Title, inputText)
                 || TextMatch.HasBodyPartConflict(row.Title, inputText))
@@ -392,14 +395,45 @@ public static class IndexCodeExpander
                     : 0m));
         }
 
-        return Rank(results)
+        // 括号限定词纪律（B3-4 粒度调优）：标题括号内是特异性限定词（高危/低危/部位/NEC 等）。
+        // 同族内存在"限定词全部被输入满足"的兄弟行时，限定词未被满足的行剔除——
+        // 输入未写 高危 就不得编 高血压病2级(高危)，且不受重排噪声影响；
+        // 整族都不满足时全部保留（部分编码只以带括号形态存在，防整族丢失）。
+        var satisfiedRows = results.Where(item => BracketQualifiersSatisfied(item.Title, inputKey)).ToList();
+        var rowsToRank = satisfiedRows.Count > 0 ? satisfiedRows : results;
+
+        var ranked = Rank(rowsToRank)
             .Take(10)
             .ToList();
+        // 族内名次注入：同族分数几乎必然钳位同分，名次是下游抗重排噪声的唯一信号。
+        for (var i = 0; i < ranked.Count; i++)
+        {
+            ranked[i] = ranked[i] with { FamilyRank = i };
+        }
+
+        return ranked;
     }
 
     private static TextMatch.Coverage Best(TextMatch.Coverage left, TextMatch.Coverage right)
     {
         return left.Ratio >= right.Ratio ? left : right;
+    }
+
+    private static readonly Regex BracketQualifierRegex = new("[（(]([^（）)]*)[）)]", RegexOptions.Compiled);
+
+    /// <summary>标题全部括号限定词（高危/部位/NEC 等）都出现在输入中（无括号视为满足）。</summary>
+    private static bool BracketQualifiersSatisfied(string title, string inputKey)
+    {
+        foreach (Match match in BracketQualifierRegex.Matches(title))
+        {
+            var qualifier = TextMatch.NormalizeKey(match.Groups[1].Value);
+            if (qualifier.Length > 0 && !inputKey.Contains(qualifier, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>

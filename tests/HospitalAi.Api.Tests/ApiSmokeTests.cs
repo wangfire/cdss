@@ -167,6 +167,9 @@ public sealed class CdssTestFactory : WebApplicationFactory<Program>
     {
         builder.UseEnvironment("Testing");
         builder.UseSetting("JwtAuth:Key", SigningKey);
+        // 测试封闭性：钉住模型网关为不可用，避免本机 Ollama 在/不在运行导致
+        // 解释校验结果漂移（LlmScore 是否参与评分）影响断言。
+        builder.UseSetting("ModelGateway:ModelMode", "Unavailable");
     }
 
     /// <summary>

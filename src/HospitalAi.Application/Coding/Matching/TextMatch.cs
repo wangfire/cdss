@@ -253,6 +253,17 @@ public static class TextMatch
         return (decimal)covered / inputCharacters.Length >= 0.6m;
     }
 
+    /// <summary>
+    /// 证据是否逐字支持该标题（≥2 字标题必须原样出现在证据原文中）。
+    /// 模型引用证据时必须能被这条确定性规则复核，否则引用不计为有效。
+    /// </summary>
+    public static bool EvidenceSupportsTitle(string? evidenceText, string title)
+    {
+        return title.Length >= 2
+            && !string.IsNullOrWhiteSpace(evidenceText)
+            && evidenceText.Contains(title, StringComparison.Ordinal);
+    }
+
     public static readonly string[] BodyQualifiers =
         ["颈", "胸", "腰", "骶", "尾", "肩", "肘", "腕", "髋", "膝", "踝", "足", "手",
             "头", "腹", "耳", "鼻", "牙", "眼", "角膜", "妊娠",

@@ -14,13 +14,23 @@ public sealed record DrillResult(
     string PathKey,
     decimal CoverRatio,
     bool CodeFromAncestorFallback,
-    IReadOnlyList<string> Jumps);
+    IReadOnlyList<string> Jumps,
+    /// <summary>见-1 强制改道时被让位的本地链路；改道链路取不到可用码时由调用方回退。</summary>
+    DrillResult? Displaced = null,
+    /// <summary>
+    /// 另见-1 提示链路：本地自带编码（病案信息简单，直接采用本行码）时 Top1 不变，
+    /// 但 另见 目标树里按输入还能走出的更细码交给调用方作并列候选，用于提示"漏填修饰词"。
+    /// </summary>
+    IReadOnlyList<DrillResult>? SeeAlsoHints = null);
 
 /// <summary>
 /// 主导词召回 + 逐级修饰词下钻。
 /// 召回门控：别名被输入完整/高覆盖命中（TextMatch.MatchesInput），且词条部位限定词须在输入中声明；
+/// "A病或B" 式的 或 尾段若在别处另有自己的主导词行，不得独立锚定本行（见 IcdIndexSnapshotBuilder.Build）；
 /// 下钻门控：子节点（任一变体别名）对输入"新增长连续段 ≥2"才进入（同样受部位限定词约束），同层取增益最大者；
-/// 命中链上无码节点回退最近有码祖先，最终回退主导词码；"见"子节点改道与本树下钻并列，取输入覆盖更多者。
+/// 命中链上无码节点回退最近有码祖先，最终回退主导词码；"见"子节点改道与本树下钻并列，取输入覆盖更多者，
+/// 但本地只能靠祖先兜底取码时改道结果无条件优先（索引惯例里"见 X"即命令转换主导词）；
+/// "另见 X" 且本地自带编码时不改 Top1，只把目标树的更细码挂在 <see cref="DrillResult.SeeAlsoHints"/> 上。
 /// </summary>
 public static class IcdIndexMatcher
 {
@@ -86,8 +96,9 @@ public static class IcdIndexMatcher
             LeadWordHit? best = null;
             foreach (var alias in lead.Aliases)
             {
-                // 单字别名（"肾"）只作下钻目标，不足以定位主导词。
-                if (GenericModifierKeys.Contains(alias.Key) || alias.Key.Length < 2)
+                // 单字别名（"肾"）只作下钻目标，不足以定位主导词；
+                // RecallAnchor=false 的 或 尾段同理（它继承头段限定词，不是本行的主导词）。
+                if (!alias.RecallAnchor || GenericModifierKeys.Contains(alias.Key) || alias.Key.Length < 2)
                 {
                     continue;
                 }
@@ -119,11 +130,17 @@ public static class IcdIndexMatcher
             .ToList();
     }
 
+    /// <param name="jumpTrace">
+    /// 证据链首跳标注（失效主导词 "X -见 Y" 的改道：调用方自己构造命中时链路里没有这一步，
+    /// 不标注就看不出编码员口径上的"必须转换"发生在哪里）。
+    /// </param>
     public static DrillResult? Drill(
         IcdIndexSnapshot snapshot,
         LeadWordHit leadHit,
         string inputKey,
-        int maxHops = 2)
+        int maxHops = 2,
+        List<IcdIndexNode>? genericJumps = null,
+        string? jumpTrace = null)
     {
         return DrillFromLead(
             snapshot,
@@ -133,7 +150,8 @@ public static class IcdIndexMatcher
             hops: 0,
             maxHops,
             visited: [leadHit.Node.SeqNo],
-            jumps: []);
+            jumps: jumpTrace is null ? [] : [jumpTrace],
+            genericJumps: genericJumps);
     }
 
     private static DrillResult? DrillFromLead(
@@ -144,7 +162,8 @@ public static class IcdIndexMatcher
         int hops,
         int maxHops,
         HashSet<int> visited,
-        List<string> jumps)
+        List<string> jumps,
+        List<IcdIndexNode>? genericJumps = null)
     {
         var path = new List<IcdIndexNode> { lead };
         var pathKey = initialPathKey;
@@ -214,15 +233,30 @@ public static class IcdIndexMatcher
                     }
                 }
 
-                if (child.JumpKind == IndexJumpKind.See
+                // "见情况 / 另见情况" 指向的是索引惯例泛词（=病，疾病），不是真正的目标主导词：
+                // 按编码员查典顺序，它只在**所有主导词都找不到**时才启用，所以本层不跳转，
+                // 只把这个跳转子节点交给调用方作末位兜底候选（见 DrillFromRedirectAnchor）。
+                // 登记判据用 "词面出现在输入里" 而不是 "挣到下钻增益"："枕大颅神经痛" 的
+                // 颅神经 与主导词 神经痛 在输入中重叠，按增益口径它永远进不了候选，
+                // 而兜底通道要的只是它的锚点词。
+                if (child.JumpKind is IndexJumpKind.See or IndexJumpKind.SeeAlso
+                    && IsGenericConditionTarget(child.JumpTarget)
+                    && child.Aliases.Any(alias => alias.MatchKey.Length >= 2
+                        && inputKey.Contains(alias.MatchKey, StringComparison.Ordinal)))
+                {
+                    if (genericJumps is not null && !genericJumps.Contains(child))
+                    {
+                        genericJumps.Add(child);
+                    }
+                }
+                else if (child.JumpKind == IndexJumpKind.See
                     && childBestGain >= 1
                     && pendingJump is null
                     && hops < maxHops)
                 {
                     pendingJump = child;
                 }
-
-                if (child.JumpKind == IndexJumpKind.SeeAlso
+                else if (child.JumpKind == IndexJumpKind.SeeAlso
                     && childBestGain >= 1
                     && pendingSeeAlsoJump is null
                     && hops < maxHops)
@@ -268,13 +302,23 @@ public static class IcdIndexMatcher
             var jumpTrace = new List<string> { $"{jumpChild.Term} → {jumpChild.JumpTarget}" };
             var jumped = DrillFromLead(
                 snapshot, jumpLead, jumpAlias, inputKey,
-                hops + 1, maxHops, visited, jumpTrace);
-            if (jumped is not null
-                && (local is null
-                    || CoveredInputChars(jumped.PathKey, inputKey)
-                        >= CoveredInputChars(local.PathKey, inputKey)))
+                hops + 1, maxHops, visited, jumpTrace, genericJumps);
+            if (jumped is not null)
             {
-                return jumped;
+                // 见-1（见 + 具体主导词必须转换）：指针行本身不给可采用的码，本地只能回退祖先泛化码时
+                // （"β脂蛋白血症，宽或上浮 → －过度 -见 高β脂蛋白血症" 的 E78.2），
+                // 祖先兜底码不具备与本地自码同等的对抗资格，直接让位给跳转链路；
+                // 跳转链路自己也只是祖先兜底时不在此列，仍按覆盖数定优。
+                var mandatory = local is { CodeFromAncestorFallback: true } && !jumped.CodeFromAncestorFallback;
+                if (local is null
+                    || mandatory
+                    || CoveredInputChars(jumped.PathKey, inputKey)
+                        >= CoveredInputChars(local.PathKey, inputKey))
+                {
+                    // 让位不等于丢弃：改道链路展不开时由调用方回退本地链路，
+                    // "必须转换" 不以输入失去推荐为代价。
+                    return mandatory ? jumped with { Displaced = local } : jumped;
+                }
             }
         }
 
@@ -298,6 +342,29 @@ public static class IcdIndexMatcher
             {
                 return alsoJumped;
             }
+        }
+
+        // 另见-1（本行带编码）：病案信息简单时直接采用本行编码，Top1 不动；
+        // 但索引在 另见 处明示了"推荐主导词下才有细码"（分娩，剖宫产 → 瘢痕 → 子宫 O34.2），
+        // 输入里写出更详细情况时把细码作为并列提示交给调用方——这是发现"诊断漏填修饰词"的唯一途径。
+        // "本行" 必须是链路真正停住的那一行：pendingSeeAlsoJump 只记录层内第一个挣到增益的 另见 兄弟，
+        // 不加这层等值判断时 腘动脉闭塞 会拿 动脉 的兄弟 冠状(另见 梗死，心肌) 出题，
+        // 把 心肌梗死 I21.9 塞进外周动脉闭塞的候选里。
+        if (pendingSeeAlsoJump is { } hintChild
+            && ReferenceEquals(current, hintChild)
+            && local is { CodeFromAncestorFallback: false }
+            && ResolveJumpLead(snapshot, hintChild.JumpTarget ?? string.Empty) is { } hintLead
+            && NodeAllows(hintLead, inputQualifiers, inputKey)
+            && !visited.Contains(hintLead.SeqNo)
+            && DrillFromLead(
+                snapshot, hintLead, JumpSeedKey(hintLead, inputKey), inputKey,
+                hops + 1, maxHops, [.. visited, hintLead.SeqNo],
+                [$"{hintChild.Term} ⇢ {hintChild.JumpTarget}"], genericJumps: null) is { } alt
+            && alt.Path.Count > 1
+            && !alt.CodeFromAncestorFallback
+            && alt.CodeNode.Code != local.CodeNode.Code)
+        {
+            return local with { SeeAlsoHints = [alt] };
         }
 
         return local;
@@ -453,6 +520,31 @@ public static class IcdIndexMatcher
     // 下钻遍历专用覆盖口径：单字符残段按包含计（"肾" 参与 "钙化→肾" 增益）。
     private static TextMatch.Coverage CoverageOfPath(string fragmentKey, string inputKey)
         => TextMatch.CoverageOf(fragmentKey, inputKey, countSingleCharSegments: true);
+
+    /// <summary>
+    /// 该别名键是否属于"不能当主导词用"的泛化词（部位段/人群段/形态尾段/病程极）。
+    /// 召回层用它拉黑，失效主导词改道层同样要用它：索引里 "新生儿 -见 母体情况" 式行
+    /// 说的是 新生儿 这个人群段，不是主导词，放行会把 新生儿黄疸 P57.9 顶成 P00.9。
+    /// </summary>
+    public static bool IsGenericLeadKey(string aliasKey) => GenericModifierKeys.Contains(aliasKey);
+
+    /// <summary>
+    /// 跳转目标是否为索引惯例里的泛词"情况"（= 主导词 病，疾病）。
+    /// 这类改道不是真正的目标主导词，按编码员查典顺序只能在**所有主导词都找不到**后启用，
+    /// 所以匹配器遇到它只登记不跳转（见 IcdIndexDiagnosisResolver 的末位兜底通道）。
+    /// </summary>
+    public static bool IsGenericConditionTarget(string? target)
+    {
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            return false;
+        }
+
+        var first = target.Split(['，', ',', '、'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(TextMatch.NormalizeKey)
+            .FirstOrDefault(key => key.Length > 0);
+        return first is "情况" or "疾病" or "病";
+    }
 
     /// <summary>
     /// 解析 "脓肿，阿米巴" / "阿米巴病" 式跳转目标为主导词节点。

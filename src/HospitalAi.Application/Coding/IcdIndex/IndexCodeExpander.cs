@@ -133,7 +133,7 @@ public static class IndexCodeExpander
                     site.ToUpperInvariant(), dictionary, inputText, inputKey, pathKey,
                     parsed.Kind, excludeJoint: false, inAlternatives,
                     note: $"形态学编码 {parsed.MorphologyCode}");
-                return items.Count > 0 ? items : [Fallback(parsed, inputText, fallbackCodeSystem)];
+                return items.Count > 0 ? items : FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
             }
 
             case IndexCodeFormatKind.DaggerPair:
@@ -167,7 +167,7 @@ public static class IndexCodeExpander
                         note: $"联合编码表现码（配 {parsed.DaggerCode}†）"));
                 }
 
-                return pair.Count > 0 ? pair : [Fallback(parsed, inputText, fallbackCodeSystem)];
+                return pair.Count > 0 ? pair : FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
             }
 
             case IndexCodeFormatKind.CodeRange:
@@ -176,7 +176,7 @@ public static class IndexCodeExpander
                     parsed.RangeStart ?? string.Empty, parsed.RangeEnd ?? string.Empty);
                 if (prefixes.Count == 0)
                 {
-                    return [Fallback(parsed, inputText, fallbackCodeSystem)];
+                    return FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
                 }
 
                 var rows = prefixes
@@ -184,7 +184,7 @@ public static class IndexCodeExpander
                     .ToList();
                 var items = RankRows(rows, inputText, inputKey, pathKey, parsed.Kind,
                     inAlternatives, note: null);
-                return items.Count > 0 ? items : [Fallback(parsed, inputText, fallbackCodeSystem)];
+                return items.Count > 0 ? items : FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
             }
 
             case IndexCodeFormatKind.CategoryUnspecified:
@@ -195,12 +195,12 @@ public static class IndexCodeExpander
                 var prefix = (parsed.Prefix ?? parsed.Raw).ToUpperInvariant().TrimEnd('*');
                 if (prefix.Length < 3)
                 {
-                    return [Fallback(parsed, inputText, fallbackCodeSystem)];
+                    return FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
                 }
 
                 var items = ExpandByPrefix(prefix, dictionary, inputText, inputKey, pathKey,
                     parsed.Kind, excludeJoint: false, inAlternatives, note: null);
-                return items.Count > 0 ? items : [Fallback(parsed, inputText, fallbackCodeSystem)];
+                return items.Count > 0 ? items : FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
             }
         }
     }
@@ -290,7 +290,7 @@ public static class IndexCodeExpander
 
         if (scored.Count == 0)
         {
-            return [Fallback(parsed, inputText, fallbackCodeSystem)];
+            return FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
         }
 
         // 病历信息不足以区分替代编码（并列/全部低分）→ 回退主导词未特指码，禁止全量输出。
@@ -298,7 +298,7 @@ public static class IndexCodeExpander
         var second = scored.Count > 1 ? scored[1].Best : 0m;
         if (top.Best <= 0m || top.Best - second < 0.15m)
         {
-            return [Fallback(parsed, inputText, fallbackCodeSystem)];
+            return FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
         }
 
         return top.Items;
@@ -461,5 +461,66 @@ public static class IndexCodeExpander
             IsIndexFallback: true,
             IsConditionalAddOn: false,
             Note: "索引编码在字典中无展开结果，回退推荐索引编码本身");
+    }
+
+    // 裸形态学码（M8140/3）：诊断字典（ICD-10）里 0 行，它只是肿瘤学形态/行为码，
+    // 没有部位与行为语义，不能作为临床编码出推荐。
+    private static readonly Regex BareMorphologyRegex =
+        new(@"^M\d{4}/\d$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// 回退产物：推荐必须落在字典里真实存在的编码上。索引原串（"O82.9"、"S31.0"、
+    /// "E85.4† K93.8*"）不是可采用的临床编码，下游按编码取标题会取空，
+    /// 所以按 †/* 与 ; 拆成单码，各自取字典同前缀最泛码（星码按其本身编码）；
+    /// 裸形态学码直接丢弃，宁可不推也不推一个查不到的码。
+    /// </summary>
+    private static IReadOnlyList<ExpandedItem> FallbackItems(
+        ParsedIndexCode parsed,
+        IcdDictionarySnapshot dictionary,
+        string inputText,
+        string fallbackCodeSystem)
+    {
+        var components = parsed.Kind switch
+        {
+            IndexCodeFormatKind.DaggerPair
+                when parsed.DaggerCode is { Length: > 0 } dagger && parsed.AsteriskCode is { Length: > 0 } asterisk
+                => [dagger, asterisk],
+            IndexCodeFormatKind.Morphology when parsed.SiteCode is { Length: > 0 } site => [site],
+            IndexCodeFormatKind.Alternatives
+                when parsed.Alternatives is { } alternatives => alternatives.Select(item => item.Raw).ToList(),
+            _ => [parsed.Raw],
+        };
+
+        var items = new List<ExpandedItem>();
+        foreach (var component in components)
+        {
+            var key = component.Trim().TrimEnd('*').ToUpperInvariant();
+            if (key.Length == 0 || BareMorphologyRegex.IsMatch(key))
+            {
+                continue;
+            }
+
+            var rows = dictionary.Prefix(key);
+            var exact = rows.FirstOrDefault(row =>
+                row.Code.TrimEnd('*').Equals(key, StringComparison.Ordinal));
+            var chosen = exact
+                ?? rows
+                    .OrderBy(row => row.Code.Length)
+                    .ThenBy(row => row.Code, StringComparer.Ordinal)
+                    .FirstOrDefault();
+            items.Add(chosen is null
+                ? Fallback(parsed, inputText, fallbackCodeSystem)
+                : new ExpandedItem(
+                    fallbackCodeSystem,
+                    chosen.Code,
+                    chosen.Title,
+                    FallbackScore,
+                    parsed.Kind,
+                    IsIndexFallback: true,
+                    IsConditionalAddOn: false,
+                    Note: $"索引编码 {parsed.Raw} 在字典中无展开结果，回退推荐同前缀码"));
+        }
+
+        return items;
     }
 }

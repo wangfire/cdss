@@ -90,6 +90,8 @@ public sealed class IcdIndexTests
         var alzheimer = IcdIndexSnapshotBuilder.ParseNode(LeadRow(65, "阿尔茨海默病或硬化", "G30.9"));
         Assert.Contains(alzheimer.Aliases, alias => alias.Key == TextMatch.NormalizeKey("阿尔茨海默病"));
         Assert.Contains(alzheimer.Aliases, alias => alias.Key == "硬化" && alias.Weight == 0.85m);
+        Assert.Contains(alzheimer.Aliases, alias => alias.Key == "硬化" && alias.HuoTail);
+        Assert.All(alzheimer.Aliases, alias => Assert.True(alias.RecallAnchor));
 
         var see = IcdIndexSnapshotBuilder.ParseNode(
             LeadRow(97, "阿米巴 - 见 阿米巴病", status: 1));
@@ -101,6 +103,230 @@ public sealed class IcdIndexTests
             LeadRow(10, "HIV - 另见 人(类)，免疫缺陷病毒[HIV]病"));
         Assert.Equal(IndexJumpKind.SeeAlso, seeAlso.JumpKind);
         Assert.Equal("HIV", seeAlso.Term);
+    }
+
+    /// <summary>
+    /// 真实索引行：主导词 结节(性) 19292 / 结(节) 18725 与 0 级人名行
+    /// 施莫尔病或结节 35637、赫伯登病或结节(伴有关节病) 14457。
+    /// </summary>
+    private static IcdIndexSnapshot NoduleSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(18725, "结(节) - 另见 结节"),
+        ChildRow(18737, 18725, "－施莫尔", "M51.4"),
+        LeadRow(19292, "结节(性)"),
+        ChildRow(19313, 19292, "－乳房 NEC", "N63"),
+        LeadRow(35637, "施莫尔病或结节", "M51.4"),
+        LeadRow(14457, "赫伯登病或结节(伴有关节病)", "M15.1"),
+    ]);
+
+    [Fact]
+    public void 或尾段另有主导词行时_不得独立锚定本行召回()
+    {
+        var snapshot = NoduleSnapshot();
+        var recalled = IcdIndexMatcher.RecallLeads(snapshot, "左乳腺结节", topK: 8)
+            .Select(hit => hit.Node.SeqNo)
+            .ToList();
+
+        // 尾段 结节 不再是这两行的人名行的锚点，正牌主导词照常召回。
+        Assert.Contains(19292, recalled);
+        Assert.DoesNotContain(35637, recalled);
+        Assert.DoesNotContain(14457, recalled);
+
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 8, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+        var dictionary = new IcdDictionarySnapshot([Dict("N63.X01", "乳房结节")]);
+
+        // 端到端只用链路本身能走通的输入（左乳腺结节 在生产里靠同义词变体才下钻到 乳房 NEC）。
+        var only = Assert.Single(resolver.Resolve(snapshot, dictionary, "乳房结节"));
+        Assert.Equal("N63.X01", only.Code);
+    }
+
+    [Fact]
+    public void 尾段已在头段出现过_或括号内的或_仍算合法锚点()
+    {
+        // 真实索引行 24250：本行的核心名词就是 硬化，尾段不是第二名词。
+        var monckeberg = IcdIndexSnapshotBuilder.ParseNode(
+            LeadRow(24250, "蒙克贝格动脉硬化、变性、病或硬化", "I70.2"));
+        Assert.Contains(monckeberg.Aliases, alias => alias.Key == "硬化" && !alias.HuoTail);
+
+        // 真实索引行 6632：圆括号里的 或 是括注并列，不产生主导词尾段，
+        // 但 婴儿 仍是本行的合法别名（特大婴儿 靠它召回）。
+        var gestational = IcdIndexSnapshotBuilder.ParseNode(
+            LeadRow(6632, "大于胎龄 NEC(胎儿或婴儿)", "P08.1"));
+        Assert.Contains(gestational.Aliases, alias => alias.Key == "婴儿" && !alias.HuoTail);
+    }
+
+    [Fact]
+    public void 输入写出人名时_或行仍由头段锚定()
+    {
+        var snapshot = NoduleSnapshot();
+        var hit = Assert.Single(
+            IcdIndexMatcher.RecallLeads(snapshot, "施莫尔结节", topK: 8),
+            item => item.Node.SeqNo == 35637);
+
+        Assert.Equal("施莫尔病", hit.Alias.Key);
+    }
+
+    /// <summary>
+    /// 索引自带的 "又称" 等价译名声明，全库 13 条 0 级行、三种词面形态
+    /// （横杠 7104、圆括号 6166、嵌在 现译名 目标尾部 646）。
+    /// </summary>
+    [Fact]
+    public void ParseNode_又称横杠形态_登记等价写法并剥出词面()
+    {
+        var node = IcdIndexSnapshotBuilder.ParseNode(LeadRow(7104, "癫癎 - 又称 癫痫", status: 1));
+
+        Assert.Equal("癫癎", node.Term);
+        Assert.Equal("癫痫", Assert.Single(node.AnotherNames));
+        Assert.DoesNotContain(node.Aliases, alias => alias.Key.Contains("又称", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ParseNode_又称圆括号形态_只登记不剥词面()
+    {
+        var node = IcdIndexSnapshotBuilder.ParseNode(LeadRow(6166, "卒中(脑)(麻痹性)(又称 中风)", "I64"));
+
+        // 词面保留：括号段参与链路覆盖度，剥掉会让既有输入失去推荐（同 纪律 1 的 另见 括号形态）。
+        Assert.Contains("(又称 中风)", node.Term);
+        Assert.Equal("中风", Assert.Single(node.AnotherNames));
+    }
+
+    [Fact]
+    public void ParseNode_现译名目标尾部的又称_也要摘出来()
+    {
+        var node = IcdIndexSnapshotBuilder.ParseNode(LeadRow(646,
+            "巴德-恰里 - 现译名 巴德-基亚里或巴德-吉亚利，又称  布-加综合征", status: 1));
+
+        Assert.Equal(IndexJumpKind.Redirect, node.JumpKind);
+        Assert.Equal("布-加综合征", Assert.Single(node.AnotherNames));
+    }
+
+    [Fact]
+    public void 快照构建_又称等价表_输入侧改写回索引主导词()
+    {
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(7104, "癫癎 - 又称 癫痫", status: 1),
+            LeadRow(7105, "癫癎(性)", "G40.9"),
+        ]);
+
+        Assert.Equal("癫癎", snapshot.AnotherNames["癫痫"]);
+        Assert.Contains("癫癎发作原因待查", snapshot.RewriteByAnotherNames("癫痫发作原因待查"));
+        Assert.Empty(snapshot.RewriteByAnotherNames("头痛"));
+    }
+
+    [Fact]
+    public void 又称改写_癫痫类输入召回到索引主导词_出G40编码()
+    {
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(7104, "癫癎 - 又称 癫痫", status: 1),
+            LeadRow(7105, "癫癎(性)", "G40.9"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([Dict("G40.900", "癫癎(性)")]);
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 8, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "癫痫发作原因待查");
+
+        Assert.Contains("G40.900", results.Select(item => item.Code));
+        Assert.Contains(results, item => item.EvidencePath.Contains("癫癎", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// 真实索引行：主导词 状态(50034，82 子行) 下的术式行与 手术后 NEC，
+    /// 0 级带码行 手术后状态 NEC(35948)，以及抢走这类输入的疾病主导词 甲状腺肿(17793)。
+    /// </summary>
+    private static IcdIndexSnapshot PostoperativeSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(50034, "状态"),
+        ChildRow(50064, 50034, "－甲状腺切除术后(甲状腺功能减退症)", "E89.0"),
+        ChildRow(50128, 50034, "－手术后 NEC", "Z98.8"),
+        LeadRow(35948, "手术后状态 NEC (另见 状态(后))", "Z98.8"),
+        LeadRow(17793, "甲状腺肿(游动性)(胸骨后)", "E04.9"),
+    ]);
+
+    private static IcdDictionarySnapshot PostoperativeDictionary() => new([
+        Dict("Z98.800", "手术后状态,其他特指的"),
+        Dict("E89.000", "甲状腺切除后甲状腺功能减退"),
+        Dict("E04.900", "非毒性甲状腺肿"),
+    ]);
+
+    [Fact]
+    public void 术后结尾输入_补全手术后状态变体后状态主导词链路可达()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 8, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+
+        var results = resolver.Resolve(PostoperativeSnapshot(), PostoperativeDictionary(), "--甲状腺切除术后");
+
+        // 索引里管这件事的两条主导词（状态→手术后 NEC / 手术后状态 NEC）都靠 状态 二字锚定，
+        // 缩写 术后 一字不沾时整条链路召不回，输入只能被 甲状腺肿 这类活动性疾病主导词借走。
+        Assert.Contains(results, item => item.Code == "Z98.800");
+        // 只追加变体、不替换原文：既有链路一条都不能少（becameEmpty 硬线的机制保证）。
+        Assert.Contains(results, item => item.Code == "E04.900");
+    }
+
+    [Fact]
+    public void 术后变体带术式前缀_索引给具体术式的精确码也可达()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 8, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+
+        var results = resolver.Resolve(PostoperativeSnapshot(), PostoperativeDictionary(), "--甲状腺切除术后");
+
+        // 带前缀的那一路负责精确码：状态 → －甲状腺切除术后(甲状腺功能减退症) → E89.0。
+        // 只补泛词的话这一路永远出不来（泛词里没有 甲状腺切除 的修饰词，下钻只能落 NEC）。
+        Assert.Contains(results, item => item.Code == "E89.000");
+        Assert.Contains(results, item => item.EvidencePath.Contains("甲状腺切除术后", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void 术后后面还有中心词时_不补状态变体()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 8, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+
+        // 术后感染/术后化疗/术后骨愈合 的 术后 不是结尾，补成"手术后状态"会把它带偏
+        // （万条实测：非结尾类 471 条的期望码族是 Z51 化疗、Z47、T81 并发症）。
+        var results = resolver.Resolve(PostoperativeSnapshot(), PostoperativeDictionary(), "甲状腺切除术后感染");
+
+        Assert.DoesNotContain(results, item => item.Code.StartsWith("Z98.8", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// 同族名额实测夹具：索引编码 E04.9 一个族就展开出 3 条字典详码（族内分数钳位同分），
+    /// 与 状态 链路的 Z98.800 / E89.000 抢同一份 Top3 名额。
+    /// </summary>
+    private static IcdDictionarySnapshot FamilyCapDictionary() => new([
+        Dict("E04.900X001", "甲状腺肿"),
+        Dict("E04.900", "非毒性甲状腺肿"),
+        Dict("E04.902", "结节性甲状腺肿"),
+        Dict("Z98.800", "手术后状态,其他特指的"),
+        Dict("E89.000", "甲状腺切除后甲状腺功能减退"),
+    ]);
+
+    [Fact]
+    public void 同族详码不再占满名额_竞争链路各得一席()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 8, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+
+        var results = resolver.Resolve(PostoperativeSnapshot(), FamilyCapDictionary(), "--甲状腺切除术后");
+
+        Assert.Equal(3, results.Count);
+        // 族内钳位同分让 甲状腺肿 E04.9 一条疾病链路把名额占满，状态链路（索引给这件事的正牌主导词）
+        // 的精确码与兜底码都排在第 4 位之后，交付里看不见。
+        Assert.Equal(1, results.Count(item => item.Code.StartsWith("E04.9", StringComparison.Ordinal)));
+        Assert.Contains(results, item => item.Code == "Z98.800");
+        Assert.Contains(results, item => item.Code == "E89.000");
+    }
+
+    [Fact]
+    public void 只有同族粒度菜单时空位续填_名额仍然占满()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 8, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+
+        // 二尖瓣术后 → Z98.800｜Z98.800X409｜Z98.800X406 这类"同族多级详码"就是编码员要的粒度菜单，
+        // 没有别的链路竞争时不能砍成一条。
+        var results = resolver.Resolve(
+            IcdIndexSnapshotBuilder.Build([LeadRow(17793, "甲状腺肿(游动性)(胸骨后)", "E04.9")]),
+            FamilyCapDictionary(),
+            "甲状腺肿");
+
+        Assert.Equal(3, results.Count);
+        Assert.All(results, item => Assert.StartsWith("E04.9", item.Code, StringComparison.Ordinal));
+        Assert.Equal("E04.900X001", results[0].Code);
     }
 
     /// <summary>单字主导词（痔）：单字输入精确命中主导词别名时放行下钻（B3-4）。</summary>
@@ -290,6 +516,216 @@ public sealed class IcdIndexTests
     }
 
     [Fact]
+    public void 见跳转_本地只能祖先兜底时必须转换主导词()
+    {
+        // 真实行 42 "β脂蛋白血症，宽或上浮 E78.2" → 43 "－过度 - 见 高β脂蛋白血症"（本行无码）
+        // → 11918 高β脂蛋白血症(家族性) E78.0。索引惯例里 "见 X" 是命令：编码员不会停在祖先的
+        // E78.2 泛化码上。改造前本地覆盖 8 字 > 跳转 6 字（输入没写"高"），E78.2 胜出。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(42, "β脂蛋白血症，宽或上浮", "E78.2"),
+            ChildRow(43, 42, "－过度 - 见 高β脂蛋白血症"),
+            LeadRow(11918, "高β脂蛋白血症(家族性)", "E78.0"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("E78.200", "β脂蛋白血症,宽性的"),
+            Dict("E78.000", "高β脂蛋白血症,家族性的"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "β脂蛋白血症过度");
+
+        Assert.Equal("E78.000", results[0].Code);
+        Assert.Contains("过度 → 高β脂蛋白血症", results[0].EvidencePath);
+    }
+
+    [Fact]
+    public void 见跳转_强制改道结果须携带让位的本地链路()
+    {
+        // 强制转换要的是优先级，不是"改道链路展不开就不出推荐"：被让位的本地祖先兜底链路
+        // 必须随结果一起交回调用方，作为取不到可用码时的回退。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(42, "β脂蛋白血症，宽或上浮", "E78.2"),
+            ChildRow(43, 42, "－过度 - 见 高β脂蛋白血症"),
+            LeadRow(11918, "高β脂蛋白血症(家族性)", "E78.0"),
+        ]);
+        var inputKey = TextMatch.NormalizeKey("β脂蛋白血症过度");
+        var leadHit = IcdIndexMatcher.RecallLeads(snapshot, inputKey, 8).First(item => item.Node.SeqNo == 42);
+
+        var drill = IcdIndexMatcher.Drill(snapshot, leadHit, inputKey);
+
+        Assert.Equal("E78.0", drill!.CodeNode.Code);
+        Assert.Equal("E78.2", drill.Displaced!.CodeNode.Code);
+        Assert.True(drill.Displaced.CodeFromAncestorFallback);
+    }
+
+    [Fact]
+    public void 见跳转_指针行自带编码时仍按输入覆盖数定优()
+    {
+        // 反例：本行自带编码（非祖先兜底）时，强制转换不成立，仍由覆盖数裁决——
+        // 保住 "阻塞(性)" 那类虚字符增益不得劫持本地链路的既有保护。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(42, "β脂蛋白血症，宽或上浮", "E78.2"),
+            ChildRow(43, 42, "－过度 - 见 高β脂蛋白血症", "E78.2"),
+            LeadRow(11918, "高β脂蛋白血症(家族性)", "E78.0"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("E78.200", "β脂蛋白血症,宽性的"),
+            Dict("E78.000", "高β脂蛋白血症,家族性的"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "β脂蛋白血症过度");
+
+        Assert.Equal("E78.200", results[0].Code);
+    }
+
+    [Fact]
+    public void 括号另见指针_须被识别为跳转段()
+    {
+        // 库里 2409 行 "(另见 X)" 形态（其中 2342 行自带编码）原先不被 JumpRegex 认出来，
+        // 指针既留在词面里污染别名，也让 另见-1 规则完全无从触发。
+        var node = IcdIndexSnapshotBuilder.ParseNode(
+            ChildRow(30787, 30786, "－剖宫产(另见 分娩，剖宫产)", "O82.9"));
+
+        Assert.Equal(IndexJumpKind.SeeAlso, node.JumpKind);
+        Assert.Equal("分娩，剖宫产", node.JumpTarget);
+        // 词面保持原样（别名与链路覆盖度口径不变），指针只登记跳转语义。
+        Assert.Contains("剖宫产", node.Aliases.Select(alias => alias.Key));
+
+        // 反例：索引的 "(见于)" 尾巴不是指针。
+        var site = IcdIndexSnapshotBuilder.ParseNode(ChildRow(17129, 0, "－肾小球(见于)", "N05.9"));
+        Assert.Equal(IndexJumpKind.None, site.JumpKind);
+        Assert.Contains("见于", site.Term);
+    }
+
+    /// <summary>
+    /// 真实链：30786 切开术 → 30787 "－剖宫产(另见 分娩，剖宫产) O82.9"；
+    /// 推荐主导词 9515 分娩 → 9846 "－剖宫产(为) O82.9" → 9847 "－－瘢痕" → 9850 "－－－子宫 O34.2"。
+    /// </summary>
+    private static IcdIndexRow[] CesareanRows() => [
+        LeadRow(30786, "切开术"),
+        ChildRow(30787, 30786, "－剖宫产(另见 分娩，剖宫产)", "O82.9"),
+        LeadRow(9515, "分娩", "O80.9"),
+        ChildRow(9846, 9515, "－剖宫产(为)", "O82.9"),
+        ChildRow(9847, 9846, "－－瘢痕"),
+        ChildRow(9850, 9847, "－－－子宫", "O34.2"),
+    ];
+
+    private static IcdIndexSnapshot CesareanSnapshot() => IcdIndexSnapshotBuilder.Build(CesareanRows());
+
+    private static IcdDictionarySnapshot CesareanDictionary() => new([
+        Dict("O82.900", "剖宫产术"),
+        Dict("O34.200", "子宫瘢痕"),
+    ]);
+
+    [Fact]
+    public void 另见提示_本地自带编码时结果须携带跳转树细码()
+    {
+        var inputKey = TextMatch.NormalizeKey("切开术，剖宫产，瘢痕，子宫");
+        var leadHit = IcdIndexMatcher.RecallLeads(CesareanSnapshot(), inputKey, 8)
+            .First(item => item.Node.SeqNo == 30786);
+
+        var drill = IcdIndexMatcher.Drill(CesareanSnapshot(), leadHit, inputKey);
+
+        Assert.Equal("O82.9", drill!.CodeNode.Code);
+        Assert.False(drill.CodeFromAncestorFallback);
+        var hint = Assert.Single(drill.SeeAlsoHints!);
+        Assert.Equal("O34.2", hint.CodeNode.Code);
+        Assert.Contains("⇢ 分娩，剖宫产", string.Join(";", hint.Jumps));
+    }
+
+    [Fact]
+    public void 另见提示_更细码补位并出漏填修饰词提示()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(CesareanSnapshot(), CesareanDictionary(), "切开术，剖宫产，瘢痕，子宫");
+
+        // 病案信息更详细时，Top1 仍是本行直接采用码，细码只作并列提示（不改优先级）。
+        Assert.Equal("O82.900", results[0].Code);
+        var hint = Assert.Single(results, item => item.Code == "O34.200");
+        Assert.Contains("本行 O82.9 为直接采用码", hint.Note);
+        Assert.Contains("瘢痕 → 子宫", hint.EvidencePath);
+    }
+
+    [Fact]
+    public void 另见提示_名额已满时不得挤掉既有推荐()
+    {
+        // 真实形态：剖宫产瘢痕子宫 同时命中 50316 子宫切除术，剖宫产（O82.2 展开 2 码）与
+        // 1032 瘢痕 → 子宫（N85.801），常规候选已占满 Top3。
+        // 提示只补空位：万条实测让位只多 1 条口径命中，却挤掉 20 条既有候选，
+        // 其中把 先天性胆囊缺如 Q44.3 塞进 胆囊结石、把 肘关节扭伤 S53.1 塞进 创伤性关节病，
+        // 精度优先于可见性。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            .. CesareanRows(),
+            LeadRow(50316, "子宫切除术，剖宫产", "O82.2"),
+            LeadRow(1032, "瘢痕(粘连)(挛缩)(疼痛)(不良)"),
+            ChildRow(1097, 1032, "－子宫", "N85.8"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("O82.900", "剖宫产术"),
+            Dict("O34.200", "子宫瘢痕"),
+            Dict("O82.200", "经剖宫产子宫切除术的分娩"),
+            Dict("O82.201", "经剖宫产子宫切除术的单胎分娩"),
+            Dict("N85.801", "瘢痕子宫"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "切开术，剖宫产，瘢痕，子宫");
+
+        Assert.Equal(3, results.Count);
+        Assert.DoesNotContain(results, item => item.Code == "O34.200");
+    }
+
+    [Fact]
+    public void 另见提示_病案信息简单取不到更细码时不出提示()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(CesareanSnapshot(), CesareanDictionary(), "切开术，剖宫产");
+
+        // 另见目标树走出的还是同一个 O82.9 —— 信息简单，直接采用本行编码，无须提示。
+        var only = Assert.Single(results);
+        Assert.Equal("O82.900", only.Code);
+        Assert.DoesNotContain("直接采用码", only.Note);
+    }
+
+    [Fact]
+    public void 另见提示_只对链路停住的那一行成立()
+    {
+        // 真实链 36359 栓塞(脓毒性) 下 36372 "－动脉 I74.9" 与 36408
+        // "－冠状(动脉或静脉)(全身性)(另见 梗死，心肌) I21.9" 同层：
+        // 动脉栓塞 的链路停在 动脉，冠状 只是靠并列别名 动脉 挣到增益的兄弟。
+        // 提示必须只属于链路终点那一行，否则 心肌梗死 会作为"更详细情况"挤进
+        // 外周动脉病变的 Top3（万条实测污染 90 条输入）。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(36359, "栓塞(脓毒性)", "I74.9"),
+            ChildRow(36372, 36359, "－动脉", "I74.9"),
+            ChildRow(36408, 36359, "－冠状(动脉或静脉)(全身性)(另见 梗死，心肌)", "I21.9"),
+            LeadRow(21000, "梗死，心肌"),
+            ChildRow(21001, 21000, "－冠状动脉", "I21.9"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("I74.900", "动脉栓塞,未特指的"),
+            Dict("I21.900", "急性心肌梗死"),
+        ]);
+        var inputText = "右下肢动脉栓塞";
+        var inputKey = TextMatch.NormalizeKey(inputText);
+
+        var drill = IcdIndexMatcher.Drill(snapshot,
+            IcdIndexMatcher.RecallLeads(snapshot, inputKey, 8).First(item => item.Node.SeqNo == 36359),
+            inputKey);
+
+        Assert.Equal("I74.9", drill!.CodeNode.Code);
+        Assert.Null(drill.SeeAlsoHints);
+
+        var results = new IcdIndexDiagnosisResolver(8, 3, "ICD-10")
+            .Resolve(snapshot, dictionary, inputText);
+        Assert.StartsWith("I74.9", results[0].Code);
+        Assert.DoesNotContain(results, item => item.Code.StartsWith("I21.9", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void 部位门控_钙化不得下钻进输入未声明的基底节或肾()
     {
         var snapshot = IcdIndexSnapshotBuilder.Build([
@@ -458,6 +894,61 @@ public sealed class IcdIndexTests
     }
 
     [Fact]
+    public void Expand_回退推荐须落在字典实码上()
+    {
+        // 索引行 "切开术 → －剖宫产(另见 分娩，剖宫产) O82.9"：字典详码被覆盖门控挡掉时，
+        // 旧口径把索引原串 O82.9 直接当推荐码——它不在 medical_code 里，下游按编码取标题取空。
+        var parsed = ParsedIndexCode.Parse("O82.9");
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("O82.900", "经剖宫产术分娩"),
+            Dict("O82.900X001", "无指征剖宫产的单胎分娩"),
+        ]);
+
+        var results = IndexCodeExpander.Expand(
+            parsed, dictionary, "切开术，剖宫产", TextMatch.NormalizeKey("切开术剖宫产"), maxResults: 3);
+
+        var only = Assert.Single(results);
+        Assert.Equal("O82.900", only.Code);
+        Assert.Equal("经剖宫产术分娩", only.Title);
+        Assert.True(only.IsIndexFallback);
+    }
+
+    [Fact]
+    public void Expand_裸形态学码不得成推荐()
+    {
+        // 主导词 腺癌 的索引编码就是 M8140/3：诊断字典里形态学码 0 行，
+        // 它没有部位与行为语义，回退也不该把它吐成临床编码。
+        var parsed = ParsedIndexCode.Parse("M8140/3");
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("C20.900", "直肠恶性肿瘤"),
+        ]);
+
+        var results = IndexCodeExpander.Expand(
+            parsed, dictionary, "直肠腺癌", TextMatch.NormalizeKey("直肠腺癌"), maxResults: 3);
+
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public void Expand_加星组合回退拆成病因与表现两码()
+    {
+        // 索引编码 "E85.4† K93.8*" 不是一个编码，旧口径整串回退会产出一个查不到的码。
+        var parsed = ParsedIndexCode.Parse("E85.4† K93.8*");
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("E85.400", "限定于器官的淀粉样变"),
+            Dict("K93.8*", "分类于他处的疾病引起其他特指的消化器官疾患"),
+        ]);
+
+        var results = IndexCodeExpander.Expand(
+            parsed, dictionary, "直肠隆起病变性质待定",
+            TextMatch.NormalizeKey("直肠隆起病变性质待定"), maxResults: 3);
+
+        Assert.Equal(2, results.Count);
+        Assert.Contains("E85.400", results.Select(item => item.Code));
+        Assert.Contains("K93.8*", results.Select(item => item.Code));
+    }
+
+    [Fact]
     public void Expand_替代编码组全部无法判定_回退索引编码本身()
     {
         var parsed = ParsedIndexCode.Parse("E10.3† H28.0*;E11.3† H28.0*");
@@ -485,9 +976,11 @@ public sealed class IcdIndexTests
             TextMatch.NormalizeKey("变性心肌伴有风湿热"), maxResults: 5);
 
         Assert.Equal(2, results.Count);
-        Assert.Equal("I00", results[0].Code);
+        // 回退也要落在字典实码上：I00 这个索引原串在 medical_code 里查不到标题，
+        // 而其同前缀码 I00.X00X002(风湿热) 的标题本就出现在输入里。
+        Assert.Equal("I00.X00X002", results[0].Code);
         Assert.True(results[0].IsIndexFallback);
-        Assert.Equal("I09.0", results[1].Code);
+        Assert.StartsWith("I09.0", results[1].Code);
         Assert.True(results[1].IsConditionalAddOn);
         Assert.Contains("条件联动附加码", results[1].Note);
     }
@@ -688,6 +1181,216 @@ public sealed class IcdIndexTests
     }
 
     [Fact]
+    public void 见情况_真主导词有产出时泛词通道不得并列竞争()
+    {
+        // 索引惯例 "直肠 -见 情况" 意为"到泛词 病，疾病 下找 直肠"，它不是主导词命中。
+        // "直肠肿瘤" 找得到真主导词 肿瘤，编码员顺序是先主导词、全落空才翻 病，疾病，
+        // 所以 病，疾病→直肠 K62.9 这条泛词链路必须整条让位（改造前它与 肿瘤 并列抢 Top1）。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(43560, "肿瘤", "C99.9"),
+            LeadRow(6809, "直肠 - 见 情况", status: 1),
+            LeadRow(2972, "病，疾病"),
+            ChildRow(3100, 2972, "直肠", "K62.9"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("C99.900", "肿瘤,恶性的(未特指部位)"),
+            Dict("K62.903", "直肠肿瘤"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "直肠肿瘤");
+
+        Assert.Contains("C99.900", results.Select(item => item.Code));
+        Assert.DoesNotContain("K62.903", results.Select(item => item.Code));
+        Assert.All(results, item => Assert.DoesNotContain("见 情况", item.EvidencePath));
+    }
+
+    [Fact]
+    public void 见情况_所有主导词落空时才在病疾病下锚定()
+    {
+        // 上例去掉 肿瘤 主导词（索引里查不到该主导词）→ 泛词通道才是唯一出口。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(6809, "直肠 - 见 情况", status: 1),
+            LeadRow(2972, "病，疾病"),
+            ChildRow(3100, 2972, "直肠", "K62.9"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("K62.903", "直肠肿瘤"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "直肠肿瘤");
+
+        var only = Assert.Single(results);
+        Assert.Equal("K62.903", only.Code);
+        Assert.Contains("直肠 -见 情况", only.EvidencePath);
+    }
+
+    [Fact]
+    public void 见情况兜底_病疾病下没有部位词时按族词续找()
+    {
+        // 泛词族在索引里互为指针：2972 病，疾病 -另见 综合征、16842 疾患 -另见 病，
+        // 编码员口径写的是"病，疾病、疾患"。兜底通道原先只翻 病，疾病 一棵树，
+        // 部位词挂在族里另一棵树下（库里 综合征 子层 352 行、疾患 子层 139 行）就直接放弃。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(6770, "胆囊的 - 见 情况", status: 1),
+            LeadRow(2972, "病，疾病"),
+            ChildRow(3068, 2972, "肾", "N28.9"),
+            LeadRow(16842, "疾患 - 另见 病"),
+            ChildRow(16843, 16842, "胆囊", "K82.9"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("N28.902", "肾疾病"),
+            Dict("K82.900", "胆囊疾病,未特指的"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "胆囊的继发可能性大");
+
+        var only = Assert.Single(results);
+        Assert.Equal("K82.900", only.Code);
+        Assert.Contains("胆囊的 -见 情况 ⇢ 疾患", only.EvidencePath);
+    }
+
+    [Fact]
+    public void 见具体主导词_失效词命中即改道但不压制本地链路()
+    {
+        // 真实行 28323 "剖腹产 - 见 剖宫产"：28324 剖宫产 才是主导词。
+        // 改造前只有整条输入与别名完全相等（ResolveRedirect）才改道，"剖腹产瘢痕子宫" 里
+        // 还有 瘢痕 召回成功，指针等于不存在；规则要求"见 + 具体主导词"必须转换。
+        // 改道结果进常规池一起比分，Top1 仍由覆盖度裁决（瘢痕→子宫 覆盖 4 字 > 剖宫产 0 字）。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(28323, "剖腹产 - 见 剖宫产", status: 1),
+            LeadRow(28324, "剖宫产", "O82.9"),
+            ChildRow(28325, 28324, "急症", "O82.1"),
+            LeadRow(1032, "瘢痕(粘连)(挛缩)(疼痛)(不良)"),
+            ChildRow(1097, 1032, "－子宫", "N85.8"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("O82.900", "剖宫产术"),
+            Dict("O82.100", "急症剖宫产"),
+            Dict("N85.801", "瘢痕子宫"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "剖腹产瘢痕子宫");
+
+        Assert.Contains("O82.900", results.Select(item => item.Code));
+        Assert.Contains("剖腹产 → 剖宫产", results
+            .First(item => item.Code == "O82.900").EvidencePath);
+        Assert.Equal("N85.801", results[0].Code);
+    }
+
+    [Fact]
+    public void 见具体主导词_人群段失效词不得改道()
+    {
+        // 索引行 "新生儿 -见 母体情况" 指的是人群段，不是被判失效的主导词：
+        // 万条实测放行它会把 新生儿黄疸 的 Top1 从 P57.900 顶成 P00.900，
+        // 与 新生儿休克/惊厥 被打成 P00.8x 噪声同一根因（召回层已按同一张黑名单拉黑）。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(43487, "新生儿 - 见 母体情况", status: 1),
+            LeadRow(24431, "母体情况，影响到胎儿或新生儿", "P00.9"),
+            LeadRow(15668, "黄疸"),
+            ChildRow(15700, 15668, "核，新生儿", "P57.9"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("P00.900", "胎儿和新生儿受母体情况的影响"),
+            Dict("P57.900", "新生儿高胆红素血症"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "新生儿黄疸");
+
+        Assert.Equal("P57.900", results[0].Code);
+        Assert.DoesNotContain(results, item => item.Code == "P00.900");
+    }
+
+    [Fact]
+    public void 见具体主导词_两字失效词只在输入主体是它时改道()
+    {
+        // "神经 -见 损伤"：马尾神经损害 里的 神经 是通道构成成分，不是失效主导词。
+        // 放行会把正确的 马尾 G83.400 顶成 S34.300（万条实测 250 条 Top1 变更里的一类）。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(30001, "神经 - 见 损伤", status: 1),
+            LeadRow(30002, "损伤", "S34.3"),
+            ChildRow(30003, 30002, "马尾", "S34.3"),
+            LeadRow(30004, "损害(非创伤性)(功能)"),
+            ChildRow(30005, 30004, "马尾", "G83.4"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("S34.300", "马尾损伤"),
+            Dict("G83.400", "马尾综合征"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "马尾神经损害");
+
+        Assert.StartsWith("G83.4", results[0].Code);
+        Assert.DoesNotContain(results, item => item.Code == "S34.300");
+
+        // 反例：输入只有 4 字、失效词就是它的主体时改道照常生效（阈值按输入长度而不是词表）。
+        var shortInput = resolver.Resolve(snapshot, dictionary, "马尾神经");
+        Assert.Contains("S34.300", shortInput.Select(item => item.Code));
+    }
+
+    [Fact]
+    public void 见具体主导词_或式拆出的裸泛词尾段不得改道()
+    {
+        // 真实行 36770 "斯托克斯-亚当斯病或综合征 – 见 阿-斯综合征"：别名按 或 拆分
+        // 产出裸尾段 综合征，它进了 Redirects 的键却不携带病种信息。
+        // 万条实测：放行后 眩晕综合征/烟雾综合征/肾病综合征 一律被 阿-斯综合征 I45.9 抢位，
+        // 并把 原发性干燥综合征伴间质性肺病 的正确码 M35.000 挤出 Top3。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(36770, "斯托克斯-亚当斯病或综合征 - 见 阿-斯综合征", status: 1),
+            LeadRow(36771, "阿-斯综合征或病", "I45.9"),
+            LeadRow(50429, "综合征"),
+            ChildRow(50430, 50429, "干燥", "M35.0"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("I45.901", "阿-斯综合征"),
+            Dict("M35.000", "干燥综合征"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "干燥综合征");
+
+        Assert.Equal("M35.000", results[0].Code);
+        Assert.All(results, item => Assert.DoesNotContain("综合征 → 阿-斯", item.EvidencePath));
+    }
+
+    [Fact]
+    public void 另见情况_子层泛词指针延后到末位兜底()
+    {
+        // 真实形态 "－管的 -见情况"、"―痉挛(性)(状态)(另见情况)"：泛词指针挂在主导词子层。
+        // 神经痛 本树能自码（R51.900）时不得改道；整树无码时才用它登记的锚点 颅神经 去
+        // 病，疾病 下精确定位（从根节点自由下钻会被单字泛词带偏）。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(20000, "神经痛", "R51.9"),
+            ChildRow(20001, 20000, "－颅神经 - 见 情况"),
+            LeadRow(2972, "病，疾病"),
+            ChildRow(2010, 2972, "颅神经", "G50.0"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("R51.900", "神经痛,未特指的"),
+            Dict("G50.000", "颅神经痛"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var retained = resolver.Resolve(snapshot, dictionary, "枕大颅神经痛");
+        Assert.DoesNotContain("G50.000", retained.Select(item => item.Code));
+        Assert.All(retained, item => Assert.DoesNotContain("见 情况", item.EvidencePath));
+
+        var noLocalCode = IcdIndexSnapshotBuilder.Build([
+            LeadRow(20000, "神经痛"),
+            ChildRow(20001, 20000, "－颅神经 - 见 情况"),
+            LeadRow(2972, "病，疾病"),
+            ChildRow(2010, 2972, "颅神经", "G50.0"),
+        ]);
+        var fallbackResults = resolver.Resolve(noLocalCode, dictionary, "枕大颅神经痛");
+        Assert.Contains("G50.000", fallbackResults.Select(item => item.Code));
+    }
+
+    [Fact]
     public void 下钻别名择一_括号变体的游离字不得挡住枢纽词()
     {
         // 真实链 20794 溃疡(性) → 20955 十二指肠(腐蚀性)(消化性) → 20966 伴有 → 20967 出血 K26.4。
@@ -734,6 +1437,31 @@ public sealed class IcdIndexTests
         Assert.Equal("I74.900", results[0].Code);
         Assert.DoesNotContain(results, item => item.Code.StartsWith("K55.0", StringComparison.Ordinal));
         Assert.Contains("⇢ 栓塞，动脉", results[0].EvidencePath);
+    }
+
+    [Fact]
+    public void 另见提示_本地自带编码时改道结果不得夺Top1()
+    {
+        // 与上一条同形，只是 1456 本行自带编码（另见-1 的"信息简单"分支）：
+        // 本地自码仍是 Top1，栓塞，动脉 树的细码只能作提示补位——保住"本地自码不被另见劫走"。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(1445, "闭塞，闭合", "I99"),
+            ChildRow(1456, 1445, "动脉 - 另见 栓塞，动脉", "I73.9"),
+            ChildRow(1457, 1456, "肠系膜(慢性)", "K55.0", level: 2),
+            LeadRow(36359, "栓塞(脓毒性)", "I74.9"),
+            ChildRow(36372, 36359, "动脉", "I74.9"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("I73.900", "动脉闭塞"),
+            Dict("I74.900", "动脉栓塞,未特指的"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "右侧胫前动脉闭塞");
+
+        Assert.StartsWith("I73.9", results[0].Code);
+        Assert.Contains("本行 I73.9 为直接采用码", results[1].Note);
+        Assert.StartsWith("I74.9", results[1].Code);
     }
 
     [Fact]

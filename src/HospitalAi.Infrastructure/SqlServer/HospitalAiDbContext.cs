@@ -744,6 +744,13 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
             .HasDatabaseName("ix_coding_recommendation_task_review_status");
         entity.HasIndex(item => new { item.HospitalId, item.PipelineVersion, item.LifecycleStatus })
             .HasDatabaseName("ix_coding_recommendation_hospital_pipeline_lifecycle");
+        // V2.2-Lite 每个任务在写推荐前要按任务读回 diagnosis_input_id + recommendation_version 推算下一版（r-2/r-3…）。
+        // STALE 历史不物理删除，本表随重跑累积（本机 42 万行），上面几条索引都服务不了这句读，
+        // 实测退化成聚集索引全扫 92,658 逻辑读、撞满 EF 30s CommandTimeout，超时会让整任务重试，
+        // 万条重跑吞吐从 45 任务/分钟塌到 2–4。这条覆盖索引把同一句读降到 3 逻辑读。
+        entity.HasIndex(item => new { item.CodingTaskId, item.HospitalId, item.DiagnosisInputId, item.RecommendationVersion })
+            .HasDatabaseName("ix_coding_recommendation_task_input_version")
+            .HasFilter("[diagnosis_input_id] IS NOT NULL AND [recommendation_version] IS NOT NULL");
         entity.HasOne(item => item.Hospital)
             .WithMany()
             .HasForeignKey(item => item.HospitalId)

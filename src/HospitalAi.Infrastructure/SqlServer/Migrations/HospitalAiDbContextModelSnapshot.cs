@@ -987,6 +987,10 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                     b.HasIndex("HospitalId", "PipelineVersion", "LifecycleStatus")
                         .HasDatabaseName("ix_coding_recommendation_hospital_pipeline_lifecycle");
 
+                    b.HasIndex("CodingTaskId", "HospitalId", "DiagnosisInputId", "RecommendationVersion")
+                        .HasDatabaseName("ix_coding_recommendation_task_input_version")
+                        .HasFilter("[diagnosis_input_id] IS NOT NULL AND [recommendation_version] IS NOT NULL");
+
                     b.HasIndex("CodingTaskId", "DiagnosisInputId", "RecommendationType", "Code")
                         .IsUnique()
                         .HasDatabaseName("ux_coding_recommendation_task_input_type_code")

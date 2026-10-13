@@ -1415,6 +1415,55 @@ public sealed class IcdIndexTests
     }
 
     [Fact]
+    public void 下钻简称部位词_索引全称部位词对输入简称放行()
+    {
+        // 真实链 12729 供血不足 → 12730 动脉 I77.1 → 12733 大脑 I67.8。
+        // 索引按全称写 "－大脑"，病历按习惯只写 "脑动脉…"：CoveredTextPositions 只登记
+        // ≥2 连续片段，孤立的 脑 恒为 0 新字，基线因此停在泛码 I77.100(动脉狭窄)。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(12729, "供血不足"),
+            ChildRow(12730, 12729, "动脉", "I77.1"),
+            ChildRow(12733, 12730, "大脑", "I67.8", level: 2),
+            ChildRow(12734, 12730, "基底", "G45.0", level: 2),
+            ChildRow(12743, 12729, "血管", "I99"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("I67.803", "脑动脉供血不足"),
+            Dict("I67.800", "脑血管疾病,其他特指的"),
+            Dict("I77.100", "动脉狭窄"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "脑动脉供血不足");
+
+        Assert.Equal("I67.803", results[0].Code);
+        Assert.Contains("动脉 → 大脑", results[0].EvidencePath);
+    }
+
+    [Fact]
+    public void 下钻简称部位词_方位前缀不得把裸部位输入钻进解剖子区()
+    {
+        // 真实链 1032 瘢痕 → 1096 中耳 H74.8。中/外/上/下/前/后/内 改变的是解剖子区，
+        // 不是构词前缀："耳瘢痕" 只声明了 耳，必须留在 L90.5 皮肤瘢痕族，不得下钻到 中耳。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(1032, "瘢痕(粘连)(挛缩)(疼痛)(不良)", "L90.5"),
+            ChildRow(1096, 1032, "中耳", "H74.8"),
+            ChildRow(1059, 1032, "结膜", "H11.2"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("L90.500X026", "上唇瘢痕"),
+            Dict("H74.800", "中耳和乳突其他特指的疾患"),
+            Dict("H11.200", "结膜瘢痕"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "耳瘢痕");
+
+        Assert.DoesNotContain(results, item => item.Code.StartsWith("H74.8", StringComparison.Ordinal));
+        Assert.StartsWith("L90.5", results[0].Code, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 另见跳转_本树停在跳转子节点且无自码时改道取码()
     {
         // 真实链 1445 闭塞，闭合 → 1456 "动脉 -另见 栓塞，动脉"（本行无码、下面没有

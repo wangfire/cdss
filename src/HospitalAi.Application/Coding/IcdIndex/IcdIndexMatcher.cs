@@ -215,8 +215,10 @@ public static class IcdIndexMatcher
                     // LCS 拼段无法连续命中，按整字包含计 1 增益。
                     var singleHit = alias.MatchKey.Length == 1
                         && inputKey.Contains(alias.MatchKey, StringComparison.Ordinal);
+                    // 简称部位词（索引 大脑 / 输入 脑）同样挣不到连续覆盖，按单字部位词口径补 1 增益。
+                    var siteAbbrev = SiteAbbrevWord(alias.MatchKey, inputKey, pathPositions) is not null;
                     var gain = combinedCover.CoveredChars - currentCover.CoveredChars
-                        + (singleHit && combinedCover.CoveredChars == currentCover.CoveredChars ? 1 : 0);
+                        + ((singleHit || siteAbbrev) && combinedCover.CoveredChars == currentCover.CoveredChars ? 1 : 0);
                     // 同一子节点的多个别名变体取"整条路径被输入覆盖比例"最高者（同比例取增益大者）：
                     // 带澄清括号的长变体（"十二指肠(腐蚀性)(消化性)"）常靠括号里一个游离字
                     // （"可能性大" 的 性）多挣 1 增益，却把 12 个字符的噪声塞进命中路径，
@@ -442,6 +444,15 @@ public static class IcdIndexMatcher
     }
 
     /// <summary>
+    /// 索引部位词的构词性前缀：只用于把 "大脑"（索引对 脑 的规范全称）
+    /// 与 "颞骨/舟骨" 这类 "下位具体部位" 区分开。
+    /// 中/外/上/下/前/后/内/左/右 不进表：它们改变解剖子区，会让裸部位输入被过细分
+    /// （"耳瘢痕" 被下钻到 "－中耳"），与精度优先冲突。
+    /// </summary>
+    private static readonly HashSet<char> MorphologicalPrefixes =
+        new(['大', '小']);
+
+    /// <summary>
     /// 子节点别名能否给链路增加输入中的新内容。
     /// 单字部位词（"－肾"、"－肺"）按整字包含放行；其余要求有 ≥2 字符的连续片段
     /// 尚未被路径占住，挡住靠虚字符与重复字挣增益的下钻。
@@ -468,7 +479,69 @@ public static class IcdIndexMatcher
             });
         }
 
-        return TextMatch.CoveredTextPositions(matchKey, inputKey).Except(pathPositions).Count() >= 2;
+        var newPositions = TextMatch.CoveredTextPositions(matchKey, inputKey)
+            .Except(pathPositions)
+            .ToList();
+        if (newPositions.Count >= 2)
+        {
+            return true;
+        }
+
+        // 索引子节点写全称部位词（"－大脑"），病历按习惯只写简称（"脑动脉…"）时，
+        // CoveredTextPositions 只登记 ≥2 连续片段，孤立的 脑 恒为 0 新字、被门槛彻底挡死，
+        // 下钻停在 "动脉" 这一层泛码上。只对最窄口径放行：别名整体是 "构词前缀+部位词"
+        // （见 MorphologicalPrefixes），其余别名内含部位字的形态
+        // （腹壁、颞骨、舟骨）与方位前缀的过细分（耳瘢痕→中耳）实测都是正误各半，不放开。
+        return SiteAbbrevWord(matchKey, inputKey, pathPositions) is not null;
+    }
+
+    /// <summary>
+    /// 别名是否为 "构词性前缀 + 输入已声明、且尚未被路径占位的部位词"（部位词在末尾）。
+    /// 索引 "－大脑" 对输入 "脑动脉供血不足" 成立；索引 "－颞骨"、"－舟骨" 对输入 "...骨..."
+    /// 属下位具体部位，不成立。命中返回该部位词，否则 null。
+    /// </summary>
+    private static string? SiteAbbrevWord(
+        string matchKey,
+        string inputKey,
+        HashSet<int> pathPositions)
+    {
+        foreach (var site in TextMatch.ExtractQualifiers(inputKey))
+        {
+            if (site.Length == 0 || matchKey.Length <= site.Length
+                || !matchKey.EndsWith(site, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var prefix = matchKey[..^site.Length];
+            if (!prefix.All(character => MorphologicalPrefixes.Contains(character)))
+            {
+                continue;
+            }
+
+            var position = inputKey.IndexOf(site, StringComparison.Ordinal);
+            while (position >= 0)
+            {
+                var free = true;
+                for (var offset = 0; offset < site.Length; offset++)
+                {
+                    if (pathPositions.Contains(position + offset))
+                    {
+                        free = false;
+                        break;
+                    }
+                }
+
+                if (free)
+                {
+                    return site;
+                }
+
+                position = inputKey.IndexOf(site, position + 1, StringComparison.Ordinal);
+            }
+        }
+
+        return null;
     }
 
     private static DrillResult? BuildResult(

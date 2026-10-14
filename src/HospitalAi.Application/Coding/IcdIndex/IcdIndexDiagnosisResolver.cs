@@ -477,7 +477,16 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
             return false;
         }
 
-        var depthBoost = 1m + 0.05m * drill.Path.Count;
+        // 折叠掉的连接行（见于/由于/继发于）不是输入真写出来的证据层：既不挣链路深度加成，
+        // 也不挣覆盖度评分——否则"透明化"本身就等于给这类链路加权（改道平权纪律）。
+        // 万条实测漏掉这一条时 酒精性痴呆 F10.700X002 被 痴呆 → 见于(由于) → 酒精 的折叠链路
+        // 靠"多一层深度"顶掉（同一改动带进 9 条流失、补上这条判据后 8 条）。
+        // 30% 门槛仍按完整链路算：透明化不该让任何既有链路新掉进门控（打空硬线）。
+        var evidencePath = drill.Path.Where(node => !IcdIndexMatcher.IsConnectorNode(node)).ToList();
+        var evidenceOverlap = evidencePath.Count == drill.Path.Count
+            ? PathOverlapRatio(drill.Path, inputText)
+            : PathOverlapRatio(evidencePath, inputText);
+        var depthBoost = 1m + 0.05m * evidencePath.Count;
         // 链路字符重叠门控：主导词+下钻路径（取各节点与输入重叠最好的别名变体）
         // 必须解释输入 30% 以上字符，否则视为无关链路直接丢弃；重叠度并入评分做精排。
         // 跨部位误下钻（基底节/结核/牙源性）由主导词与子树限定词门控拦截，此处阈值只兜底。
@@ -491,7 +500,7 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         {
             // 排序用未截断分：Reported Score 上限 1.0 会把 "扁桃体息肉→J35.805"（标题全覆盖）
             // 与 "→J03.901 急性化脓性扁桃体炎"（沾词）压成同分，取Top时只剩召回顺序。
-            var rawScore = item.Score * leadBoost * depthBoost * (0.5m + pathOverlap)
+            var rawScore = item.Score * leadBoost * depthBoost * (0.5m + evidenceOverlap)
                 * (item.IsIndexFallback ? 0.8m : 1m);
             ranked.Add((rawScore, new DiagnosisIndexRecommendation(
                 item.CodeSystemCode,

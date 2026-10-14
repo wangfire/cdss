@@ -30,7 +30,9 @@ public sealed record DrillResult(
 /// 下钻门控：子节点（任一变体别名）对输入"新增长连续段 ≥2"才进入（同样受部位限定词约束），同层取增益最大者；
 /// 命中链上无码节点回退最近有码祖先，最终回退主导词码；"见"子节点改道与本树下钻并列，取输入覆盖更多者，
 /// 但本地只能靠祖先兜底取码时改道结果无条件优先（索引惯例里"见 X"即命令转换主导词）；
-/// "另见 X" 且本地自带编码时不改 Top1，只把目标树的更细码挂在 <see cref="DrillResult.SeeAlsoHints"/> 上。
+/// "另见 X" 且本地自带编码时不改 Top1，只把目标树的更细码挂在 <see cref="DrillResult.SeeAlsoHints"/> 上；
+/// 纯病因连接行（见于/由于/继发于）在输入没逐字写出它时透明：孙节点直接来本层竞选下一跳，
+/// 使 肾炎 → 由于 → 链球菌 这类索引病因惯例能接上"链球菌并发肾炎"式病历（见 ConnectorCoreTerms）。
 /// </summary>
 public static class IcdIndexMatcher
 {
@@ -58,6 +60,82 @@ public static class IcdIndexMatcher
         // 婴儿 不拉黑：台账 27 次召回 20 次下钻到码（特大婴儿→P08.000），拉黑即打成空推荐。
         "新生儿",
     ];
+
+    /// <summary>
+    /// 索引里只起接续作用的"纯连接行"核心词（关节炎 → －见于(由于) → －－类风湿）。
+    /// 全库 51268 行共 403 行属于这一族（伴有 194、由于 111、见于 71、和 22…），
+    /// 分布在 1-4 级、402 行不带编码：它们不表达可选修饰语，只把上一层的病因/部位接到下一层。
+    /// 病历永远不会逐字写出 见于/由于，按"每一层都要为链路挣到新内容"的下钻口径，
+    /// 链路必然停在连接行上、只能回退祖先泛码（万条实测：断链行榜首 －见于(由于) 挡 143 名，
+    /// 横跨 26 个主导词）。本表只收病因方向的 见于(71 行)/由于(111 行) 及其复合写法。
+    /// 并列连词不进表：索引的 和/及/与/或 是"累及第二个部位/另一种物质"的多发组合写法
+    /// （骨折 → 多发性 → 肢 → 上(单一) → 和 → 另一上肢 = T02.4），折叠它会把单部位输入
+    /// 判成多部位码——万条实测 3 条 T02.2/S 类单上肢骨折因此丢 Top1。
+    /// 表并列的 伴有/合并 两个连接词也不进表：它们说的是"另一个并存的病"，不是本行的病因。
+    /// 折叠它时，输入并列写出两个诊断就会被判成索引的组合码——JZEY 真实病历万名实测 19 条流失里
+    /// 13 条是这一族（主动脉瓣关闭不全，二尖瓣关闭不全 I35.100→多瓣膜病 I08.005、
+    /// 急性胆囊炎、胆囊泥沙样结石 K81.000→胆囊结石 K80.200X003、
+    /// 甲状腺多发结节--结甲 E04.101→甲状腺毒症伴有单个结节 E05.100），
+    /// 而 ICD10CAP 那 60 条新增全部出自 由于/见于 的病因方向，两条通路互不依赖。
+    /// </summary>
+    private static readonly HashSet<string> ConnectorCoreTerms =
+    [
+        "见于", "由于", "继发于", "由于合并",
+    ];
+
+    /// <summary>连接行最多连续折叠几层（实测索引里最深 2 层相连）。</summary>
+    private const int MaxConnectorLookThrough = 2;
+
+    /// <summary>
+    /// 纯连接行：无编码、无见/另见指针、核心词整词就是连接词。
+    /// 带编码的不算（折叠它会丢掉本行直接采用码）、带指针的不算（指针行是"必须转换"的语义载体）。
+    /// public 供链路打分使用：折叠掉的连接行不是"输入真的写出的证据层"，
+    /// 既不该挣链路深度加成，也不该挣覆盖度加成（纪律：改道一律平权，不加权）。
+    /// </summary>
+    public static bool IsConnectorNode(IcdIndexNode node)
+        => node.Code is not { Length: > 0 }
+            && node.JumpKind == IndexJumpKind.None
+            && ConnectorCoreTerms.Contains(node.CoreTerm);
+
+    /// <summary>
+    /// 下钻候选 = 直接子节点 + 穿过连接行后的后代节点。
+    /// 连接行照常进候选（选它=原地停住、回退祖先码，这是改动前的行为），
+    /// 折叠只是在它之上多挂一条"穿过它去竞选孙节点"的通路，通路上的每个子节点
+    /// 沿用完全相同的增益/覆盖/部位门控口径——平权、不加权。
+    ///
+    /// 只在输入没有逐字写出这个连接词时才折叠：透明化是为索引惯例
+    /// （肾炎 → －由于 → 链球菌，病历写"链球菌并发肾炎"）服务的。输入自己写出连接词时
+    /// 字面下钻本来就走得通，而折叠通路会把它的词面从 pathKey 省掉、覆盖度分母随之变小，
+    /// 等于给这条链路变相加权——万名实测这道闸省下 3 条既有正确 Top1。
+    /// </summary>
+    private static void CollectDrillCandidates(
+        IcdIndexNode parent,
+        IReadOnlyList<IcdIndexNode> connectors,
+        List<(IcdIndexNode Node, IcdIndexNode[] Connectors)> sink,
+        HashSet<string> inputQualifiers,
+        string inputKey)
+    {
+        foreach (var child in parent.Children)
+        {
+            if (!NodeAllows(child, inputQualifiers, inputKey))
+            {
+                continue;
+            }
+
+            sink.Add((child, [.. connectors]));
+
+            if (IsConnectorNode(child) && connectors.Count < MaxConnectorLookThrough
+                && !WrittenInInput(child, inputKey))
+            {
+                CollectDrillCandidates(child, [.. connectors, child], sink, inputQualifiers, inputKey);
+            }
+        }
+    }
+
+    /// <summary>输入是否逐字写出了该行的任一别名词面（连接词是否真的出现在病历里）。</summary>
+    private static bool WrittenInInput(IcdIndexNode node, string inputKey)
+        => node.Aliases.Any(alias => alias.MatchKey.Length > 0
+            && inputKey.Contains(alias.MatchKey, StringComparison.Ordinal));
 
     /// <summary>
     /// 节点级语义门控：部位/人群限定词必须是输入已声明的子集，病程极（急性↔慢性、近期↔陈旧）
@@ -179,10 +257,14 @@ public static class IcdIndexMatcher
             string bestChildKey = string.Empty;
             int bestGain = 0;
             var bestRatio = 0m;
+            IcdIndexNode[] bestConnectors = [];
             // 路径当前已在输入中占住的片段，用于判定子节点是否带来"新内容"。
             var pathPositions = TextMatch.CoveredTextPositions(pathKey, inputKey);
 
-            foreach (var child in current.Children)
+            var candidates = new List<(IcdIndexNode Node, IcdIndexNode[] Connectors)>();
+            CollectDrillCandidates(current, [], candidates, inputQualifiers, inputKey);
+
+            foreach (var (child, connectors) in candidates)
             {
                 // 子节点部位词（"－玻璃体"、"－钙化性牙源性"）未在输入声明 → 禁止进入该子树。
                 if (!NodeAllows(child, inputQualifiers, inputKey))
@@ -277,12 +359,19 @@ public static class IcdIndexMatcher
                     bestRatio = childBestRatio;
                     bestChild = child;
                     bestChildKey = childBestKey;
+                    bestConnectors = connectors;
                 }
             }
 
             if (bestChild is null || bestGain < 1)
             {
                 break;
+            }
+
+            // 途经的连接行进链路：证据链要能让编码员看到码是从 见于(由于) 下面哪一支取的。
+            foreach (var connector in bestConnectors)
+            {
+                path.Add(connector);
             }
 
             current = bestChild;

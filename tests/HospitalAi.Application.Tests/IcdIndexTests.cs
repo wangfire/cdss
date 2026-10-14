@@ -1874,4 +1874,107 @@ public sealed class IcdIndexTests
 
         Assert.Equal("H35.000X005", resolver.Resolve(snapshot, dictionary, "--双眼高血压视网膜病变")[0].Code);
     }
+
+    /// <summary>
+    /// 真实索引行：白内障(746) → －见于(由于)(761) → －－糖尿病(767) / －－慢性虹膜睫状体炎(765)。
+    /// 761 不带编码、不带指针，是索引里 403 条纯连接行之一。
+    /// </summary>
+    private static IcdIndexSnapshot CataractSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(746, "白内障(皮质性)(未熟)(初期)(另见 内障)", "H26.9"),
+        ChildRow(761, 746, "－见于(由于)"),
+        ChildRow(765, 761, "－－慢性虹膜睫状体炎", "H26.2", level: 2),
+        ChildRow(767, 761, "－－糖尿病", "E10.3† H28.0*", level: 2),
+    ]);
+
+    private static IcdDictionarySnapshot CataractDictionary() => new([
+        Dict("E10.300+H28.0*", "糖尿病性白内障"),
+        Dict("H26.200", "慢性虹膜睫状体炎"),
+        Dict("H26.900", "白内障未特指"),
+    ]);
+
+    [Fact]
+    public void 纯连接行透明化_病因修饰词跨过见于由于钻到终点()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        // 病历不会逐字写 见于/由于：改前链路停在 761，只能回退祖先码 H26.9。
+        var results = resolver.Resolve(CataractSnapshot(), CataractDictionary(), "糖尿病白内障");
+
+        Assert.Equal("E10.300+H28.0*", results[0].Code);
+        Assert.Contains("见于(由于)", results[0].EvidencePath);
+        Assert.Contains("糖尿病", results[0].EvidencePath);
+    }
+
+    [Fact]
+    public void 纯连接行透明化_输入没写出病因时不得凭空下钻()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        // 折叠连接行不等于免检：子节点仍须按原口径为链路挣到输入里的新内容。
+        var only = Assert.Single(resolver.Resolve(CataractSnapshot(), CataractDictionary(), "白内障"));
+        Assert.Equal("H26.900", only.Code);
+    }
+
+    [Fact]
+    public void 纯连接行透明化_输入逐字写出连接词时沿用字面链路()
+    {
+        var inputKey = TextMatch.NormalizeKey("肾炎由于链球菌感染");
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(20100, "肾炎(性)", "N02.9"),
+            ChildRow(20101, 20100, "－由于"),
+            ChildRow(20102, 20101, "－－链球菌感染", "A49.0† N02.9*", level: 2),
+        ]);
+        var leadHit = Assert.Single(IcdIndexMatcher.RecallLeads(snapshot, inputKey, 8));
+        var drill = IcdIndexMatcher.Drill(snapshot, leadHit, inputKey);
+
+        // 病历自己写出 由于 时，命中串必须仍带着它：折叠通路会把它从 pathKey 里省掉，
+        // 覆盖度分母随之变小、这条链路的相对分数被抬高——万名实测 3 条既有正确 Top1 因此被顶掉。
+        Assert.Contains("由于", drill!.PathKey, StringComparison.Ordinal);
+        Assert.Equal("链球菌感染", drill.CodeNode.CoreTerm);
+    }
+
+    [Fact]
+    public void 纯连接行透明化_输入没写连接词时命中串不带它()
+    {
+        var inputKey = TextMatch.NormalizeKey("糖尿病白内障");
+        var leadHit = Assert.Single(IcdIndexMatcher.RecallLeads(CataractSnapshot(), inputKey, 8));
+        var drill = IcdIndexMatcher.Drill(CataractSnapshot(), leadHit, inputKey);
+
+        // 折叠来的连接行只进证据链（让编码员看到码取自哪一支），不进命中串（不参与覆盖度算式）。
+        Assert.DoesNotContain("见于", drill!.PathKey, StringComparison.Ordinal);
+        Assert.Contains("见于(由于)", string.Join(" → ", drill.Path.Select(node => node.Term)));
+    }
+
+    [Fact]
+    public void 属格虚词的不计入链路重叠分母()
+    {
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(21000, "贫血(性)(后天性)(获得性)", "D64.9"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([Dict("D64.900", "贫血")]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        // 链路只挣到 贫血 两字：按整条 7 字输入算是 2/7=0.286，跌破 0.30 门槛；
+        // 的 是中文诊断名的属格虚词、索引与字典词面都不写它，剥掉后 2/6=0.333 才交付。
+        Assert.Equal("D64.900", Assert.Single(resolver.Resolve(snapshot, dictionary, "反复出现的贫血")).Code);
+    }
+
+    [Fact]
+    public void 并存病连接词不折叠_输入并列写出两个诊断时不得取组合码()
+    {
+        // 索引的 伴有/合并 说的是"另一个并存的病"，不是本行的病因：折叠它，
+        // 并列诊断就会被判成组合码（JZEY 真实病历万名实测 19 条流失里 13 条出自这一族）。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(30100, "关闭不全(主动脉瓣)(二尖瓣)", "I35.9"),
+            ChildRow(30101, 30100, "－伴有"),
+            ChildRow(30102, 30101, "－－二尖瓣疾病", "I08.0", level: 2),
+        ]);
+        var inputKey = TextMatch.NormalizeKey("主动脉瓣关闭不全二尖瓣关闭不全");
+        var leadHit = Assert.Single(IcdIndexMatcher.RecallLeads(snapshot, inputKey, 8));
+
+        var drill = IcdIndexMatcher.Drill(snapshot, leadHit, inputKey);
+
+        Assert.Equal("I35.9", drill!.CodeNode.Code);
+        Assert.DoesNotContain("二尖瓣疾病", string.Join(" → ", drill.Path.Select(node => node.Term)));
+    }
 }

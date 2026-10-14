@@ -2487,6 +2487,102 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                     b.ToTable("term_synonym", (string)null);
                 });
 
+            modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.TumorIndexRecord", b =>
+                {
+                    b.Property<string>("CodeBenign")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("code_benign");
+
+                    b.Property<string>("CodeInSitu")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("code_in_situ");
+
+                    b.Property<string>("CodeMalignantPrimary")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("code_malignant_primary");
+
+                    b.Property<string>("CodeMalignantSecondary")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("code_malignant_secondary");
+
+                    b.Property<string>("CodeUncertain")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("code_uncertain");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("FullIndexName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)")
+                        .HasColumnName("full_index_name");
+
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<int>("IndexLevel")
+                        .HasColumnType("int")
+                        .HasColumnName("index_level");
+
+                    b.Property<string>("IndexName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("index_name");
+
+                    b.Property<string>("IndexNameEn")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("index_name_en");
+
+                    b.Property<int>("JumpKind")
+                        .HasColumnType("int")
+                        .HasColumnName("jump_kind");
+
+                    b.Property<string>("JumpTarget")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("jump_target");
+
+                    b.Property<int>("ParentSeqNo")
+                        .HasColumnType("int")
+                        .HasColumnName("parent_seq_no");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion")
+                        .HasColumnName("row_version");
+
+                    b.Property<int>("SeqNo")
+                        .HasColumnType("int")
+                        .HasColumnName("seq_no");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ParentSeqNo")
+                        .HasDatabaseName("ix_tumor_index_parent_seq_no");
+
+                    b.HasIndex("SeqNo")
+                        .IsUnique()
+                        .HasDatabaseName("ux_tumor_index_seq_no");
+
+                    b.ToTable("tumor_index", (string)null);
+                });
+
             modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.VisitRecord", b =>
                 {
                     b.Property<Guid>("Id")

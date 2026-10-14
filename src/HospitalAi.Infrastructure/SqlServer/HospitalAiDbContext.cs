@@ -35,6 +35,8 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
 
     public DbSet<IcdIndexRecord> IcdIndexes => Set<IcdIndexRecord>();
 
+    public DbSet<TumorIndexRecord> TumorIndexes => Set<TumorIndexRecord>();
+
     public DbSet<IcdTermSynonymRecord> IcdTermSynonyms => Set<IcdTermSynonymRecord>();
 
     public DbSet<MedicalCodeEmbeddingRecord> MedicalCodeEmbeddings => Set<MedicalCodeEmbeddingRecord>();
@@ -90,6 +92,7 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
         ConfigureTermSynonym(modelBuilder);
         ConfigureCodingRule(modelBuilder);
         ConfigureIcdIndex(modelBuilder);
+        ConfigureTumorIndex(modelBuilder);
         ConfigureIcdTermSynonym(modelBuilder);
         ConfigureMedicalCodeEmbedding(modelBuilder);
         ConfigureDocumentSection(modelBuilder);
@@ -388,6 +391,32 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
             .HasDatabaseName("ix_icd_index_code");
         entity.HasIndex(item => item.LeadWordStatus)
             .HasDatabaseName("ix_icd_index_lead_word_status");
+    }
+
+    private static void ConfigureTumorIndex(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<TumorIndexRecord>();
+
+        entity.ToTable("tumor_index");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.SeqNo).HasColumnName("seq_no").IsRequired();
+        entity.Property(item => item.IndexName).HasColumnName("index_name").HasMaxLength(200).IsRequired();
+        entity.Property(item => item.IndexNameEn).HasColumnName("index_name_en").HasMaxLength(200);
+        entity.Property(item => item.IndexLevel).HasColumnName("index_level").IsRequired();
+        entity.Property(item => item.ParentSeqNo).HasColumnName("parent_seq_no").IsRequired();
+        entity.Property(item => item.FullIndexName).HasColumnName("full_index_name").HasMaxLength(300).IsRequired();
+        entity.Property(item => item.CodeMalignantPrimary).HasColumnName("code_malignant_primary").HasMaxLength(20);
+        entity.Property(item => item.CodeMalignantSecondary).HasColumnName("code_malignant_secondary").HasMaxLength(20);
+        entity.Property(item => item.CodeInSitu).HasColumnName("code_in_situ").HasMaxLength(20);
+        entity.Property(item => item.CodeBenign).HasColumnName("code_benign").HasMaxLength(20);
+        entity.Property(item => item.CodeUncertain).HasColumnName("code_uncertain").HasMaxLength(20);
+        entity.Property(item => item.JumpKind).HasColumnName("jump_kind").IsRequired();
+        entity.Property(item => item.JumpTarget).HasColumnName("jump_target").HasMaxLength(200);
+        entity.HasIndex(item => item.SeqNo)
+            .HasDatabaseName("ux_tumor_index_seq_no")
+            .IsUnique();
+        entity.HasIndex(item => item.ParentSeqNo)
+            .HasDatabaseName("ix_tumor_index_parent_seq_no");
     }
 
     private static void ConfigureIcdTermSynonym(ModelBuilder modelBuilder)

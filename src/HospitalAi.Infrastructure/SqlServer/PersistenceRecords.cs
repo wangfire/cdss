@@ -887,6 +887,59 @@ public sealed class IcdIndexRecord
 }
 
 /// <summary>
+/// 肿瘤索引（"肿瘤，肿瘤性"部位表）记录：源自《肿瘤索引.xlsx》，一行 = 索引书一行，
+/// 五个动态码并排存列（恶性原发/继发、原位、良性、动态未定）。
+/// 平台级共享，不按医院隔离；层级由行首全角横杠个数判定，父链用 SeqNo。
+/// </summary>
+public sealed class TumorIndexRecord
+{
+    public Guid Id { get; set; }
+
+    /// <summary>导入顺序号，全表唯一，父链引用。</summary>
+    public int SeqNo { get; set; }
+
+    /// <summary>中文词条（trim 后，保留括号注解与 NEC/#/◇，含 见/另见 指针原文）。</summary>
+    public string IndexName { get; set; } = string.Empty;
+
+    public string? IndexNameEn { get; set; }
+
+    /// <summary>0~4 级，由行首「－」个数判定。</summary>
+    public int IndexLevel { get; set; }
+
+    /// <summary>父记录 SeqNo，0=根。</summary>
+    public int ParentSeqNo { get; set; }
+
+    /// <summary>父链词条「，」拼接全路径（消歧与展示用）。</summary>
+    public string FullIndexName { get; set; } = string.Empty;
+
+    /// <summary>恶性-原发列（行为码 /3、/9）。</summary>
+    public string? CodeMalignantPrimary { get; set; }
+
+    /// <summary>恶性-继发列（/6）。</summary>
+    public string? CodeMalignantSecondary { get; set; }
+
+    /// <summary>原位列（/2）。</summary>
+    public string? CodeInSitu { get; set; }
+
+    /// <summary>良性列（/0）。</summary>
+    public string? CodeBenign { get; set; }
+
+    /// <summary>动态未定或未知列（/1）。</summary>
+    public string? CodeUncertain { get; set; }
+
+    /// <summary>0=无跳转，1=见，2=另见（目标在本表内）。</summary>
+    public int JumpKind { get; set; }
+
+    public string? JumpTarget { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; }
+
+    public DateTimeOffset UpdatedAt { get; set; }
+
+    public byte[] RowVersion { get; set; } = [];
+}
+
+/// <summary>
 /// 索引链路术语同义词（平台级共享，区分诊断/手术通道，防止两侧口径互相污染）。
 /// 语义为等价组：VariantTerm 在匹配前被改写为 CanonicalTerm 参与索引召回与下钻。
 /// </summary>

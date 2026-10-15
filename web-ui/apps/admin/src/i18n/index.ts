@@ -119,7 +119,7 @@ export const i18n = new Proxy({} as any, {
   get(_target, prop) {
     if (!_i18nInstance) {
       if (prop === 'global') {
-        return { locale: { value: 'zh-CN' as string }, t: (key) => key }
+        return { locale: { value: 'zh-CN' as string }, t: (key: string) => key }
       }
       return () => {}
     }

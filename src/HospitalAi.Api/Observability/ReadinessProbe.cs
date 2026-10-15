@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Sockets;
 using HospitalAi.Infrastructure.SqlServer;
 using Microsoft.EntityFrameworkCore;
@@ -18,13 +19,16 @@ public sealed class ReadinessProbe(
         var dependencies = new Dictionary<string, DependencyStatus>
         {
             ["sqlServer"] = await CheckSqlServerAsync(cancellationToken),
-            ["redis"] = await CheckTcpAsync(options.Value.Redis, cancellationToken),
+            ["elasticsearch"] = await CheckTcpAsync(options.Value.Elasticsearch, cancellationToken),
             ["rabbitMq"] = await CheckTcpAsync(options.Value.RabbitMq, cancellationToken)
         };
 
-        var status = dependencies.Values.All(item => item.Status == "healthy")
-            ? "healthy"
-            : "unhealthy";
+        // disabled 的依赖不计入整体失败，只降级为 degraded。
+        var status = dependencies.Values.Any(item => item.Status == "unhealthy")
+            ? "unhealthy"
+            : dependencies.Values.Any(item => item.Status == "disabled")
+                ? "degraded"
+                : "healthy";
         return new ReadinessResult(status, dependencies);
     }
 
@@ -55,27 +59,48 @@ public sealed class ReadinessProbe(
 
         try
         {
-            using var client = new TcpClient();
-            var connectTask = client.ConnectAsync(
-                dependency.Host,
-                dependency.Port,
-                cancellationToken).AsTask();
-            var completed = await Task.WhenAny(
-                connectTask,
-                Task.Delay(TimeSpan.FromSeconds(2), cancellationToken));
-
-            if (completed != connectTask)
-            {
-                return DependencyStatus.Unhealthy("连接超时。");
-            }
-
-            await connectTask;
-            return DependencyStatus.Healthy();
+            var addresses = await ResolveAddressesAsync(dependency.Host, cancellationToken);
+            using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutSource.CancelAfter(TimeSpan.FromSeconds(2));
+            var attempts = addresses
+                .Select(async address =>
+                {
+                    using var client = new TcpClient();
+                    try
+                    {
+                        await client.ConnectAsync(address, dependency.Port, timeoutSource.Token);
+                        return (ok: true, error: (string?)null);
+                    }
+                    catch (Exception exception)
+                    {
+                        return (ok: false, error: exception.Message);
+                    }
+                })
+                .ToArray();
+            var results = await Task.WhenAll(attempts);
+            return results.Any(result => result.ok)
+                ? DependencyStatus.Healthy()
+                : DependencyStatus.Unhealthy(results[0].error ?? "连接超时。");
         }
         catch (Exception exception)
         {
             return DependencyStatus.Unhealthy(exception.Message);
         }
+    }
+
+    // "localhost" 可能先解析到 [::1]，而 Redis 仅监听 127.0.0.1；
+    // 并发探测全部解析地址，避免 IPv6 重试拖满超时造成误报。
+    private static async Task<IPAddress[]> ResolveAddressesAsync(
+        string host,
+        CancellationToken cancellationToken)
+    {
+        if (IPAddress.TryParse(host, out var literal))
+        {
+            return [literal];
+        }
+
+        var addresses = await Dns.GetHostAddressesAsync(host, cancellationToken);
+        return addresses.Length > 0 ? addresses : [IPAddress.Loopback];
     }
 }
 

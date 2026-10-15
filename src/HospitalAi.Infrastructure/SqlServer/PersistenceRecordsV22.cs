@@ -187,7 +187,7 @@ public sealed class CodingCandidateRecord
 
     public string Title { get; set; } = string.Empty;
 
-    /// <summary>EXACT / BM25 / VECTOR / RERANK / COMBINED。</summary>
+    /// <summary>EXACT / BM25 / VECTOR / RERANK / COMBINED / DICTIONARY / ICD_INDEX。</summary>
     public string RecallSource { get; set; } = string.Empty;
 
     public decimal? ExactScore { get; set; }

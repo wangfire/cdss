@@ -1,4 +1,6 @@
 using HospitalAi.Application.Abstractions;
+using HospitalAi.Application.Coding.IcdIndex;
+using HospitalAi.Application.Coding.Matching;
 using HospitalAi.Application.Coding.Preprocessing;
 using HospitalAi.Contracts.CodingTasks;
 using HospitalAi.Domain.CodingTasks;
@@ -6,7 +8,9 @@ using HospitalAi.Infrastructure.CodingKnowledge;
 using HospitalAi.Infrastructure.Elasticsearch;
 using HospitalAi.Infrastructure.ModelGateways;
 using HospitalAi.Infrastructure.SqlServer;
+using HospitalAi.Worker.Consumers;
 using HospitalAi.Worker.Pipeline;
+using HospitalAi.Worker.Retry;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -77,26 +81,145 @@ public sealed class V22TestDatabase : IAsyncDisposable
 
     /// <summary>
     /// 允许注入模型网关与路由器，用于验证"模型接通但输出不合法"这条独立路径。
+    /// ICD 索引 / 字典快照直接读测试库：用例通过 Seed 行控制索引链路输入。
     /// </summary>
     public V22LiteCodingPipelineRunner CreateV22Runner(
-        IModelGateway gateway,
-        IModelRouter router)
+        IModelGateway? gateway = null,
+        IModelRouter? router = null,
+        V22PipelineOptions? options = null,
+        ICodingKnowledgeSearch? bm25Search = null,
+        IVectorSearch? vectorSearch = null,
+        IReranker? reranker = null)
     {
         var context = CreateContext();
         return new V22LiteCodingPipelineRunner(
             context,
             new SqlServerExactCodingKnowledgeSearch(context),
-            new UnavailableCodingKnowledgeSearch(),
-            gateway,
-            router,
+            bm25Search ?? new UnavailableCodingKnowledgeSearch(),
+            vectorSearch ?? new UnavailableVectorSearch(),
+            reranker ?? new UnavailableReranker(),
+            gateway ?? new UnavailableModelGateway(),
+            router ?? UnavailableRouter(),
             new SimpleJsonSchemaValidator(),
-            Options.Create(new V22PipelineOptions()),
+            new ContextIcdIndexSource(context),
+            new ContextIcdDictionarySource(context),
+            new ContextIcdTermSynonymSource(context),
+            Options.Create(options ?? new V22PipelineOptions()),
             NullLogger<V22LiteCodingPipelineRunner>.Instance);
+    }
+
+    private sealed class ContextIcdIndexSource(HospitalAiDbContext context) : IIcdIndexSource
+    {
+        public IcdIndexSnapshot GetSnapshot(CancellationToken cancellationToken = default) =>
+            IcdIndexSnapshotBuilder.Build(context.IcdIndexes
+                .AsNoTracking()
+                .Select(item => new IcdIndexRow(
+                    item.SeqNo, item.IndexName, item.IndexCode,
+                    item.IndexLevel, item.ParentSeqNo, item.LeadWordStatus))
+                .ToList());
+
+        public void Invalidate()
+        {
+        }
+    }
+
+    private sealed class ContextIcdDictionarySource(HospitalAiDbContext context) : IIcdDictionarySource
+    {
+        public IcdDictionarySnapshot GetDictionary(
+            Guid hospitalId,
+            string codeSystemCode,
+            CancellationToken cancellationToken = default) =>
+            new(context.MedicalCodes
+                .AsNoTracking()
+                .Where(item => item.HospitalId == hospitalId
+                    && item.CodeSystemCode == codeSystemCode
+                    && item.IsEnabled)
+                .Select(item => new IcdDictionaryRow(
+                    item.CodeSystemCode, item.Code, item.Title, item.SearchText))
+                .ToList());
+
+        public void Invalidate()
+        {
+        }
+    }
+
+    private sealed class ContextIcdTermSynonymSource(HospitalAiDbContext context) : IIcdTermSynonymSource
+    {
+        public IcdTermSynonymSnapshot GetSnapshot(CancellationToken cancellationToken = default) =>
+            IcdTermSynonymSnapshot.Build(context.IcdTermSynonyms
+                .AsNoTracking()
+                .Where(item => item.IsEnabled)
+                .Select(item => new IcdTermSynonymRow(item.TermType, item.CanonicalTerm, item.VariantTerm))
+                .ToList());
+
+        public void Invalidate()
+        {
+        }
     }
 
     private static IModelRouter UnavailableRouter()
     {
         return new StaticModelRouter(Options.Create(new ModelGatewayOptions()));
+    }
+
+    /// <summary>向量检索不可用桩：对应生产默认形态（模型文件缺失时显式降级）。</summary>
+    private sealed class UnavailableVectorSearch : IVectorSearch
+    {
+        public bool IsAvailable => false;
+
+        public Task<IReadOnlyList<VectorSearchHit>> SearchAsync(
+            Guid hospitalId,
+            string codeSystemCode,
+            string queryText,
+            int topK,
+            CancellationToken cancellationToken = default)
+        {
+            IReadOnlyList<VectorSearchHit> empty = [];
+            return Task.FromResult(empty);
+        }
+    }
+
+    /// <summary>Rerank 不可用桩：对应生产缺模型文件的形态（显式降级）。</summary>
+    private sealed class UnavailableReranker : IReranker
+    {
+        public bool IsAvailable => false;
+
+        public string ModelCode => "unavailable";
+
+        public double[]? Score(string query, IReadOnlyList<string> documents) => null;
+    }
+
+    /// <summary>
+    /// 构造与生产同构的任务消费者：真实 Dispatcher + Lite Runner + 真实重试等待。
+    /// consumer 与 runner 必须共享同一 DbContext（生产 DI 同 scope 即同一实例），
+    /// 否则 runner 更新任务行后 consumer 的旧实体 SaveChanges 会撞 rowversion。
+    /// </summary>
+    public CodingTaskCreatedConsumer CreateConsumer()
+    {
+        var context = CreateContext();
+        var runner = new V22LiteCodingPipelineRunner(
+            context,
+            new SqlServerExactCodingKnowledgeSearch(context),
+            new UnavailableCodingKnowledgeSearch(),
+            new UnavailableVectorSearch(),
+            new UnavailableReranker(),
+            new UnavailableModelGateway(),
+            UnavailableRouter(),
+            new SimpleJsonSchemaValidator(),
+            new ContextIcdIndexSource(context),
+            new ContextIcdDictionarySource(context),
+            new ContextIcdTermSynonymSource(context),
+            Options.Create(new V22PipelineOptions()),
+            NullLogger<V22LiteCodingPipelineRunner>.Instance);
+        var pipelineDispatcher = new CodingTaskPipelineDispatcher(
+            [runner],
+            Options.Create(new PipelineDispatchOptions { DefaultPipelineVersion = PipelineVersions.Lite }),
+            NullLogger<CodingTaskPipelineDispatcher>.Instance);
+        return new CodingTaskCreatedConsumer(
+            context,
+            pipelineDispatcher,
+            new TaskRetryDelay(),
+            NullLogger<CodingTaskCreatedConsumer>.Instance);
     }
 
     /// <summary>
@@ -239,6 +362,36 @@ public sealed class V22TestDatabase : IAsyncDisposable
             CodeType = codeType ?? "诊断",
             SearchText = title,
             IsEnabled = true,
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        await context.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// 播种一条 ICD 索引行（icd_index 平台级表，序号全局唯一）。
+    /// </summary>
+    public async Task SeedIcdIndexRowAsync(
+        int seqNo,
+        string indexName,
+        string? indexCode,
+        int indexLevel = 0,
+        int parentSeqNo = 0,
+        int leadWordStatus = 0)
+    {
+        var now = DateTimeOffset.UtcNow;
+        await using var context = CreateContext();
+        context.IcdIndexes.Add(new IcdIndexRecord
+        {
+            Id = Guid.NewGuid(),
+            SeqNo = seqNo,
+            RawName = indexName,
+            IndexName = indexName,
+            IndexCode = indexCode,
+            IndexLevel = indexLevel,
+            ParentSeqNo = parentSeqNo,
+            FullIndexName = indexName,
+            LeadWordStatus = leadWordStatus,
             CreatedAt = now,
             UpdatedAt = now
         });

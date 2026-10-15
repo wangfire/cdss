@@ -1,13 +1,13 @@
 namespace HospitalAi.Api.Observability;
 
 /// <summary>
-/// 就绪检查依赖配置。Redis 和 RabbitMQ 先用 TCP 探测，避免引入重型客户端。
+/// 就绪检查依赖配置。Elasticsearch 和 RabbitMQ 先用 TCP 探测，避免引入重型客户端。
 /// </summary>
 public sealed class DependencyHealthOptions
 {
     public const string SectionName = "HealthChecks";
 
-    public TcpDependencyOptions Redis { get; set; } = new();
+    public TcpDependencyOptions Elasticsearch { get; set; } = new();
 
     public TcpDependencyOptions RabbitMq { get; set; } = new();
 }

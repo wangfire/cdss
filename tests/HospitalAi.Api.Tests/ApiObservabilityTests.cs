@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using HospitalAi.Contracts.CodingTasks;
@@ -20,7 +21,7 @@ namespace HospitalAi.Api.Tests;
 public sealed class ApiObservabilityTests
 {
     [Fact]
-    public async Task HealthReady_返回SqlRedisRabbit依赖状态()
+    public async Task HealthReady_返回SqlEsRabbit依赖状态()
     {
         await using var database = await ApiTestDatabase.CreateAsync();
         using var factory = CreateFactory(database.ConnectionString, new CaptureLoggerProvider());
@@ -31,7 +32,7 @@ public sealed class ApiObservabilityTests
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
         Assert.Contains("sqlServer", body);
-        Assert.Contains("redis", body);
+        Assert.Contains("elasticsearch", body);
         Assert.Contains("rabbitMq", body);
     }
 
@@ -41,7 +42,7 @@ public sealed class ApiObservabilityTests
         await using var database = await ApiTestDatabase.CreateAsync();
         var loggerProvider = new CaptureLoggerProvider();
         using var factory = CreateFactory(database.ConnectionString, loggerProvider);
-        using var client = factory.CreateClient();
+        using var client = CreateAuthorizedClient(factory);
 
         var hospital = await CreateHospitalAsync(client, loggerProvider);
         var patient = await CreatePatientAsync(client, hospital.Id, "隔离测试患者", loggerProvider);
@@ -65,7 +66,7 @@ public sealed class ApiObservabilityTests
         await using var database = await ApiTestDatabase.CreateAsync();
         var loggerProvider = new CaptureLoggerProvider();
         using var factory = CreateFactory(database.ConnectionString, loggerProvider);
-        using var client = factory.CreateClient();
+        using var client = CreateAuthorizedClient(factory);
         var hospital = await CreateHospitalAsync(client, loggerProvider);
 
         using var request = new HttpRequestMessage(
@@ -107,7 +108,7 @@ public sealed class ApiObservabilityTests
         await using var database = await ApiTestDatabase.CreateAsync();
         var loggerProvider = new CaptureLoggerProvider();
         using var factory = CreateFactory(database.ConnectionString, loggerProvider);
-        using var client = factory.CreateClient();
+        using var client = CreateAuthorizedClient(factory);
         var patientName = "张三敏感姓名";
 
         var hospital = await CreateHospitalAsync(client, loggerProvider);
@@ -130,7 +131,7 @@ public sealed class ApiObservabilityTests
         string connectionString,
         CaptureLoggerProvider loggerProvider)
     {
-        return new WebApplicationFactory<Program>()
+        return new CdssTestFactory()
             .WithWebHostBuilder(builder =>
             {
                 builder.UseEnvironment("Testing");
@@ -141,8 +142,8 @@ public sealed class ApiObservabilityTests
                     {
                         ["ConnectionStrings:HospitalAi"] = connectionString,
                         ["RabbitMq:Enabled"] = "false",
-                        ["HealthChecks:Redis:Host"] = "127.0.0.1",
-                        ["HealthChecks:Redis:Port"] = "6390",
+                        ["HealthChecks:Elasticsearch:Host"] = "127.0.0.1",
+                        ["HealthChecks:Elasticsearch:Port"] = "6390",
                         ["HealthChecks:RabbitMq:Host"] = "127.0.0.1",
                         ["HealthChecks:RabbitMq:Port"] = "5673"
                     });
@@ -156,6 +157,16 @@ public sealed class ApiObservabilityTests
                     logging.AddProvider(loggerProvider);
                 });
             });
+    }
+
+    /// <summary>创建携带 Bearer 令牌的客户端：WP-B2-5 后端点已挂 RBAC，集成测试统一走真实认证。</summary>
+    private static HttpClient CreateAuthorizedClient(WebApplicationFactory<Program> factory)
+    {
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new(
+            "Bearer",
+            CdssTestFactory.CreateBearerToken());
+        return client;
     }
 
     private static async Task<T> ReadEnvelopeDataAsync<T>(HttpResponseMessage response)

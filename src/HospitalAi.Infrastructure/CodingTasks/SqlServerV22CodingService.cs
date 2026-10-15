@@ -6,6 +6,7 @@ using HospitalAi.Application.Common;
 using HospitalAi.Contracts.CodingRecommendations;
 using HospitalAi.Contracts.CodingTasks;
 using HospitalAi.Domain.CodingTasks;
+using HospitalAi.Infrastructure.Outbox;
 using HospitalAi.Infrastructure.SqlServer;
 using Microsoft.EntityFrameworkCore;
 
@@ -493,8 +494,10 @@ public sealed class SqlServerV22CodingService(
         }
 
         dbContext.CodingDiagnosisInputs.AddRange(inputs);
-        await dbContext.SaveChangesAsync(cancellationToken);
 
+        // WP-B2-3（决策 1）：病例录入不在 HTTP 请求内同步跑流水线。
+        // 业务数据 + 根 Trace + Outbox 同事务落库，由 MQ 消费者或进程内派发器异步执行，
+        // 消除"请求内长事务"与"同步/异步双路径并发写同一任务"两个生产化阻塞项。
         var message = new CodingTaskCreatedMessage(
             MessageId: Guid.NewGuid(),
             HospitalId: task.HospitalId,
@@ -502,18 +505,26 @@ public sealed class SqlServerV22CodingService(
             VisitId: task.VisitId,
             PipelineVersion: task.PipelineVersion,
             TraceId: requestContext.TraceId ?? Guid.NewGuid().ToString("N"));
-        await recommendationExecutor.ExecuteAsync(
-            message,
-            inputs.Select(item => item.Id).ToList(),
-            cancellationToken);
+        dbContext.PipelineTraces.Add(new PipelineTraceRecord
+        {
+            Id = Guid.NewGuid(),
+            HospitalId = task.HospitalId,
+            CodingTaskId = task.Id,
+            TraceId = message.TraceId,
+            Status = "PENDING",
+            StartedAt = now,
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        new OutboxStore(dbContext).Add(OutboxMessage.Create(
+            message.MessageId,
+            task.HospitalId,
+            "coding.task.created",
+            JsonSerializer.Serialize(message, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
 
-        var recommendationCount = await dbContext.CodingRecommendations
-            .CountAsync(
-                item => item.HospitalId == requestContext.HospitalId
-                    && item.CodingTaskId == task.Id
-                    && (item.PipelineVersion == PipelineVersions.Lite || item.PipelineVersion == PipelineVersions.Full)
-                    && item.LifecycleStatus == ActiveLifecycleStatus,
-                cancellationToken);
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         return new CaseEntryResponse(
             patient.Id,
@@ -535,7 +546,8 @@ public sealed class SqlServerV22CodingService(
                     item.DiagnosisOrder,
                     item.Status))
                 .ToList(),
-            recommendationCount);
+            // 异步受理：此刻推荐尚未产出（恒为 0），前端按 codingTaskId 轮询任务状态后再取推荐。
+            0);
     }
 
     public async Task<RecommendationDetailResponse?> RecommendAsync(
@@ -565,6 +577,15 @@ public sealed class SqlServerV22CodingService(
         {
             throw new ValidationException(
                 $"任务 PipelineVersion={task.PipelineVersion} 不是 V2.2 流水线，不能触发 V2.2 推荐。");
+        }
+
+        // WP-B2-3：任务排队/处理中时禁止再触发重算，防止异步派发通道与同步重算并发写同一任务。
+        if (task.Status is CodingTaskStatus.Pending
+            or CodingTaskStatus.Running
+            or CodingTaskStatus.Retrying)
+        {
+            throw new ValidationException(
+                $"编码任务正在处理中（状态：{task.Status}），请稍后再触发推荐。");
         }
 
         var requestedIds = (request.DiagnosisInputIds ?? [input.Id])
@@ -1075,9 +1096,13 @@ public sealed class SqlServerV22CodingService(
             .AsNoTracking()
             .SingleOrDefaultAsync(item => item.RecommendationId == record.Id, cancellationToken);
 
+        // hospital_id 必须在谓词里：ix_coding_candidate_input_run 的前导列是 hospital_id，
+        // 少了它就退化成 577k 行全扫（实测 18.5s，直接顶穿 EF 30s 命令超时 → /recommend 整请求 500，
+        // 而推荐结果其实已经落库，只是响应组装阶段挂掉）。
         var candidates = await dbContext.CodingCandidates
             .AsNoTracking()
-            .Where(item => item.CodingTaskId == record.CodingTaskId
+            .Where(item => item.HospitalId == record.HospitalId
+                && item.CodingTaskId == record.CodingTaskId
                 && item.DiagnosisInputId == record.DiagnosisInputId
                 && item.PipelineRunId == record.PipelineRunId)
             .OrderBy(item => item.Rank)

@@ -1,17 +1,23 @@
+using System.IdentityModel.Tokens.Jwt;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Claims;
+using System.Text;
 using HospitalAi.Api;
 using HospitalAi.Contracts.Common;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.IdentityModel.Tokens;
 
 namespace HospitalAi.Api.Tests;
 
 public sealed class ApiSmokeTests
-    : IClassFixture<WebApplicationFactory<Program>>
+    : IClassFixture<CdssTestFactory>
 {
     private readonly HttpClient _client;
 
-    public ApiSmokeTests(WebApplicationFactory<Program> factory)
+    public ApiSmokeTests(CdssTestFactory factory)
     {
         _client = factory.CreateClient();
     }
@@ -50,7 +56,7 @@ public sealed class ApiSmokeTests
     }
 
     [Fact]
-    public async Task 创建任务缺少医院上下文_返回统一错误响应()
+    public async Task 未携带令牌访问受保护端点_返回401()
     {
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
@@ -63,6 +69,51 @@ public sealed class ApiSmokeTests
             })
         };
         request.Headers.Add("X-Trace-Id", "api-error-trace");
+
+        using var response = await _client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task 无效Bearer令牌_返回401而非静默降级()
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/coding-tasks")
+        {
+            Content = JsonContent.Create(new
+            {
+                visitId = Guid.NewGuid(),
+                pipelineVersion = "pipeline-v1"
+            })
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "not-a-valid-token");
+
+        using var response = await _client.SendAsync(request);
+        var body = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal("unauthorized", body?.Code);
+    }
+
+    [Fact]
+    public async Task 创建任务缺少医院上下文_返回统一错误响应()
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/coding-tasks")
+        {
+            Content = JsonContent.Create(new
+            {
+                visitId = Guid.NewGuid(),
+                pipelineVersion = "pipeline-v1"
+            })
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue(
+            "Bearer",
+            CdssTestFactory.CreateBearerToken());
+        request.Headers.Add("X-Trace-Id", "api-error-trace");
         request.Headers.Add("Idempotency-Key", "api-error-idem");
 
         using var response = await _client.SendAsync(request);
@@ -72,6 +123,16 @@ public sealed class ApiSmokeTests
         Assert.Equal("validation_error", body?.Code);
         Assert.Equal("api-error-trace", body?.TraceId);
         Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task Swagger_非生产环境暴露接口文档()
+    {
+        using var response = await _client.GetAsync("/swagger/v1/swagger.json");
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("/api/v1/", body);
     }
 
     [Fact]
@@ -92,4 +153,57 @@ public sealed class ApiSmokeTests
     }
 
     private sealed record HealthResponse(string Status, string TraceId);
+}
+
+/// <summary>
+/// 共享测试宿主：固定 Testing 环境与 JWT 签名密钥，测试令牌用同一密钥签发，
+/// 使集成测试走真实 Bearer 认证与 RBAC 策略（WP-B2-5 后端点已挂授权）。
+/// </summary>
+public sealed class CdssTestFactory : WebApplicationFactory<Program>
+{
+    public const string SigningKey = "TEST-ONLY-SIGNING-KEY-0123456789ABCDEF";
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.UseEnvironment("Testing");
+        builder.UseSetting("JwtAuth:Key", SigningKey);
+        // 测试封闭性：钉住模型网关为不可用，避免本机 Ollama 在/不在运行导致
+        // 解释校验结果漂移（LlmScore 是否参与评分）影响断言。
+        builder.UseSetting("ModelGateway:ModelMode", "Unavailable");
+    }
+
+    /// <summary>
+    /// 签发与生产令牌同构的测试令牌：sub + 长名角色声明（MapInboundClaims=false 下
+    /// ClaimTypes.Role 原样保留，IsInRole 可判定）。
+    /// </summary>
+    public static string CreateBearerToken(
+        string userId = "api-test-user",
+        IReadOnlyCollection<string>? roles = null,
+        Guid? hospitalId = null)
+    {
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, userId),
+            new("sub", userId),
+            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString("N")),
+        };
+        if (hospitalId is Guid hospital)
+        {
+            claims.Add(new Claim("hospitalId", hospital.ToString()));
+        }
+
+        claims.AddRange((roles ?? ["ADMIN"]).Select(role => new Claim(ClaimTypes.Role, role)));
+
+        var credentials = new SigningCredentials(
+            new SymmetricSecurityKey(Encoding.UTF8.GetBytes(SigningKey)),
+            SecurityAlgorithms.HmacSha256);
+        var token = new JwtSecurityToken(
+            issuer: "hospitalai",
+            audience: "hospitalai-admin",
+            claims: claims,
+            notBefore: DateTime.UtcNow.AddSeconds(-30),
+            expires: DateTime.UtcNow.AddMinutes(30),
+            signingCredentials: credentials);
+        return new JwtSecurityTokenHandler { MapInboundClaims = false }.WriteToken(token);
+    }
 }

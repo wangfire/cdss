@@ -15,7 +15,7 @@
     }
   },
   "ConnectionStrings": {
-    "HospitalAi": "Server=localhost;Database=HospitalAi;User Id=sa;Password=kr1234;TrustServerCertificate=True"
+    "HospitalAi": "Server=localhost;Database=HospitalAi;User Id=sa;Password=REPLACE-WITH-LOCAL-DEV-PASSWORD;TrustServerCertificate=True"
   },
   "Database": {
     "AutoMigrate": true

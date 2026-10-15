@@ -922,6 +922,11 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                         .HasColumnType("nvarchar(1000)")
                         .HasColumnName("reason");
 
+                    b.Property<string>("RecallChannel")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("recall_channel");
+
                     b.Property<decimal>("RecallScore")
                         .HasColumnType("decimal(5,4)")
                         .HasColumnName("recall_score");
@@ -981,6 +986,10 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
 
                     b.HasIndex("HospitalId", "PipelineVersion", "LifecycleStatus")
                         .HasDatabaseName("ix_coding_recommendation_hospital_pipeline_lifecycle");
+
+                    b.HasIndex("CodingTaskId", "HospitalId", "DiagnosisInputId", "RecommendationVersion")
+                        .HasDatabaseName("ix_coding_recommendation_task_input_version")
+                        .HasFilter("[diagnosis_input_id] IS NOT NULL AND [recommendation_version] IS NOT NULL");
 
                     b.HasIndex("CodingTaskId", "DiagnosisInputId", "RecommendationType", "Code")
                         .IsUnique()
@@ -1469,6 +1478,141 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                     b.ToTable("hospital", (string)null);
                 });
 
+            modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.IcdIndexRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("FullIndexName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)")
+                        .HasColumnName("full_index_name");
+
+                    b.Property<string>("IndexCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("index_code");
+
+                    b.Property<int>("IndexLevel")
+                        .HasColumnType("int")
+                        .HasColumnName("index_level");
+
+                    b.Property<string>("IndexName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("index_name");
+
+                    b.Property<int>("LeadWordStatus")
+                        .HasColumnType("int")
+                        .HasColumnName("lead_word_status");
+
+                    b.Property<int>("ParentSeqNo")
+                        .HasColumnType("int")
+                        .HasColumnName("parent_seq_no");
+
+                    b.Property<string>("RawName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("raw_name");
+
+                    b.Property<string>("RawNameEn")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("raw_name_en");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion")
+                        .HasColumnName("row_version");
+
+                    b.Property<int>("SeqNo")
+                        .HasColumnType("int")
+                        .HasColumnName("seq_no");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IndexCode")
+                        .HasDatabaseName("ix_icd_index_code");
+
+                    b.HasIndex("LeadWordStatus")
+                        .HasDatabaseName("ix_icd_index_lead_word_status");
+
+                    b.HasIndex("SeqNo")
+                        .IsUnique()
+                        .HasDatabaseName("ux_icd_index_seq_no");
+
+                    b.ToTable("icd_index", (string)null);
+                });
+
+            modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.IcdTermSynonymRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("CanonicalTerm")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("canonical_term");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_enabled");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion")
+                        .HasColumnName("row_version");
+
+                    b.Property<string>("TermType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("term_type");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("VariantTerm")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("variant_term");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CanonicalTerm")
+                        .HasDatabaseName("ix_icd_term_synonym_canonical");
+
+                    b.HasIndex("TermType", "VariantTerm")
+                        .IsUnique()
+                        .HasDatabaseName("ux_icd_term_synonym_type_variant");
+
+                    b.ToTable("icd_term_synonym", (string)null);
+                });
+
             modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.InboxMessageRecord", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1521,6 +1665,75 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                         .HasDatabaseName("ux_inbox_message_message_consumer");
 
                     b.ToTable("inbox_message", (string)null);
+                });
+
+            modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.MedicalCodeEmbeddingRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("code");
+
+                    b.Property<string>("CodeSystemCode")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("code_system_code");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("created_at");
+
+                    b.Property<int>("Dim")
+                        .HasColumnType("int")
+                        .HasColumnName("dim");
+
+                    b.Property<Guid>("HospitalId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("hospital_id");
+
+                    b.Property<string>("ModelCode")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("model_code");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion")
+                        .HasColumnName("row_version");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)")
+                        .HasColumnName("title");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("updated_at");
+
+                    b.Property<byte[]>("Vector")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)")
+                        .HasColumnName("vector");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("HospitalId", "ModelCode")
+                        .HasDatabaseName("ix_medical_code_embedding_hospital_model");
+
+                    b.HasIndex("HospitalId", "ModelCode", "CodeSystemCode", "Code")
+                        .IsUnique()
+                        .HasDatabaseName("ux_medical_code_embedding_lookup");
+
+                    b.ToTable("medical_code_embedding", (string)null);
                 });
 
             modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.MedicalCodeRecord", b =>
@@ -2272,6 +2485,102 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                         .HasDatabaseName("ux_term_synonym_hospital_term_type_code");
 
                     b.ToTable("term_synonym", (string)null);
+                });
+
+            modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.TumorIndexRecord", b =>
+                {
+                    b.Property<string>("CodeBenign")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("code_benign");
+
+                    b.Property<string>("CodeInSitu")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("code_in_situ");
+
+                    b.Property<string>("CodeMalignantPrimary")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("code_malignant_primary");
+
+                    b.Property<string>("CodeMalignantSecondary")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("code_malignant_secondary");
+
+                    b.Property<string>("CodeUncertain")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("code_uncertain");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("FullIndexName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)")
+                        .HasColumnName("full_index_name");
+
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<int>("IndexLevel")
+                        .HasColumnType("int")
+                        .HasColumnName("index_level");
+
+                    b.Property<string>("IndexName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("index_name");
+
+                    b.Property<string>("IndexNameEn")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("index_name_en");
+
+                    b.Property<int>("JumpKind")
+                        .HasColumnType("int")
+                        .HasColumnName("jump_kind");
+
+                    b.Property<string>("JumpTarget")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("jump_target");
+
+                    b.Property<int>("ParentSeqNo")
+                        .HasColumnType("int")
+                        .HasColumnName("parent_seq_no");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion")
+                        .HasColumnName("row_version");
+
+                    b.Property<int>("SeqNo")
+                        .HasColumnType("int")
+                        .HasColumnName("seq_no");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ParentSeqNo")
+                        .HasDatabaseName("ix_tumor_index_parent_seq_no");
+
+                    b.HasIndex("SeqNo")
+                        .IsUnique()
+                        .HasDatabaseName("ux_tumor_index_seq_no");
+
+                    b.ToTable("tumor_index", (string)null);
                 });
 
             modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.VisitRecord", b =>

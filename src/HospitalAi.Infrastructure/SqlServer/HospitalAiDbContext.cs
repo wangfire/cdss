@@ -33,6 +33,14 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
 
     public DbSet<CodingRuleRecord> CodingRules => Set<CodingRuleRecord>();
 
+    public DbSet<IcdIndexRecord> IcdIndexes => Set<IcdIndexRecord>();
+
+    public DbSet<TumorIndexRecord> TumorIndexes => Set<TumorIndexRecord>();
+
+    public DbSet<IcdTermSynonymRecord> IcdTermSynonyms => Set<IcdTermSynonymRecord>();
+
+    public DbSet<MedicalCodeEmbeddingRecord> MedicalCodeEmbeddings => Set<MedicalCodeEmbeddingRecord>();
+
     public DbSet<DocumentSectionRecord> DocumentSections => Set<DocumentSectionRecord>();
 
     public DbSet<ClinicalEntityRecord> ClinicalEntities => Set<ClinicalEntityRecord>();
@@ -83,6 +91,10 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
         ConfigureMedicalCode(modelBuilder);
         ConfigureTermSynonym(modelBuilder);
         ConfigureCodingRule(modelBuilder);
+        ConfigureIcdIndex(modelBuilder);
+        ConfigureTumorIndex(modelBuilder);
+        ConfigureIcdTermSynonym(modelBuilder);
+        ConfigureMedicalCodeEmbedding(modelBuilder);
         ConfigureDocumentSection(modelBuilder);
         ConfigureClinicalEntity(modelBuilder);
         ConfigureClinicalFact(modelBuilder);
@@ -357,8 +369,94 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
             .OnDelete(DeleteBehavior.Restrict);
     }
 
-    private static void ConfigureCodingRule(ModelBuilder modelBuilder)
+    private static void ConfigureIcdIndex(ModelBuilder modelBuilder)
     {
+        var entity = modelBuilder.Entity<IcdIndexRecord>();
+
+        entity.ToTable("icd_index");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.SeqNo).HasColumnName("seq_no").IsRequired();
+        entity.Property(item => item.RawName).HasColumnName("raw_name").HasMaxLength(200).IsRequired();
+        entity.Property(item => item.RawNameEn).HasColumnName("raw_name_en").HasMaxLength(200);
+        entity.Property(item => item.IndexName).HasColumnName("index_name").HasMaxLength(200).IsRequired();
+        entity.Property(item => item.IndexCode).HasColumnName("index_code").HasMaxLength(100);
+        entity.Property(item => item.IndexLevel).HasColumnName("index_level").IsRequired();
+        entity.Property(item => item.ParentSeqNo).HasColumnName("parent_seq_no").IsRequired();
+        entity.Property(item => item.FullIndexName).HasColumnName("full_index_name").HasMaxLength(300).IsRequired();
+        entity.Property(item => item.LeadWordStatus).HasColumnName("lead_word_status").IsRequired();
+        entity.HasIndex(item => item.SeqNo)
+            .HasDatabaseName("ux_icd_index_seq_no")
+            .IsUnique();
+        entity.HasIndex(item => item.IndexCode)
+            .HasDatabaseName("ix_icd_index_code");
+        entity.HasIndex(item => item.LeadWordStatus)
+            .HasDatabaseName("ix_icd_index_lead_word_status");
+    }
+
+    private static void ConfigureTumorIndex(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<TumorIndexRecord>();
+
+        entity.ToTable("tumor_index");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.SeqNo).HasColumnName("seq_no").IsRequired();
+        entity.Property(item => item.IndexName).HasColumnName("index_name").HasMaxLength(200).IsRequired();
+        entity.Property(item => item.IndexNameEn).HasColumnName("index_name_en").HasMaxLength(200);
+        entity.Property(item => item.IndexLevel).HasColumnName("index_level").IsRequired();
+        entity.Property(item => item.ParentSeqNo).HasColumnName("parent_seq_no").IsRequired();
+        entity.Property(item => item.FullIndexName).HasColumnName("full_index_name").HasMaxLength(300).IsRequired();
+        entity.Property(item => item.CodeMalignantPrimary).HasColumnName("code_malignant_primary").HasMaxLength(20);
+        entity.Property(item => item.CodeMalignantSecondary).HasColumnName("code_malignant_secondary").HasMaxLength(20);
+        entity.Property(item => item.CodeInSitu).HasColumnName("code_in_situ").HasMaxLength(20);
+        entity.Property(item => item.CodeBenign).HasColumnName("code_benign").HasMaxLength(20);
+        entity.Property(item => item.CodeUncertain).HasColumnName("code_uncertain").HasMaxLength(20);
+        entity.Property(item => item.JumpKind).HasColumnName("jump_kind").IsRequired();
+        entity.Property(item => item.JumpTarget).HasColumnName("jump_target").HasMaxLength(200);
+        entity.HasIndex(item => item.SeqNo)
+            .HasDatabaseName("ux_tumor_index_seq_no")
+            .IsUnique();
+        entity.HasIndex(item => item.ParentSeqNo)
+            .HasDatabaseName("ix_tumor_index_parent_seq_no");
+    }
+
+    private static void ConfigureIcdTermSynonym(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<IcdTermSynonymRecord>();
+
+        entity.ToTable("icd_term_synonym");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.TermType).HasColumnName("term_type").HasMaxLength(32).IsRequired();
+        entity.Property(item => item.CanonicalTerm).HasColumnName("canonical_term").HasMaxLength(200).IsRequired();
+        entity.Property(item => item.VariantTerm).HasColumnName("variant_term").HasMaxLength(200).IsRequired();
+        entity.Property(item => item.IsEnabled).HasColumnName("is_enabled").IsRequired();
+        entity.HasIndex(item => new { item.TermType, item.VariantTerm })
+            .HasDatabaseName("ux_icd_term_synonym_type_variant")
+            .IsUnique();
+        entity.HasIndex(item => item.CanonicalTerm)
+            .HasDatabaseName("ix_icd_term_synonym_canonical");
+    }
+
+    private static void ConfigureMedicalCodeEmbedding(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<MedicalCodeEmbeddingRecord>();
+
+        entity.ToTable("medical_code_embedding");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.HospitalId).HasColumnName("hospital_id").IsRequired();
+        entity.Property(item => item.CodeSystemCode).HasColumnName("code_system_code").HasMaxLength(32).IsRequired();
+        entity.Property(item => item.Code).HasColumnName("code").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.ModelCode).HasColumnName("model_code").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.Title).HasColumnName("title").HasMaxLength(300).IsRequired();
+        entity.Property(item => item.Dim).HasColumnName("dim").IsRequired();
+        entity.Property(item => item.Vector).HasColumnName("vector").IsRequired();
+        entity.HasIndex(item => new { item.HospitalId, item.ModelCode, item.CodeSystemCode, item.Code })
+            .HasDatabaseName("ux_medical_code_embedding_lookup")
+            .IsUnique();
+        entity.HasIndex(item => new { item.HospitalId, item.ModelCode })
+            .HasDatabaseName("ix_medical_code_embedding_hospital_model");
+    }
+
+    private static void ConfigureCodingRule(ModelBuilder modelBuilder)    {
         var entity = modelBuilder.Entity<CodingRuleRecord>();
 
         entity.ToTable("coding_rule");
@@ -637,6 +735,7 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
         entity.Property(item => item.Code).HasColumnName("code").HasMaxLength(64).IsRequired();
         entity.Property(item => item.Title).HasColumnName("title").HasMaxLength(300).IsRequired();
         entity.Property(item => item.Rank).HasColumnName("rank").IsRequired();
+        entity.Property(item => item.RecallChannel).HasColumnName("recall_channel").HasMaxLength(32);
         entity.Property(item => item.RecallScore).HasColumnName("recall_score").HasColumnType("decimal(5,4)").IsRequired();
         entity.Property(item => item.RuleScore).HasColumnName("rule_score").HasColumnType("decimal(5,4)").IsRequired();
         entity.Property(item => item.ConfidenceScore).HasColumnName("confidence_score").HasColumnType("decimal(5,4)").IsRequired();
@@ -674,6 +773,13 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
             .HasDatabaseName("ix_coding_recommendation_task_review_status");
         entity.HasIndex(item => new { item.HospitalId, item.PipelineVersion, item.LifecycleStatus })
             .HasDatabaseName("ix_coding_recommendation_hospital_pipeline_lifecycle");
+        // V2.2-Lite 每个任务在写推荐前要按任务读回 diagnosis_input_id + recommendation_version 推算下一版（r-2/r-3…）。
+        // STALE 历史不物理删除，本表随重跑累积（本机 42 万行），上面几条索引都服务不了这句读，
+        // 实测退化成聚集索引全扫 92,658 逻辑读、撞满 EF 30s CommandTimeout，超时会让整任务重试，
+        // 万条重跑吞吐从 45 任务/分钟塌到 2–4。这条覆盖索引把同一句读降到 3 逻辑读。
+        entity.HasIndex(item => new { item.CodingTaskId, item.HospitalId, item.DiagnosisInputId, item.RecommendationVersion })
+            .HasDatabaseName("ix_coding_recommendation_task_input_version")
+            .HasFilter("[diagnosis_input_id] IS NOT NULL AND [recommendation_version] IS NOT NULL");
         entity.HasOne(item => item.Hospital)
             .WithMany()
             .HasForeignKey(item => item.HospitalId)

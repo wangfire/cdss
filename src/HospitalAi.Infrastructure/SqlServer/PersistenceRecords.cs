@@ -514,6 +514,9 @@ public sealed class CodingRecommendationRecord
 
     public int Rank { get; set; }
 
+    /// <summary>召回通道：ICD_INDEX 索引两段式链路；DICTIONARY 字典直匹配（仅手术通道）。</summary>
+    public string? RecallChannel { get; set; }
+
     public decimal RecallScore { get; set; }
 
     public decimal RuleScore { get; set; }
@@ -839,4 +842,123 @@ public sealed class AuditLogRecord
     public byte[] RowVersion { get; set; } = [];
 
     public HospitalRecord Hospital { get; set; } = null!;
+}
+
+/// <summary>
+/// ICD 索引库记录（源自《ICD索引整理_编码规则修正版_最终版.xlsx》，保留原始全部列）。
+/// 平台级共享参考库，不按医院隔离；主导词状态 0=有效、1=无效。
+/// </summary>
+public sealed class IcdIndexRecord
+{
+    public Guid Id { get; set; }
+
+    /// <summary>Excel「序号」列，全库唯一。</summary>
+    public int SeqNo { get; set; }
+
+    /// <summary>Excel「索引原始名称」列。</summary>
+    public string RawName { get; set; } = string.Empty;
+
+    /// <summary>Excel「索引原始英文名称」列，可为空。</summary>
+    public string? RawNameEn { get; set; }
+
+    /// <summary>Excel「索引名称」列。</summary>
+    public string IndexName { get; set; } = string.Empty;
+
+    /// <summary>Excel「索引编码」列，可为空（纯分类节点无编码）。</summary>
+    public string? IndexCode { get; set; }
+
+    /// <summary>Excel「索引级别」列（0 为顶层）。</summary>
+    public int IndexLevel { get; set; }
+
+    /// <summary>Excel「父节点」列，指向父记录的序号，0 表示无父节点。</summary>
+    public int ParentSeqNo { get; set; }
+
+    /// <summary>Excel「完整索引名称」列。</summary>
+    public string FullIndexName { get; set; } = string.Empty;
+
+    /// <summary>Excel「主导词状态」列：0=有效，1=无效。</summary>
+    public int LeadWordStatus { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; }
+
+    public DateTimeOffset UpdatedAt { get; set; }
+
+    public byte[] RowVersion { get; set; } = [];
+}
+
+/// <summary>
+/// 肿瘤索引（"肿瘤，肿瘤性"部位表）记录：源自《肿瘤索引.xlsx》，一行 = 索引书一行，
+/// 五个动态码并排存列（恶性原发/继发、原位、良性、动态未定）。
+/// 平台级共享，不按医院隔离；层级由行首全角横杠个数判定，父链用 SeqNo。
+/// </summary>
+public sealed class TumorIndexRecord
+{
+    public Guid Id { get; set; }
+
+    /// <summary>导入顺序号，全表唯一，父链引用。</summary>
+    public int SeqNo { get; set; }
+
+    /// <summary>中文词条（trim 后，保留括号注解与 NEC/#/◇，含 见/另见 指针原文）。</summary>
+    public string IndexName { get; set; } = string.Empty;
+
+    public string? IndexNameEn { get; set; }
+
+    /// <summary>0~4 级，由行首「－」个数判定。</summary>
+    public int IndexLevel { get; set; }
+
+    /// <summary>父记录 SeqNo，0=根。</summary>
+    public int ParentSeqNo { get; set; }
+
+    /// <summary>父链词条「，」拼接全路径（消歧与展示用）。</summary>
+    public string FullIndexName { get; set; } = string.Empty;
+
+    /// <summary>恶性-原发列（行为码 /3、/9）。</summary>
+    public string? CodeMalignantPrimary { get; set; }
+
+    /// <summary>恶性-继发列（/6）。</summary>
+    public string? CodeMalignantSecondary { get; set; }
+
+    /// <summary>原位列（/2）。</summary>
+    public string? CodeInSitu { get; set; }
+
+    /// <summary>良性列（/0）。</summary>
+    public string? CodeBenign { get; set; }
+
+    /// <summary>动态未定或未知列（/1）。</summary>
+    public string? CodeUncertain { get; set; }
+
+    /// <summary>0=无跳转，1=见，2=另见（目标在本表内）。</summary>
+    public int JumpKind { get; set; }
+
+    public string? JumpTarget { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; }
+
+    public DateTimeOffset UpdatedAt { get; set; }
+
+    public byte[] RowVersion { get; set; } = [];
+}
+
+/// <summary>
+/// 索引链路术语同义词（平台级共享，区分诊断/手术通道，防止两侧口径互相污染）。
+/// 语义为等价组：VariantTerm 在匹配前被改写为 CanonicalTerm 参与索引召回与下钻。
+/// </summary>
+public sealed class IcdTermSynonymRecord
+{
+    public Guid Id { get; set; }
+
+    /// <summary>DIAGNOSIS / PROCEDURE。</summary>
+    public string TermType { get; set; } = string.Empty;
+
+    public string CanonicalTerm { get; set; } = string.Empty;
+
+    public string VariantTerm { get; set; } = string.Empty;
+
+    public bool IsEnabled { get; set; } = true;
+
+    public DateTimeOffset CreatedAt { get; set; }
+
+    public DateTimeOffset UpdatedAt { get; set; }
+
+    public byte[] RowVersion { get; set; } = [];
 }

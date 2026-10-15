@@ -56,7 +56,9 @@ public sealed class OpenAiCompatibleModelGateway : IModelGateway, IEmbeddingGate
             model,
             temperature = request.Temperature,
             max_tokens = request.MaxTokens,
-            messages = BuildMessages(request),
+            // Schema 随请求到达时必须注入提示：响应约束（response_format）只保证"是 JSON"，
+            // 不保证字段名与结构——模型不知道 Schema 就只能猜字段（实测猜成 result/reason）。
+            messages = BuildMessages(request, request.ResponseSchemaJson),
             response_format = new { type = "json_object" }
         };
 
@@ -76,7 +78,13 @@ public sealed class OpenAiCompatibleModelGateway : IModelGateway, IEmbeddingGate
                 return FailedGeneration(request.ModelCode, model, "MODEL_EMPTY_CONTENT", stopwatch.ElapsedMilliseconds);
             }
 
-            var parsed = JsonDocument.Parse(content);
+            var parsedJson = ExtractJsonBlock(content);
+            if (parsedJson is null)
+            {
+                return FailedGeneration(request.ModelCode, model, "MODEL_NO_JSON_BLOCK", stopwatch.ElapsedMilliseconds);
+            }
+
+            var parsed = JsonDocument.Parse(parsedJson);
             var compact = parsed.RootElement.Clone();
             return new ModelGenerationResult(
                 Success: true,
@@ -220,7 +228,7 @@ public sealed class OpenAiCompatibleModelGateway : IModelGateway, IEmbeddingGate
             : null;
     }
 
-    private static object[] BuildMessages(ModelGenerationRequest request)
+    private static object[] BuildMessages(ModelGenerationRequest request, string? responseSchemaJson)
     {
         var messages = new List<object>();
         if (!string.IsNullOrWhiteSpace(request.SystemPrompt))
@@ -228,8 +236,25 @@ public sealed class OpenAiCompatibleModelGateway : IModelGateway, IEmbeddingGate
             messages.Add(new { role = "system", content = request.SystemPrompt });
         }
 
-        messages.Add(new { role = "user", content = request.Prompt });
+        var userContent = string.IsNullOrWhiteSpace(responseSchemaJson)
+            ? request.Prompt
+            : request.Prompt
+                + "\n\n输出必须是严格符合以下 JSON Schema 的单个 JSON 对象，不要输出任何其他文本或代码块标记：\n"
+                + responseSchemaJson;
+        messages.Add(new { role = "user", content = userContent });
         return messages.ToArray();
+    }
+
+    /// <summary>
+    /// 从模型输出中提取 JSON 对象文本：容忍 markdown 代码块围栏与前后说明文本
+    /// （小模型常输出 ```json … ``` 或先解释一句再给 JSON）。
+    /// 找不到对象结构时返回 null，由调用方按失败口径处理。
+    /// </summary>
+    private static string? ExtractJsonBlock(string content)
+    {
+        var start = content.IndexOf('{');
+        var end = content.LastIndexOf('}');
+        return start >= 0 && end > start ? content[start..(end + 1)] : null;
     }
 
     private static ModelGenerationResult UnavailableGeneration(string modelCode)

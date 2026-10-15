@@ -33,6 +33,10 @@ public static class ToolHost
                     return await EvaluationCommand.RunAsync(configuration);
                 case "golden":
                     return GoldenDatasetCommand.Run(configuration);
+                case "embed":
+                    return await EmbeddingCommand.RunAsync(configuration);
+                case "evaluate-accuracy":
+                    return await AccuracyCommand.RunAsync(configuration);
                 case "help":
                 case "--help":
                 case "-h":

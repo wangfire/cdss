@@ -1,0 +1,77 @@
+name: ci
+
+# WP-B2-1：push/PR 即构建 + 全量测试（含 SQL Server 集成测试）+ 前端构建。
+# 红测阻断合并：分支保护建议开启 "Require status checks: backend / frontend"。
+
+on:
+  push:
+    branches: [master, codex-phase2-coding-mvp]
+  pull_request:
+    branches: [master]
+
+jobs:
+  backend:
+    name: backend-build-test
+    runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2019-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "HospitalAi-CI-2026!"
+          MSSQL_PID: "Developer"
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'HospitalAi-CI-2026!' -Q 'SELECT 1' || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'HospitalAi-CI-2026!' -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+          --health-start-period 30s
+    env:
+      HOSPITAL_AI_TEST_CONNECTION_STRING: >-
+        Server=localhost;User Id=sa;Password=HospitalAi-CI-2026!;
+        TrustServerCertificate=true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore HospitalAi.slnx
+
+      - name: Build
+        run: dotnet build HospitalAi.slnx --no-restore --nologo
+
+      - name: Test
+        run: dotnet test HospitalAi.slnx --no-build --nologo
+
+  frontend:
+    name: frontend-build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web-ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: web-ui/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build

@@ -40,6 +40,23 @@ const result = ref<CaseEntryResponse | null>(null)
 const recs = ref<CodingRecommendationResponse[]>([])
 const loadingRecs = ref(false)
 
+// WP-B2-3：录入接口只受理（任务经 Outbox 异步执行），前端轮询任务状态至终态后再取推荐。
+const processing = ref(false)
+const TASK_TERMINAL_STATUSES = new Set(['SUCCESS', 'PENDING_REVIEW', 'HUMAN_REQUIRED', 'FAILED'])
+const POLL_INTERVAL_MS = 2000
+const POLL_DEADLINE_MS = 120_000
+
+async function waitForTaskCompletion(taskId: string): Promise<'done' | 'failed' | 'timeout'> {
+  const deadline = Date.now() + POLL_DEADLINE_MS
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
+    const task = await workbenchApi.getTask(taskId)
+    if (task.status === 'FAILED') return 'failed'
+    if (TASK_TERMINAL_STATUSES.has(task.status)) return 'done'
+  }
+  return 'timeout'
+}
+
 function parseLines(text: string): string[] {
   return text
     .split('\n')
@@ -62,7 +79,7 @@ function toIsoDate(value: string): string | undefined {
 }
 
 async function submit() {
-  if (!canSubmit.value || submitting.value) return
+  if (!canSubmit.value || submitting.value || processing.value) return
   submitting.value = true
   result.value = null
   recs.value = []
@@ -82,15 +99,28 @@ async function submit() {
       additionalDocumentContent: form.additionalDocumentContent.trim() || null,
     })
     result.value = resp
-    toast.success(t('caseEntry.successTitle'))
-    loadingRecs.value = true
+    toast.success(t('caseEntry.acceptedTitle'))
+    processing.value = true
     try {
-      const detail = await workbenchApi.getRecommendations(resp.codingTaskId)
-      recs.value = detail.recommendations
-    } catch {
-      toast.error(t('caseEntry.recFetchFailed'))
+      const outcome = await waitForTaskCompletion(resp.codingTaskId)
+      if (outcome === 'failed') {
+        toast.error(t('caseEntry.taskFailed'))
+      } else if (outcome === 'timeout') {
+        toast.error(t('caseEntry.taskTimeout'))
+      } else {
+        toast.success(t('caseEntry.successTitle'))
+      }
+      loadingRecs.value = true
+      try {
+        const detail = await workbenchApi.getRecommendations(resp.codingTaskId)
+        recs.value = detail.recommendations
+      } catch {
+        toast.error(t('caseEntry.recFetchFailed'))
+      } finally {
+        loadingRecs.value = false
+      }
     } finally {
-      loadingRecs.value = false
+      processing.value = false
     }
   } catch (err: any) {
     // 非 ApiError（如模块异常）也要暴露真实原因，避免只剩笼统"录入失败"。
@@ -181,7 +211,7 @@ function fitGrid() {
   const avail = (sc ? sc.clientHeight : window.innerHeight) - topAbs - 40
   grid.style.height = `${Math.max(420, Math.floor(avail))}px`
 }
-watch([result, submitting, loadingRecs], () => nextTick(fitGrid))
+watch([result, submitting, processing, loadingRecs], () => nextTick(fitGrid))
 onMounted(() => {
   window.addEventListener('resize', fitGrid)
   nextTick(fitGrid)
@@ -280,8 +310,8 @@ function goWorkbench() {
           </div>
           <div class="space-y-2 pt-1">
             <div class="flex items-center gap-3">
-              <Button :disabled="!canSubmit || submitting" @click="submit">
-                <Loader2 v-if="submitting" class="h-4 w-4 mr-1 animate-spin" />
+              <Button :disabled="!canSubmit || submitting || processing" @click="submit">
+                <Loader2 v-if="submitting || processing" class="h-4 w-4 mr-1 animate-spin" />
                 <CheckCircle2 v-else class="h-4 w-4 mr-1" />
                 {{ submitting ? t('caseEntry.submitting') : t('caseEntry.submit') }}
               </Button>
@@ -289,7 +319,7 @@ function goWorkbench() {
                 {{ t('caseEntry.another') }}
               </Button>
             </div>
-            <p v-if="submitting" class="text-xs text-muted-foreground">{{ t('caseEntry.submitTimeoutHint') }}</p>
+            <p v-if="processing" class="text-xs text-muted-foreground">{{ t('caseEntry.submitTimeoutHint') }}</p>
           </div>
         </CardContent>
       </Card>
@@ -302,11 +332,11 @@ function goWorkbench() {
               <Sparkles class="h-4 w-4 text-primary" />
               {{ t('caseEntry.recPanelTitle') }}
             </CardTitle>
-            <Badge v-if="result && !submitting" variant="outline" class="text-xs shrink-0">
+            <Badge v-if="result && !submitting && !processing" variant="outline" class="text-xs shrink-0">
               {{ t('caseEntry.recCount') }} {{ recs.length }}
             </Badge>
           </div>
-          <div v-if="result && !submitting" class="flex items-center gap-2 text-xs text-muted-foreground pt-1">
+          <div v-if="result && !submitting && !processing" class="flex items-center gap-2 text-xs text-muted-foreground pt-1">
             <CheckCircle2 class="h-3.5 w-3.5 text-emerald-500" />
             <span>{{ form.patientName || result.diagnosisInputs[0]?.originalText }} · 第 {{ result.admissionCount }} 次住院 · {{ result.pipelineVersion }}</span>
             <button class="ml-auto text-primary hover:underline flex items-center gap-1" @click="goWorkbench">
@@ -316,9 +346,9 @@ function goWorkbench() {
           </div>
         </CardHeader>
         <CardContent class="flex-1 min-h-0 flex flex-col">
-          <div v-if="submitting || loadingRecs" class="flex items-center gap-2 text-sm text-muted-foreground py-8 justify-center">
+          <div v-if="processing || submitting || loadingRecs" class="flex items-center gap-2 text-sm text-muted-foreground py-8 justify-center">
             <Loader2 class="h-4 w-4 animate-spin" />
-            {{ submitting ? t('caseEntry.recPanelRunning') : t('caseEntry.recPanelLoading') }}
+            {{ processing || submitting ? t('caseEntry.recPanelRunning') : t('caseEntry.recPanelLoading') }}
           </div>
           <div v-else-if="!result" class="text-sm text-muted-foreground py-8 text-center">
             {{ t('caseEntry.recPanelEmpty') }}

@@ -1,0 +1,34 @@
+{
+  "version": "accuracy-report-v1",
+  "generatedAt": "2026-10-07T00:43:25.1093258+00:00",
+  "pipeline": "phase1-v2.2-lite\u002Bvector\u002Brerank",
+  "summary": {
+    "totalCases": 1,
+    "evaluated": 0,
+    "excludedMissingCode": [],
+    "codingTop1": {
+      "hit": 0,
+      "total": 0,
+      "percent": "n/a",
+      "acceptance": "\u226525%"
+    },
+    "codingTop3": {
+      "hit": 0,
+      "total": 0,
+      "percent": "n/a"
+    },
+    "categoryTop1": {
+      "hit": 0,
+      "total": 0,
+      "percent": "n/a",
+      "acceptance": "\u226550%"
+    },
+    "coverage": {
+      "covered": 0,
+      "total": 0,
+      "percent": "n/a"
+    },
+    "avgLatencyMs": 0
+  },
+  "cases": []
+}

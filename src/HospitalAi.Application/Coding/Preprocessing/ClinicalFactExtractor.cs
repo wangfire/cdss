@@ -350,11 +350,11 @@ public static class ClinicalFactExtractor
     private static bool LooksLikeDiagnosis(string text)
     {
         // 结构化诊断行通常包含"诊断："等前缀，或有编号 / 疾病特征词。
-        // 长度下限取 2："咯血"、"便秘"、"腹泻" 这类两字诊断真实可编码，
-        // 被 3 字门槛挡掉会让出院推荐拿不到出院段证据而回退挂到入院证据上。
+        // 长度下限取 1："痔"、"疝" 这类单字诊断真实可编码（节内条目按标点切分，
+        // 均为有意录入而非噪声），被 2 字门槛挡掉会让该输入在检索开始前就消失。
         return text.Contains("诊断", StringComparison.Ordinal)
             || text.Contains("出院", StringComparison.Ordinal)
-            || (text.Length >= 2 && text.Length <= 60
+            || (text.Length >= 1 && text.Length <= 60
                 && text.Any(character => char.IsLetterOrDigit(character) && character > '\u4e00'));
     }
 

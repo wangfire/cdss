@@ -19,6 +19,9 @@ public static class RbacPolicies
     /// <summary>知识管理：编码体系 / 规则导入与索引重建。</summary>
     public const string KnowledgeManager = "knowledge-manager";
 
+    /// <summary>用户与角色管理：仅 ADMIN（WP-B2-5 补齐管理面授权）。</summary>
+    public const string UserAdmin = "user-admin";
+
     public static IServiceCollection AddHospitalAiAuthorization(
         this IServiceCollection services)
     {
@@ -45,7 +48,12 @@ public static class RbacPolicies
                 policy => policy.RequireAssertion(
                     context => context.User.Identity?.IsAuthenticated == true
                         && (context.User.IsInRole("CODER")
-                            || context.User.IsInRole("ADMIN"))));
+                            || context.User.IsInRole("ADMIN"))))
+            .AddPolicy(
+                UserAdmin,
+                policy => policy.RequireAssertion(
+                    context => context.User.Identity?.IsAuthenticated == true
+                        && context.User.IsInRole("ADMIN")));
         return services;
     }
 }

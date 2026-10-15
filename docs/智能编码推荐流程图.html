@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>智能编码推荐流程图</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: linear-gradient(135deg, #f5f7fa 0%, #e8eef5 100%);
+    padding: 40px 20px;
+    min-height: 100vh;
+  }
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    background: white;
+    border-radius: 16px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.08);
+    padding: 48px;
+  }
+  h1 {
+    text-align: center;
+    color: #1a365d;
+    font-size: 32px;
+    margin-bottom: 8px;
+  }
+  .subtitle {
+    text-align: center;
+    color: #718096;
+    font-size: 15px;
+    margin-bottom: 40px;
+  }
+  .flowchart {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+  .step {
+    width: 520px;
+    padding: 20px 28px;
+    border-radius: 12px;
+    text-align: center;
+    position: relative;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+    transition: transform 0.2s;
+  }
+  .step:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.1); }
+  .step-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .step-desc {
+    font-size: 13px;
+    line-height: 1.6;
+    opacity: 0.92;
+  }
+  .step-num {
+    position: absolute;
+    left: -44px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: white;
+    border: 2px solid currentColor;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 15px;
+  }
+  .arrow {
+    width: 3px;
+    height: 32px;
+    background: #a0aec0;
+    position: relative;
+    margin: 0 auto;
+  }
+  .arrow::after {
+    content: '';
+    position: absolute;
+    bottom: -6px;
+    left: 50%;
+    transform: translateX(-50%);
+    border-left: 7px solid transparent;
+    border-right: 7px solid transparent;
+    border-top: 9px solid #a0aec0;
+  }
+
+  /* 颜色主题 */
+  .step-input { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+  .step-preprocess { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; }
+  .step-core { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; }
+  .step-recall { background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); color: #1a365d; }
+  .step-drill { background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); color: #1a365d; }
+  .step-expand { background: linear-gradient(135deg, #30cfd0 0%, #330867 100%); color: white; }
+  .step-output { background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%); color: #1a365d; }
+  .step-result { background: linear-gradient(135deg, #5ee7df 0%, #b490ca 100%); color: white; }
+
+  .core-group {
+    border: 2px dashed #4facfe;
+    border-radius: 16px;
+    padding: 32px 24px;
+    background: rgba(79, 172, 254, 0.04);
+    position: relative;
+  }
+  .core-label {
+    position: absolute;
+    top: -14px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: white;
+    padding: 4px 16px;
+    border: 2px solid #4facfe;
+    border-radius: 20px;
+    color: #4facfe;
+    font-weight: 600;
+    font-size: 14px;
+  }
+
+  .principles {
+    margin-top: 48px;
+    padding: 28px;
+    background: linear-gradient(135deg, #f6f9fc 0%, #eef2f7 100%);
+    border-radius: 12px;
+  }
+  .principles h2 {
+    color: #1a365d;
+    font-size: 20px;
+    margin-bottom: 16px;
+    text-align: center;
+  }
+  .principle-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+    margin-top: 16px;
+  }
+  .principle {
+    background: white;
+    padding: 16px;
+    border-radius: 8px;
+    border-left: 4px solid #4facfe;
+  }
+  .principle-title {
+    font-weight: 600;
+    color: #1a365d;
+    margin-bottom: 4px;
+  }
+  .principle-desc {
+    font-size: 13px;
+    color: #4a5568;
+    line-height: 1.5;
+  }
+
+  .summary {
+    margin-top: 32px;
+    padding: 24px;
+    background: linear-gradient(135deg, #1a365d 0%, #2d3748 100%);
+    color: white;
+    border-radius: 12px;
+    text-align: center;
+    font-size: 16px;
+    line-height: 1.8;
+  }
+
+  @media print {
+    body { background: white; padding: 0; }
+    .container { box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>智能编码推荐流程</h1>
+  <div class="subtitle">从医生诊断输入到 ICD 编码输出的完整链路</div>
+
+  <div class="flowchart">
+
+    <div class="step step-input">
+      <div class="step-num">1</div>
+      <div class="step-title">医生录入临床诊断</div>
+      <div class="step-desc">首页入院/出院诊断、手术操作,或病历文书自动抽取<br>如:"左肺微小结节并钙化""慢性阻塞性肺病"</div>
+    </div>
+
+    <div class="arrow"></div>
+
+    <div class="step step-preprocess">
+      <div class="step-num">2</div>
+      <div class="step-title">文本预处理</div>
+      <div class="step-desc">去除书写噪声 · 识别病程(急性/慢性) · 识别否定(排除XX) · 提取部位(左/右/双侧)</div>
+    </div>
+
+    <div class="arrow"></div>
+
+    <div class="core-group">
+      <div class="core-label">ICD 索引通道(核心)</div>
+
+      <div class="step step-recall">
+        <div class="step-num">3</div>
+        <div class="step-title">主导词召回</div>
+        <div class="step-desc">翻到索引书的哪一页<br>5.1万行索引别名匹配输入,覆盖度≥60%,黑名单过滤泛化词</div>
+      </div>
+
+      <div class="arrow"></div>
+
+      <div class="step step-drill">
+        <div class="step-num">4</div>
+        <div class="step-title">逐级下钻</div>
+        <div class="step-desc">在子目录里找更细分类<br>子节点必须带来输入新内容 · 部位门控 · 病程极互斥 · "见X"跳转竞争</div>
+      </div>
+
+      <div class="arrow"></div>
+
+      <div class="step step-expand">
+        <div class="step-num">5</div>
+        <div class="step-title">编码展开</div>
+        <div class="step-desc">把索引条目变成具体 ICD 码<br>支持 7 种索引格式 · 本地字典展开 · 展不开时显式标注"回退"</div>
+      </div>
+    </div>
+
+    <div class="arrow"></div>
+
+    <div class="step step-output">
+      <div class="step-num">6</div>
+      <div class="step-title">排序与输出</div>
+      <div class="step-desc">按覆盖度未截断排序 · 每个诊断输入输出 Top 1–3 条推荐</div>
+    </div>
+
+    <div class="arrow"></div>
+
+    <div class="step step-result">
+      <div class="step-num">7</div>
+      <div class="step-title">推荐结果 + 推理证据</div>
+      <div class="step-desc">每条推荐附带完整路径:主导词 → 修饰词 → 索引节点 → 最终编码<br>编码员可一键查看推理依据</div>
+    </div>
+
+  </div>
+
+  <div class="principles">
+    <h2>关键设计原则</h2>
+    <div class="principle-grid">
+      <div class="principle">
+        <div class="principle-title">宁缺毋错</div>
+        <div class="principle-desc">找不到匹配时返回 0 条推荐,而不是给一条"差不多"的错码</div>
+      </div>
+      <div class="principle">
+        <div class="principle-title">可解释</div>
+        <div class="principle-desc">每条推荐都有可读的推理路径,编码员能复核</div>
+      </div>
+      <div class="principle">
+        <div class="principle-title">按索引书规则</div>
+        <div class="principle-desc">不是字符串相似度,而是完全遵循 ICD 索引书的层级、跳转、星号等规范</div>
+      </div>
+      <div class="principle">
+        <div class="principle-title">双通道兜底</div>
+        <div class="principle-desc">主通道为 ICD 索引;字典直匹配作为兜底,覆盖率 100%</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="summary">
+    <strong>一句话总结:</strong><br>
+    系统 = 一本会自己翻的 ICD 索引书 + 一套严格的匹配规则 + 一条可追溯的推理链<br>
+    医生写诊断名,系统按索引书规则给出 1–3 条最可能的 ICD 码,并告诉编码员"为什么是这个码"
+  </div>
+
+</div>
+</body>
+</html>

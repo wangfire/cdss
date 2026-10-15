@@ -61,12 +61,18 @@ public static class CodingTaskPipelineRegistration
         // 消费者与其重试等待器在此统一注册，供派发器复用同一套处理逻辑。
         services.AddScoped<IRetryDelay, TaskRetryDelay>();
         services.AddScoped<CodingTaskCreatedConsumer>();
-        if (!bool.TryParse(
-                configuration[$"{RabbitMqOptions.SectionName}:Enabled"],
-                out var rabbitMqEnabled)
-            || !rabbitMqEnabled)
+        var rabbitMqEnabled = bool.TryParse(
+            configuration[$"{RabbitMqOptions.SectionName}:Enabled"],
+            out var parsedRabbitMqEnabled)
+            && parsedRabbitMqEnabled;
+        if (!rabbitMqEnabled)
         {
             services.AddHostedService<PendingCodingTaskDispatcher>();
+        }
+        else
+        {
+            // 只有 MQ 链路会留下"消息已 ack、任务却卡在 Running"的中断遗留行，补偿也只挂在这条链路上。
+            services.AddHostedService<StrandedCodingTaskRecovery>();
         }
 
         return services;

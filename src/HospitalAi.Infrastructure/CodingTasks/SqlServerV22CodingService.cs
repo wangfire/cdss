@@ -1096,9 +1096,13 @@ public sealed class SqlServerV22CodingService(
             .AsNoTracking()
             .SingleOrDefaultAsync(item => item.RecommendationId == record.Id, cancellationToken);
 
+        // hospital_id 必须在谓词里：ix_coding_candidate_input_run 的前导列是 hospital_id，
+        // 少了它就退化成 577k 行全扫（实测 18.5s，直接顶穿 EF 30s 命令超时 → /recommend 整请求 500，
+        // 而推荐结果其实已经落库，只是响应组装阶段挂掉）。
         var candidates = await dbContext.CodingCandidates
             .AsNoTracking()
-            .Where(item => item.CodingTaskId == record.CodingTaskId
+            .Where(item => item.HospitalId == record.HospitalId
+                && item.CodingTaskId == record.CodingTaskId
                 && item.DiagnosisInputId == record.DiagnosisInputId
                 && item.PipelineRunId == record.PipelineRunId)
             .OrderBy(item => item.Rank)

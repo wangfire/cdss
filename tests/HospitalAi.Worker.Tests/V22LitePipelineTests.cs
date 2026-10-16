@@ -1042,6 +1042,114 @@ public sealed class V22LitePipelineTests
                     && evidence.SourceText.Contains("索引编码: G30.1† F00.1*", StringComparison.Ordinal)));
     }
 
+    [Fact]
+    public async Task 一致性校验_逐候选真实判据时证据与编码可核验且满分()
+    {
+        await using var database = await V22TestDatabase.CreateAsync();
+        var (hospitalId, taskId, message) = await database.SeedV22TaskAsync(FullDocumentText);
+        await database.SeedCodeAsync(hospitalId, "ICD-10", FractureCode, Fracture);
+        await SeedFractureIndexAsync(database);
+
+        var gateway = new ScriptedExplanationGateway(HonestExplanationResponder);
+        await database.CreateV22Runner(gateway, new AvailableModelRouter()).RunAsync(message);
+
+        // 校验器必须真的看到内容：诊断原文、所评候选编码、带编号的证据原文。
+        var prompt = Assert.Single(gateway.Requests).Prompt;
+        Assert.Contains($"诊断原文：{Fracture}", prompt, StringComparison.Ordinal);
+        Assert.Contains($"候选编码：{FractureCode}", prompt, StringComparison.Ordinal);
+        Assert.Contains(Fracture, PromptEvidenceSection(prompt), StringComparison.Ordinal);
+
+        await using var context = database.CreateContext();
+        var score = await context.RecommendationScores.SingleAsync();
+        var recommendation = await context.CodingRecommendations.SingleAsync();
+        // 引用了逐字含该标题的证据 + 回显池内本候选编码 + 判为可支持 + 无否定/时间违规。
+        Assert.Equal(1.0000m, score.LlmScore);
+        Assert.Contains("llm", score.ScoreProfile, StringComparison.Ordinal);
+        Assert.Equal(ModelCodes.Small, recommendation.ModelVersion);
+        Assert.Equal("v22-explanation-v2", recommendation.PromptVersion);
+    }
+
+    [Fact]
+    public async Task 一致性校验_模型越界引用与池外编码时不得按常数给分()
+    {
+        await using var database = await V22TestDatabase.CreateAsync();
+        var (hospitalId, taskId, message) = await database.SeedV22TaskAsync(FullDocumentText);
+        await database.SeedCodeAsync(hospitalId, "ICD-10", FractureCode, Fracture);
+        await SeedFractureIndexAsync(database);
+
+        // 同一条输入、同一条候选：模型改口引用越界编号并回显池外编码，分数必须随之下降。
+        // 历史上这两条判据是硬编码 true，LlmScore 与内容无关却仍能改写 Top3。
+        var gateway = new ScriptedExplanationGateway(_ =>
+            """
+            {"code":"Z99.900","supported":true,"cited_evidence":[9],"negation_or_temporal_violation":false}
+            """);
+        await database.CreateV22Runner(gateway, new AvailableModelRouter()).RunAsync(message);
+
+        await using var context = database.CreateContext();
+        var score = await context.RecommendationScores.SingleAsync();
+        Assert.Equal(0.4000m, score.LlmScore);
+        Assert.Contains("llm", score.ScoreProfile, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task 模型无网关_解释维不参与评分且标记NO_MODEL()
+    {
+        await using var database = await V22TestDatabase.CreateAsync();
+        var (hospitalId, taskId, message) = await database.SeedV22TaskAsync(FullDocumentText);
+        await database.SeedCodeAsync(hospitalId, "ICD-10", FractureCode, Fracture);
+        await SeedFractureIndexAsync(database);
+
+        await database.CreateV22Runner(
+            new UnavailableModelGateway(),
+            new AvailableModelRouter()).RunAsync(message);
+
+        await using var context = database.CreateContext();
+        var score = await context.RecommendationScores.SingleAsync();
+        Assert.Null(score.LlmScore);
+        Assert.DoesNotContain("llm", score.ScoreProfile, StringComparison.Ordinal);
+
+        var scoreStep = await context.PipelineTraceSteps
+            .SingleAsync(item => item.Stage == "SCORE");
+        Assert.Equal("DEGRADED", scoreStep.Status);
+        Assert.Equal("DEGRADED.NO_MODEL", scoreStep.ErrorCode);
+    }
+
+    /// <summary>
+    /// 诚实作答的脚本校验器：原样回显 Prompt 里的候选编码，并引用 Prompt 里列出的全部证据编号。
+    /// </summary>
+    private static string HonestExplanationResponder(string prompt)
+    {
+        var code = EchoPromptValue(prompt, "候选编码：");
+        var cited = string.Join(",", Enumerable.Range(1, CountEvidenceLines(prompt)));
+        return $$"""{"code":"{{code}}","supported":true,"cited_evidence":[{{cited}}],"negation_or_temporal_violation":false}""";
+    }
+
+    private static string EchoPromptValue(string prompt, string label)
+    {
+        var start = prompt.IndexOf(label, StringComparison.Ordinal);
+        if (start < 0)
+        {
+            return string.Empty;
+        }
+
+        var value = prompt[(start + label.Length)..];
+        var boundary = value.IndexOfAny([' ', '\r', '\n']);
+        return boundary < 0 ? value.Trim() : value[..boundary].Trim();
+    }
+
+    private static string PromptEvidenceSection(string prompt)
+    {
+        const string label = "证据原文（引用编号从 1 开始）：";
+        var start = prompt.IndexOf(label, StringComparison.Ordinal);
+        var end = prompt.IndexOf("事实线索：", StringComparison.Ordinal);
+        return start < 0 || end <= start ? string.Empty : prompt[(start + label.Length)..end];
+    }
+
+    private static int CountEvidenceLines(string prompt) =>
+        PromptEvidenceSection(prompt)
+            .Split('\n')
+            .Count(line => char.IsAsciiDigit(line.TrimStart().FirstOrDefault()));
+
     private sealed class LegacyStubRunner : ICodingTaskPipelineRunner, ICodingTaskPipelineCapabilities
     {
         public IReadOnlyCollection<string> SupportedPipelineVersions { get; } = [PipelineVersions.Legacy];
@@ -1074,6 +1182,32 @@ public sealed class V22LitePipelineTests
                 PromptTokens: 1,
                 CompletionTokens: 1,
                 DurationMilliseconds: 1));
+    }
+
+    /// <summary>按 Prompt 内容作答的脚本校验器：记录收到的每一次请求，便于断言 Prompt 数据与调用次数。</summary>
+    private sealed class ScriptedExplanationGateway : IModelGateway
+    {
+        private readonly Func<string, string> _responder;
+
+        public ScriptedExplanationGateway(Func<string, string> responder) => _responder = responder;
+
+        public List<ModelGenerationRequest> Requests { get; } = [];
+
+        public Task<ModelGenerationResult> GenerateAsync(
+            ModelGenerationRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            Requests.Add(request);
+            return Task.FromResult(new ModelGenerationResult(
+                Success: true,
+                ContentJson: _responder(request.Prompt),
+                ErrorCode: null,
+                ModelCode: request.ModelCode,
+                ModelVersion: "scripted",
+                PromptTokens: 1,
+                CompletionTokens: 1,
+                DurationMilliseconds: 1));
+        }
     }
 
     private sealed class V22LiteStubRunner : ICodingTaskPipelineRunner, ICodingTaskPipelineCapabilities

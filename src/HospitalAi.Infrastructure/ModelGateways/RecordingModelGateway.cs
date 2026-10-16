@@ -11,15 +11,19 @@ namespace HospitalAi.Infrastructure.ModelGateways;
 /// </summary>
 public sealed class RecordingModelGateway : IModelGateway, IEmbeddingGateway, IRerankerGateway, IOcrGateway
 {
-    public const string RecordingVersion = "recording-v1";
+    public const string RecordingVersion = "recording-v2";
 
+    /// <summary>
+    /// 一致性校验的固定"空自述"：不回显编码、不引用任何证据、判为不被支持。
+    /// Recording 模式没有真实模型，因此只能声明"什么都没有"，
+    /// 不得伪造引用或编码来把 LlmScore 抬高（那会让桩网关看起来像接了模型）。
+    /// </summary>
     public Task<ModelGenerationResult> GenerateAsync(
         ModelGenerationRequest request,
         CancellationToken cancellationToken = default)
     {
-        // 固定返回空解释；调用方必须按“无模型解释”处理。
         var payload = """
-            {"explanation": "", "supported": false}
+            {"code": "", "supported": false, "cited_evidence": [], "negation_or_temporal_violation": false}
             """;
         return Task.FromResult(new ModelGenerationResult(
             Success: true,

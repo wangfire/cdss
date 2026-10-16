@@ -551,7 +551,7 @@ onUnmounted(() => {
           </template>
           <template #footer>
             <LayoutDoubleSidebarFooter
-              :user-name="userStore.user?.name || 'Admin'"
+              :user-name="userStore.user?.userName || 'Admin'"
               :avatar-src="userStore.defaultAvatar"
               :label-logged-in="t('common.loggedIn')"
               :label-account-settings="t('common.accountSettings')"
@@ -673,8 +673,8 @@ onUnmounted(() => {
             <template #footer="{ collapsed }">
               <LayoutSidebarFooter
                 :collapsed="collapsed"
-                :user-name="userStore.user?.name || 'Admin'"
-                :user-email="userStore.user?.email || 'user@example.com'"
+                :user-name="userStore.user?.userName || 'Admin'"
+                :user-email="userStore.displayName"
                 :avatar-src="userStore.defaultAvatar"
                 :label-logged-in="t('common.loggedIn')"
                 :label-account-settings="t('common.accountSettings')"
@@ -744,8 +744,8 @@ onUnmounted(() => {
         <template #footer="{ collapsed }">
           <LayoutSidebarFooter
             :collapsed="collapsed"
-            :user-name="userStore.user?.name || 'Admin'"
-            :user-email="userStore.user?.email || 'user@example.com'"
+            :user-name="userStore.user?.userName || 'Admin'"
+            :user-email="userStore.displayName"
             :avatar-src="userStore.defaultAvatar"
             :label-logged-in="t('common.loggedIn')"
             :label-account-settings="t('common.accountSettings')"
@@ -823,7 +823,7 @@ onUnmounted(() => {
         </template>
         <template #footer>
           <LayoutDoubleSidebarFooter
-            :user-name="userStore.user?.name || 'Admin'"
+            :user-name="userStore.user?.userName || 'Admin'"
             :avatar-src="userStore.defaultAvatar"
             :label-logged-in="t('common.loggedIn')"
             :label-account-settings="t('common.accountSettings')"
@@ -923,14 +923,14 @@ onUnmounted(() => {
                     >
                       <LayoutSidebarUserAvatar
                         :src="userStore.defaultAvatar"
-                        :name="userStore.user?.name || 'Admin'"
+                        :name="userStore.user?.userName || 'Admin'"
                         size="md"
                       />
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
                     <div class="px-2 py-1.5 text-sm font-medium">
-                      {{ userStore.user?.name || 'Admin' }}
+                      {{ userStore.user?.userName || 'Admin' }}
                     </div>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem class="cursor-pointer">

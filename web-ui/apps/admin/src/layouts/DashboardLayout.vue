@@ -207,6 +207,13 @@ async function handleLogout() {
 }
 
 /**
+ * 侧栏页脚 / 顶栏用户菜单的「账户设置」入口
+ */
+function goAccount() {
+  router.push({ name: 'Account' })
+}
+
+/**
  * 导航到指定菜单项
  */
 function navigateTo(item: MenuItem) {
@@ -557,7 +564,7 @@ onUnmounted(() => {
               :label-account-settings="t('common.accountSettings')"
               :label-logout="t('common.logout')"
               @logout="handleLogout"
-              @settings="() => {}"
+              @settings="goAccount"
             />
           </template>
         </LayoutDoubleSidebar>
@@ -680,7 +687,7 @@ onUnmounted(() => {
                 :label-account-settings="t('common.accountSettings')"
                 :label-logout="t('common.logout')"
                 @logout="handleLogout"
-                @settings="() => {}"
+                @settings="goAccount"
               />
             </template>
           </LayoutSidebarApp>
@@ -751,7 +758,7 @@ onUnmounted(() => {
             :label-account-settings="t('common.accountSettings')"
             :label-logout="t('common.logout')"
             @logout="handleLogout"
-            @settings="() => {}"
+            @settings="goAccount"
           />
         </template>
       </LayoutSidebarApp>
@@ -829,7 +836,7 @@ onUnmounted(() => {
             :label-account-settings="t('common.accountSettings')"
             :label-logout="t('common.logout')"
             @logout="handleLogout"
-            @settings="() => {}"
+            @settings="goAccount"
           />
         </template>
       </LayoutDoubleSidebar>
@@ -933,7 +940,7 @@ onUnmounted(() => {
                       {{ userStore.user?.userName || 'Admin' }}
                     </div>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem class="cursor-pointer">
+                    <DropdownMenuItem class="cursor-pointer" @click="goAccount">
                       <span>{{ t('menu.account') }}</span>
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />

@@ -10,6 +10,7 @@ import error from './error'
 import workbench from './workbench'
 import knowledge from './knowledge'
 import caseEntry from './caseEntry'
+import account from './account'
 
 export default {
   common,
@@ -21,4 +22,5 @@ export default {
   workbench,
   knowledge,
   caseEntry,
+  account,
 }

@@ -108,7 +108,7 @@ export default {
   newPassword: '新密码',
   confirmNewPassword: '确认新密码',
   passwordMismatch: '两次输入的密码不一致',
-  passwordTooShort: '新密码至少 6 位',
+  passwordTooShort: '新密码至少 8 位',
   changePasswordSuccess: '密码已更新',
   changePasswordFailed: '密码修改失败',
 

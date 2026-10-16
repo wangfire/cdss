@@ -937,6 +937,16 @@ app.MapGet(
         return Results.Ok(ApiEnvelope.Create(response));
     }).RequireAuthorization(RbacPolicies.CodingReader);
 
+app.MapGet(
+    "/api/v1/users",
+    async (
+        ISecurityService service,
+        CancellationToken cancellationToken) =>
+    {
+        var users = await service.ListUsersAsync(cancellationToken);
+        return Results.Ok(ApiEnvelope.Create(users));
+    }).RequireAuthorization(RbacPolicies.UserAdmin);
+
 app.MapPost(
     "/api/v1/users",
     async (
@@ -946,6 +956,16 @@ app.MapPost(
     {
         var response = await service.CreateUserAsync(request, cancellationToken);
         return Results.Created($"/api/v1/users/{response.Id}", ApiEnvelope.Create(response));
+    }).RequireAuthorization(RbacPolicies.UserAdmin);
+
+app.MapGet(
+    "/api/v1/roles",
+    async (
+        ISecurityService service,
+        CancellationToken cancellationToken) =>
+    {
+        var roles = await service.ListRolesAsync(cancellationToken);
+        return Results.Ok(ApiEnvelope.Create(roles));
     }).RequireAuthorization(RbacPolicies.UserAdmin);
 
 app.MapPost(
@@ -971,6 +991,18 @@ app.MapPost(
         return Results.Ok(ApiEnvelope.Create(new { ok = true }));
     }).RequireAuthorization(RbacPolicies.UserAdmin);
 
+app.MapDelete(
+    "/api/v1/users/{userId:guid}/roles/{roleId:guid}",
+    async (
+        Guid userId,
+        Guid roleId,
+        ISecurityService service,
+        CancellationToken cancellationToken) =>
+    {
+        await service.RemoveRoleAsync(userId, roleId, cancellationToken);
+        return Results.Ok(ApiEnvelope.Create(new { ok = true }));
+    }).RequireAuthorization(RbacPolicies.UserAdmin);
+
 app.MapGet(
     "/api/v1/users/{userId:guid}/roles",
     async (
@@ -986,10 +1018,11 @@ app.MapPatch(
     "/api/v1/users/{userId:guid}/status",
     async (
         Guid userId,
+        UpdateUserStatusRequest request,
         ISecurityService service,
         CancellationToken cancellationToken) =>
     {
-        await service.SetUserStatusAsync(userId, "DISABLED", cancellationToken);
+        await service.SetUserStatusAsync(userId, request.Status, cancellationToken);
         return Results.Ok(ApiEnvelope.Create(new { ok = true }));
     }).RequireAuthorization(RbacPolicies.UserAdmin);
 

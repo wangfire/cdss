@@ -73,6 +73,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
     private readonly IModelRouter _modelRouter;
     private readonly IJsonSchemaValidator _schemaValidator;
     private readonly IIcdIndexSource _indexSource;
+    private readonly ITumorIndexSource _tumorIndexSource;
     private readonly IIcdDictionarySource _dictionarySource;
     private readonly IIcdTermSynonymSource _termSynonymSource;
     private readonly IOptions<V22PipelineOptions> _options;
@@ -88,6 +89,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         IModelRouter modelRouter,
         IJsonSchemaValidator schemaValidator,
         IIcdIndexSource indexSource,
+        ITumorIndexSource tumorIndexSource,
         IIcdDictionarySource dictionarySource,
         IIcdTermSynonymSource termSynonymSource,
         IOptions<V22PipelineOptions> options,
@@ -102,6 +104,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         _modelRouter = modelRouter;
         _schemaValidator = schemaValidator;
         _indexSource = indexSource;
+        _tumorIndexSource = tumorIndexSource;
         _dictionarySource = dictionarySource;
         _termSynonymSource = termSynonymSource;
         _options = options;
@@ -422,6 +425,16 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
             try
             {
                 var indexSnapshot = _indexSource.GetSnapshot(cancellationToken);
+                // 肿瘤部位表可选：表为空/加载失败时按无肿瘤链路继续（裸形态学码照旧丢弃）。
+                TumorIndexSnapshot? tumorSnapshot = null;
+                try
+                {
+                    tumorSnapshot = _tumorIndexSource.GetSnapshot(cancellationToken);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "肿瘤索引快照加载失败，本次按无部位链路执行");
+                }
                 var diagnosisDictionary = _dictionarySource.GetDictionary(
                     task.HospitalId, settings.IndexDiagnosisCodeSystem, cancellationToken);
                 var termSynonyms = _termSynonymSource.GetSnapshot(cancellationToken);
@@ -441,7 +454,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                         : null;
                     indexResults[input.Id] = resolver.Resolve(
                         indexSnapshot, diagnosisDictionary, inputName, aliasTexts,
-                        termSynonyms, cancellationToken);
+                        termSynonyms, tumorSnapshot, cancellationToken);
                 }
 
                 indexSucceeded = true;

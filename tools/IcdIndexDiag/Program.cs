@@ -12,7 +12,7 @@ var codeSystem = "ICD-10";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("用法: IcdIndexDiag <诊断文本> [...] [--tree <seq_no>] [--terms <输出文件>] [--blank <输入名文件> <输出判定文件>] [--leadstats <输入名文件> <产出台账文件>] [--batch <输入名文件> <Top1台账文件>] [--export <输入名文件> <推荐与链路明细文件>]");
+    Console.Error.WriteLine("用法: IcdIndexDiag <诊断文本> [...] [--tree <seq_no>] [--terms <输出文件>] [--blank <输入名文件> <输出判定文件>] [--leadstats <输入名文件> <产出台账文件>] [--leads <输入名文件> <全主导词台账文件>] [--batch <输入名文件> <Top1台账文件>] [--export <输入名文件> <推荐与链路明细文件>]");
     return 1;
 }
 
@@ -26,6 +26,9 @@ var batchIn = (string?)null;
 var batchOut = (string?)null;
 var exportIn = (string?)null;
 var exportOut = (string?)null;
+var leadsIn = (string?)null;
+var leadsOut = (string?)null;
+var tumorSiteMorph = (string?)null;
 var inputs = new List<string>();
 for (var i = 0; i < args.Length; i++)
 {
@@ -47,6 +50,11 @@ for (var i = 0; i < args.Length; i++)
         leadStatsIn = args[++i];
         leadStatsOut = args[++i];
     }
+    else if (args[i] == "--leads" && i + 2 < args.Length)
+    {
+        leadsIn = args[++i];
+        leadsOut = args[++i];
+    }
     else if (args[i] == "--batch" && i + 2 < args.Length)
     {
         batchIn = args[++i];
@@ -56,6 +64,10 @@ for (var i = 0; i < args.Length; i++)
     {
         exportIn = args[++i];
         exportOut = args[++i];
+    }
+    else if (args[i] == "--tumorsite" && i + 1 < args.Length)
+    {
+        tumorSiteMorph = args[++i];
     }
     else
     {
@@ -79,13 +91,41 @@ if (treeSeq > 0)
 
 var dictionary = BuildDictionary(conn, hospital, codeSystem);
 var synonyms = BuildSynonyms(conn);
+var tumor = BuildTumor(conn);
+
+if (tumorSiteMorph is not null)
+{
+    if (tumor is null)
+    {
+        Console.Error.WriteLine("tumor_index 表为空。");
+        return 1;
+    }
+
+    foreach (var text in inputs)
+    {
+        Console.WriteLine($"===== {tumorSiteMorph} + {text} =====");
+        var match = tumor.TryResolveSiteCode(tumorSiteMorph, text);
+        Console.WriteLine(match is null
+            ? "  → 未取到部位码"
+            : $"  → {match.Code} [{match.ColumnName}] 路径={match.DisplayPath}");
+        foreach (var candidate in tumor.DescribeCandidates(text, tumorSiteMorph))
+        {
+            Console.WriteLine($"   {(candidate.TiedWithBest ? "并列" : "    ")}"
+                + $" seq={candidate.SeqNo} 父={candidate.ParentSeqNo} 级={candidate.Level}"
+                + $" alias={candidate.AliasScore}/{candidate.AliasLength}字 path={candidate.PathScore} jump={candidate.JumpKind}"
+                + $" 出码={candidate.EmittedCode ?? "-"} {candidate.FullIndexName}");
+        }
+    }
+
+    return 0;
+}
 // ICD_INDEX_DIAG_TOP 可放宽产出条数上限，用于查看被 Top-3 挤掉的候选及其分值。
 var diagTop = int.TryParse(Environment.GetEnvironmentVariable("ICD_INDEX_DIAG_TOP"), out var parsedTop) ? parsedTop : 3;
 var resolver = new IcdIndexDiagnosisResolver(8, diagTop, codeSystem);
 
 if (blankIn is not null && blankOut is not null)
 {
-    RunBlankDiagnosis(snapshot, dictionary, codeSystem, resolver, blankIn, blankOut, synonyms);
+    RunBlankDiagnosis(snapshot, dictionary, codeSystem, resolver, blankIn, blankOut, synonyms, tumor);
     return 0;
 }
 
@@ -95,16 +135,22 @@ if (leadStatsIn is not null && leadStatsOut is not null)
     return 0;
 }
 
+if (leadsIn is not null && leadsOut is not null)
+{
+    RunLeadEnumeration(snapshot, dictionary, synonyms, codeSystem, leadsIn, leadsOut, tumor);
+    return 0;
+}
+
 if (batchIn is not null && batchOut is not null)
 {
     // 批量台账固定用生产口径 maxResults=3，便于改动前后逐名 Top1 对比。
-    RunBatch(snapshot, dictionary, synonyms, new IcdIndexDiagnosisResolver(8, 3, codeSystem), batchIn, batchOut);
+    RunBatch(snapshot, dictionary, synonyms, new IcdIndexDiagnosisResolver(8, 3, codeSystem), batchIn, batchOut, tumor);
     return 0;
 }
 
 if (exportIn is not null && exportOut is not null)
 {
-    RunExport(snapshot, dictionary, synonyms, exportIn, exportOut);
+    RunExport(snapshot, dictionary, synonyms, tumor, exportIn, exportOut);
     return 0;
 }
 
@@ -112,7 +158,7 @@ foreach (var input in inputs)
 {
     Console.WriteLine($"===== {input} =====");
     Diagnose(snapshot, dictionary, input, codeSystem);
-    var results = resolver.Resolve(snapshot, dictionary, input, null, synonyms);
+    var results = resolver.Resolve(snapshot, dictionary, input, null, synonyms, tumor: tumor);
     Console.WriteLine($"-- resolver 产出 {results.Count} 条");
     foreach (var item in results)
     {
@@ -146,6 +192,38 @@ static List<IcdIndexRow> BuildRows(string conn)
 
 static IcdIndexSnapshot BuildSnapshot(string conn) => IcdIndexSnapshotBuilder.Build(BuildRows(conn));
 
+// 肿瘤索引（部位表）快照；表为空时返回 null（等价于无肿瘤链路）。
+static TumorIndexSnapshot? BuildTumor(string conn)
+{
+    using var sql = new SqlConnection(conn);
+    sql.Open();
+    using var cmd = new SqlCommand(
+        @"SELECT seq_no, index_name, index_level, parent_seq_no, full_index_name,
+                 code_malignant_primary, code_malignant_secondary, code_in_situ,
+                 code_benign, code_uncertain, jump_kind, ISNULL(jump_target, '') AS jump_target
+          FROM tumor_index ORDER BY seq_no", sql);
+    using var reader = cmd.ExecuteReader();
+    var rows = new List<TumorIndexRow>();
+    while (reader.Read())
+    {
+        rows.Add(new TumorIndexRow(
+            reader.GetInt32(0),
+            reader.GetString(1),
+            reader.GetInt32(2),
+            reader.GetInt32(3),
+            reader.GetString(4),
+            reader.IsDBNull(5) ? null : reader.GetString(5),
+            reader.IsDBNull(6) ? null : reader.GetString(6),
+            reader.IsDBNull(7) ? null : reader.GetString(7),
+            reader.IsDBNull(8) ? null : reader.GetString(8),
+            reader.IsDBNull(9) ? null : reader.GetString(9),
+            reader.GetInt32(10),
+            reader.IsDBNull(11) || reader.GetString(11).Length == 0 ? null : reader.GetString(11)));
+    }
+
+    return rows.Count == 0 ? null : TumorIndexSnapshot.Build(rows);
+}
+
 // 术语同义词快照（与生产同源：icd_term_synonym 表，仅取启用行）。
 static IcdTermSynonymSnapshot BuildSynonyms(string conn)
 {
@@ -171,7 +249,8 @@ static void RunBlankDiagnosis(
     IcdIndexDiagnosisResolver resolver,
     string inFile,
     string outFile,
-    IcdTermSynonymSnapshot synonyms)
+    IcdTermSynonymSnapshot synonyms,
+    TumorIndexSnapshot? tumor = null)
 {
     var names = File.ReadLines(inFile)
         .Select(line => line.Trim())
@@ -233,7 +312,7 @@ static void RunBlankDiagnosis(
             }
         }
 
-        var produced = resolver.Resolve(snapshot, dictionary, name, null, synonyms).Count;
+        var produced = resolver.Resolve(snapshot, dictionary, name, null, synonyms, tumor: tumor).Count;
         var died = drillNull + codeless + overlapKilled + expandEmpty;
         var verdict = produced > 0
             ? "复算有产出(空结果来自管道下游或字典差异)"
@@ -273,12 +352,13 @@ static void RunBatch(
     IcdTermSynonymSnapshot synonyms,
     IcdIndexDiagnosisResolver resolver,
     string inFile,
-    string outFile)
+    string outFile,
+    TumorIndexSnapshot? tumor = null)
 {
     var sb = new StringBuilder();
     foreach (var name in File.ReadLines(inFile).Select(line => line.Trim()).Where(line => line.Length > 0))
     {
-        var results = resolver.Resolve(snapshot, dictionary, name, null, synonyms);
+        var results = resolver.Resolve(snapshot, dictionary, name, null, synonyms, tumor: tumor);
         sb.Append(Sanitize(name)).Append('\t').Append(results.Count);
         if (results.Count == 0)
         {
@@ -308,6 +388,7 @@ static void RunExport(
     IcdIndexSnapshot snapshot,
     IcdDictionarySnapshot dictionary,
     IcdTermSynonymSnapshot synonyms,
+    TumorIndexSnapshot? tumor,
     string inFile,
     string outFile)
 {
@@ -334,7 +415,7 @@ static void RunExport(
     foreach (var name in File.ReadLines(inFile).Select(line => line.Trim()).Where(line => line.Length > 0))
     {
         names++;
-        var results = resolver.Resolve(snapshot, dictionary, name, null, synonyms);
+        var results = resolver.Resolve(snapshot, dictionary, name, null, synonyms, tumor: tumor);
         var rank = 0;
         var chainKeys = new List<string>();
 
@@ -497,6 +578,175 @@ static void RunLeadStatistics(
 
     File.WriteAllText(outFile, sb.ToString(), new UTF8Encoding(false));
     Console.WriteLine("wrote " + outFile);
+}
+
+/// <summary>
+/// 全主导词枚举台账（"这个诊断名里有哪些主导词、每个主导词下能配到哪些修饰词"）：
+/// 召回宽度取 100（生产口径 leadWordTopK=8），每个主导词各自下钻一次，
+/// 所以 右眼视网膜瘢痕 这类一名多主导词的输入会把 视网膜 与 瘢痕 各自成行列出；
+/// 被生产名额挤掉、以及召回了却走不出编码的主导词同样列出（下钻列写明卡在哪），
+/// 下钻失败时补列"词面能在输入里沾到的直接子行"，供人工核对是不是索引缺修饰词。
+/// 输入变体（术语同义词改写、索引"又称"改写）各自成组列出并在 变体/来源 列标注，
+/// 因为生产链路确实会跑这些变体，只看原文会漏掉实际生效的主导词。
+/// 输出（首行表头）：
+///   名称 \t 变体 \t 来源 \t 名次 \t 主导词 \t 主导词编码 \t 命中的别名键 \t 覆盖字数 \t 覆盖率
+///   \t 生产名额内 \t 下钻 \t 修饰词(下钻路径) \t 修饰词编码 \t 链路终点编码 \t 祖先兜底 \t 链路重叠 \t 字典展开码
+/// </summary>
+static void RunLeadEnumeration(
+    IcdIndexSnapshot snapshot,
+    IcdDictionarySnapshot dictionary,
+    IcdTermSynonymSnapshot synonyms,
+    string codeSystem,
+    string inFile,
+    string outFile,
+    TumorIndexSnapshot? tumor = null)
+{
+    const int enumerateTopK = 100;
+    const int productionTopK = 8;
+
+    var sb = new StringBuilder();
+    sb.AppendLine(string.Join('\t',
+        "名称", "变体", "来源", "名次", "主导词", "主导词编码", "命中的别名键", "覆盖字数", "覆盖率",
+        "生产名额内", "下钻", "修饰词(下钻路径)", "修饰词编码", "链路终点编码", "祖先兜底", "链路重叠", "字典展开码"));
+    var nameCount = 0;
+    var rowCount = 0;
+    var namesWithoutLead = 0;
+
+    foreach (var name in File.ReadLines(inFile).Select(line => line.Trim()).Where(line => line.Length > 0))
+    {
+        nameCount++;
+        var variants = new List<(string Text, string Source)> { (name, "原文") };
+        foreach (var text in synonyms.ExpandVariants(name, TermSynonymTypes.Diagnosis))
+        {
+            if (text.Length > 0 && !variants.Any(item => item.Text == text))
+            {
+                variants.Add((text, "术语同义词"));
+            }
+        }
+
+        foreach (var text in snapshot.RewriteByAnotherNames(name))
+        {
+            if (text.Length > 0 && !variants.Any(item => item.Text == text))
+            {
+                variants.Add((text, "索引又称"));
+            }
+        }
+
+        var emitted = 0;
+        foreach (var variant in variants)
+        {
+            var inputKey = TextMatch.NormalizeKey(variant.Text);
+            if (inputKey.Length < 2)
+            {
+                continue;
+            }
+
+            var source = variant.Source;
+            var drillKey = inputKey;
+            var leads = IcdIndexMatcher.RecallLeads(snapshot, drillKey, enumerateTopK).ToList();
+            if (leads.Count == 0 && IcdIndexMatcher.ResolveRedirect(snapshot, drillKey) is { } redirect)
+            {
+                var redirectKey = TextMatch.NormalizeKey(redirect);
+                leads = IcdIndexMatcher.RecallLeads(snapshot, redirectKey, enumerateTopK).ToList();
+                if (leads.Count > 0)
+                {
+                    source += "→见重定向";
+                    drillKey = redirectKey;
+                }
+            }
+
+            var rank = 0;
+            foreach (var hit in leads)
+            {
+                rank++;
+                var drill = IcdIndexMatcher.Drill(snapshot, hit, drillKey);
+                string verdict;
+                string modifierTerms;
+                string modifierCodes;
+                var terminalCode = string.Empty;
+                var ancestorFallback = "0";
+                var overlapText = string.Empty;
+                var expandedText = string.Empty;
+
+                if (drill is null)
+                {
+                    var candidates = DirectModifierCandidates(hit.Node, drillKey);
+                    modifierTerms = string.Join("→", candidates.Select(node => node.Term));
+                    modifierCodes = string.Join("→", candidates.Select(node => node.Code ?? "无"));
+                    verdict = candidates.Count > 0 ? "下钻无编码(列出词面可沾的子行)" : "下钻无编码";
+                    overlapText = "0.000";
+                }
+                else
+                {
+                    var indexCode = drill.CodeNode.Code;
+                    var hasCode = !string.IsNullOrEmpty(indexCode);
+                    terminalCode = indexCode ?? string.Empty;
+                    ancestorFallback = drill.CodeFromAncestorFallback ? "1" : "0";
+                    modifierTerms = string.Join("→", drill.Path.Skip(1).Select(node => node.Term));
+                    modifierCodes = string.Join("→", drill.Path.Skip(1).Select(node => node.Code ?? "无"));
+                    var overlap = PathOverlapProduction(drill.Path, variant.Text);
+                    overlapText = overlap.ToString("0.000");
+                    if (!hasCode)
+                    {
+                        verdict = "链路终点无编码";
+                    }
+                    else if (overlap < 0.30m)
+                    {
+                        verdict = "有编码但被0.30重叠门槛剔除";
+                        expandedText = "（未展开）";
+                    }
+                    else
+                    {
+                        verdict = modifierTerms.Length > 0 ? "有编码+修饰词" : "有编码(主导词自身带码)";
+                        expandedText = string.Join("|", IndexCodeExpander
+                            .Expand(ParsedIndexCode.Parse(indexCode!), dictionary, variant.Text, drill.PathKey, 3, codeSystem)
+                            .Select(item => item.Code + (item.IsIndexFallback ? "(fb)" : string.Empty)));
+                    }
+                }
+
+                sb.AppendLine(string.Join('\t',
+                    Sanitize(name),
+                    Sanitize(variant.Text == name ? string.Empty : variant.Text),
+                    source,
+                    rank,
+                    Sanitize(hit.Node.Term),
+                    Sanitize(hit.Node.Code ?? string.Empty),
+                    Sanitize(hit.Alias.Key),
+                    hit.CoveredChars,
+                    hit.CoverRatio.ToString("0.00"),
+                    rank <= productionTopK ? 1 : 0,
+                    verdict,
+                    Sanitize(modifierTerms),
+                    Sanitize(modifierCodes),
+                    Sanitize(terminalCode),
+                    ancestorFallback,
+                    overlapText,
+                    Sanitize(expandedText)));
+                rowCount++;
+                emitted++;
+            }
+        }
+
+        if (emitted == 0)
+        {
+            namesWithoutLead++;
+        }
+    }
+
+    File.WriteAllText(outFile, sb.ToString(), new UTF8Encoding(false));
+    Console.WriteLine($"wrote {outFile} names={nameCount} rows={rowCount} namesWithoutLead={namesWithoutLead}");
+}
+
+/// <summary>下钻取不到编码时，列出词面出现在输入里、且部位限定词门控放行的直接子行（最多 6 条）。</summary>
+static List<IcdIndexNode> DirectModifierCandidates(IcdIndexNode lead, string inputKey)
+{
+    var inputQualifiers = TextMatch.ExtractQualifiers(inputKey);
+    return lead.Children
+        .Where(child => NodeAllows(child, inputQualifiers, inputKey))
+        .Where(child => child.Aliases.Any(alias => alias.MatchKey.Length >= 2
+            && inputKey.Contains(alias.MatchKey, StringComparison.Ordinal)))
+        .Take(6)
+        .ToList();
 }
 
 // 与 IcdIndexDiagnosisResolver.PathOverlapRatio 同口径（书写噪声不计入分母）。

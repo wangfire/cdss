@@ -121,6 +121,71 @@ public sealed class EfIcdTermSynonymSource(IServiceScopeFactory scopeFactory) : 
 }
 
 /// <summary>
+/// tumor_index 全库内存快照来源（平台级共享，"肿瘤，肿瘤性" 部位表 1533 行）。
+/// 单例缓存；导入后由导入端点调 Invalidate 重建。
+/// </summary>
+public sealed class EfTumorIndexSnapshotSource(IServiceScopeFactory scopeFactory) : ITumorIndexSource
+{
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private TumorIndexSnapshot? _snapshot;
+
+    public TumorIndexSnapshot GetSnapshot(CancellationToken cancellationToken = default)
+    {
+        if (_snapshot is { } cached)
+        {
+            return cached;
+        }
+
+        _gate.Wait(cancellationToken);
+        try
+        {
+            return _snapshot ??= Build();
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public void Invalidate()
+    {
+        _gate.Wait();
+        try
+        {
+            _snapshot = null;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private TumorIndexSnapshot Build()
+    {
+        using var scope = scopeFactory.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<HospitalAiDbContext>();
+        var rows = dbContext.TumorIndexes
+            .AsNoTracking()
+            .OrderBy(item => item.SeqNo)
+            .Select(item => new TumorIndexRow(
+                item.SeqNo,
+                item.IndexName,
+                item.IndexLevel,
+                item.ParentSeqNo,
+                item.FullIndexName,
+                item.CodeMalignantPrimary,
+                item.CodeMalignantSecondary,
+                item.CodeInSitu,
+                item.CodeBenign,
+                item.CodeUncertain,
+                item.JumpKind,
+                item.JumpTarget))
+            .ToList();
+        return TumorIndexSnapshot.Build(rows);
+    }
+}
+
+/// <summary>
 /// medical_code 字典内存快照来源（按医院 + 编码体系缓存）。
 /// 纯内存 ordinal 前缀比对，规避 SQL Server 大小写不敏感 collation 对编码展开的干扰。
 /// </summary>

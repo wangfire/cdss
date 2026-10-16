@@ -102,6 +102,7 @@ public sealed class V22TestDatabase : IAsyncDisposable
             router ?? UnavailableRouter(),
             new SimpleJsonSchemaValidator(),
             new ContextIcdIndexSource(context),
+            new ContextTumorIndexSource(context),
             new ContextIcdDictionarySource(context),
             new ContextIcdTermSynonymSource(context),
             Options.Create(options ?? new V22PipelineOptions()),
@@ -116,6 +117,24 @@ public sealed class V22TestDatabase : IAsyncDisposable
                 .Select(item => new IcdIndexRow(
                     item.SeqNo, item.IndexName, item.IndexCode,
                     item.IndexLevel, item.ParentSeqNo, item.LeadWordStatus))
+                .ToList());
+
+        public void Invalidate()
+        {
+        }
+    }
+
+    /// <summary>肿瘤部位表读测试库（用例不播种时快照为空，肿瘤链路自然不产出）。</summary>
+    private sealed class ContextTumorIndexSource(HospitalAiDbContext context) : ITumorIndexSource
+    {
+        public TumorIndexSnapshot GetSnapshot(CancellationToken cancellationToken = default) =>
+            TumorIndexSnapshot.Build(context.TumorIndexes
+                .AsNoTracking()
+                .OrderBy(item => item.SeqNo)
+                .Select(item => new TumorIndexRow(
+                    item.SeqNo, item.IndexName, item.IndexLevel, item.ParentSeqNo, item.FullIndexName,
+                    item.CodeMalignantPrimary, item.CodeMalignantSecondary, item.CodeInSitu,
+                    item.CodeBenign, item.CodeUncertain, item.JumpKind, item.JumpTarget))
                 .ToList());
 
         public void Invalidate()
@@ -207,6 +226,7 @@ public sealed class V22TestDatabase : IAsyncDisposable
             UnavailableRouter(),
             new SimpleJsonSchemaValidator(),
             new ContextIcdIndexSource(context),
+            new ContextTumorIndexSource(context),
             new ContextIcdDictionarySource(context),
             new ContextIcdTermSynonymSource(context),
             Options.Create(new V22PipelineOptions()),

@@ -93,12 +93,13 @@ public static class IndexCodeExpander
         string inputText,
         string pathKey,
         int maxResults,
-        string fallbackCodeSystem = "ICD-10")
+        string fallbackCodeSystem = "ICD-10",
+        TumorIndexSnapshot? tumor = null)
     {
         // 覆盖度分母用剥掉不确定性引导语后的输入核："十二指肠溃疡伴出血可能性大" 的 性 会给
         // 慢性十二指肠溃疡伴有出血 白送一分覆盖，把与输入逐字相等的 K26.400X001 挤到 Top-2。
         var inputKey = TextMatch.StripUncertaintyPhrases(inputText);
-        var results = ExpandCore(parsed, dictionary, inputText, inputKey, pathKey, fallbackCodeSystem);
+        var results = ExpandCore(parsed, dictionary, inputText, inputKey, pathKey, fallbackCodeSystem, tumor: tumor);
 
         // 先按编码收敛，再统一排序，避免下游按编码去重时由字典行序决定谁占住 Top-N 名额。
         return Rank(results
@@ -115,25 +116,77 @@ public static class IndexCodeExpander
         string inputKey,
         string pathKey,
         string fallbackCodeSystem,
-        bool inAlternatives = false)
+        bool inAlternatives = false,
+        TumorIndexSnapshot? tumor = null)
     {
         switch (parsed.Kind)
         {
             case IndexCodeFormatKind.Alternatives:
-                return ExpandAlternatives(parsed, dictionary, inputText, inputKey, pathKey, fallbackCodeSystem);
+                return ExpandAlternatives(parsed, dictionary, inputText, inputKey, pathKey,
+                    fallbackCodeSystem, tumor);
 
             case IndexCodeFormatKind.Conditional:
                 return ExpandConditional(parsed, dictionary, inputText, inputKey, pathKey,
-                    fallbackCodeSystem, inAlternatives);
+                    fallbackCodeSystem, inAlternatives, tumor);
 
             case IndexCodeFormatKind.Morphology:
             {
-                var site = parsed.SiteCode ?? string.Empty;
-                var items = ExpandByPrefix(
-                    site.ToUpperInvariant(), dictionary, inputText, inputKey, pathKey,
-                    parsed.Kind, excludeJoint: false, inAlternatives,
-                    note: $"形态学编码 {parsed.MorphologyCode}");
-                return items.Count > 0 ? items : FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
+                // 索引已给部位码（M8332/3:C73）→ 直接用，不查肿瘤表；
+                // 裸形态学码（M8510/3）→ 按行为位到肿瘤索引表查特指部位码。
+                var site = parsed.SiteCode;
+                string? siteNote = null;
+                if (site is not { Length: > 0 } && tumor is not null && parsed.MorphologyCode is { } morph)
+                {
+                    var match = tumor.TryResolveSiteCode(morph, inputText);
+                    if (match is not null)
+                    {
+                        site = match.Code;
+                        siteNote = $"形态学编码 {morph} 按动态码 {match.BehaviorDigit}「{match.ColumnName}」"
+                            + $"在肿瘤索引查得部位: {match.DisplayPath}";
+                    }
+                }
+
+                if (site is { Length: > 0 })
+                {
+                    var items = ExpandByPrefix(
+                        site.ToUpperInvariant(), dictionary, inputText, inputKey, pathKey,
+                        parsed.Kind, excludeJoint: false, inAlternatives,
+                        note: siteNote is null ? $"形态学编码 {parsed.MorphologyCode}" : $"{siteNote}（形态学编码 {parsed.MorphologyCode}）");
+                    if (items.Count > 0)
+                    {
+                        return MergeMorphologyDetailed(items, parsed.MorphologyCode, dictionary, inputText, inputKey, pathKey, tumor);
+                    }
+
+                    // 肿瘤表判定的部位前缀在字典里过不了常规门控（输入还写着术式/炎症等修饰词）时，
+                    // 取该部位前缀最泛码——索引链路已完成语义验证，部位词本身就是索引给的。
+                    var relaxed = dictionary.Prefix(site.ToUpperInvariant())
+                        .Where(row => !row.Code.StartsWith('M') && !row.Code.Contains('+', StringComparison.Ordinal))
+                        .OrderBy(row => row.Code.Length)
+                        .ThenBy(row => row.Code, StringComparer.Ordinal)
+                        .FirstOrDefault();
+                    if (relaxed is not null)
+                    {
+                        return MergeMorphologyDetailed(
+                            [new ExpandedItem(
+                                relaxed.CodeSystemCode, relaxed.Code, relaxed.Title,
+                                0.72m, parsed.Kind,
+                                IsIndexFallback: false,
+                                IsConditionalAddOn: false,
+                                Note: ((siteNote is null ? $"形态学编码 {parsed.MorphologyCode}" : siteNote)
+                                    + "；字典门控未命中，取部位前缀最泛码"),
+                                TitleSpecificity: TextMatch.CoverageOf(
+                                    TextMatch.NormalizeKey(relaxed.Title), inputKey).Ratio)],
+                            parsed.MorphologyCode, dictionary, inputText, inputKey, pathKey, tumor);
+                    }
+                }
+
+                // 无部位可展开：裸形态学码本身不进推荐（FallbackItems 丢弃），
+                // 但字典里的 5 位详码（M85100/3 甲状腺髓样癌C73）仍按门控给形态学候选。
+                var morphologyOnly = ExpandMorphologyDetailed(
+                    parsed.MorphologyCode, dictionary, inputText, inputKey, pathKey);
+                return morphologyOnly.Count > 0
+                    ? morphologyOnly
+                    : FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
             }
 
             case IndexCodeFormatKind.DaggerPair:
@@ -232,13 +285,14 @@ public static class IndexCodeExpander
         string inputKey,
         string pathKey,
         string fallbackCodeSystem,
-        bool inAlternatives)
+        bool inAlternatives,
+        TumorIndexSnapshot? tumor = null)
     {
         // 触发码 = 本行主码；索引链路已完成语义验证，字典展不开时按索引码原样推荐。
         var triggerItems = parsed.Trigger is null
             ? []
             : ExpandCore(parsed.Trigger, dictionary, inputText, inputKey, pathKey,
-                fallbackCodeSystem, inAlternatives);
+                fallbackCodeSystem, inAlternatives, tumor);
         IReadOnlyList<ExpandedItem> result = triggerItems.Count > 0
             ? triggerItems.Select(item => item with { Score = Math.Max(item.Score, 0.62m) }).ToList()
             :
@@ -252,7 +306,7 @@ public static class IndexCodeExpander
         if (parsed.AddOn is { } addOn)
         {
             var addOnItems = ExpandCore(addOn, dictionary, inputText, inputKey, pathKey,
-                fallbackCodeSystem, inAlternatives);
+                fallbackCodeSystem, inAlternatives, tumor);
             var chosen = addOnItems.FirstOrDefault(item => !item.IsIndexFallback) ?? addOnItems.FirstOrDefault();
             if (chosen is not null)
             {
@@ -274,14 +328,15 @@ public static class IndexCodeExpander
         string inputText,
         string inputKey,
         string pathKey,
-        string fallbackCodeSystem)
+        string fallbackCodeSystem,
+        TumorIndexSnapshot? tumor = null)
     {
         var alternatives = parsed.Alternatives ?? [];
         var scored = alternatives
             .Select(alt =>
             {
                 var items = ExpandCore(alt, dictionary, inputText, inputKey, pathKey,
-                    fallbackCodeSystem, inAlternatives: true);
+                    fallbackCodeSystem, inAlternatives: true, tumor: tumor);
                 return (Alt: alt, Items: items, Best: items.Count > 0 ? items.Max(item => item.Score) : 0m);
             })
             .Where(entry => !entry.Items.Any(item => item.IsIndexFallback))
@@ -417,6 +472,92 @@ public static class IndexCodeExpander
     private static TextMatch.Coverage Best(TextMatch.Coverage left, TextMatch.Coverage right)
     {
         return left.Ratio >= right.Ratio ? left : right;
+    }
+
+    /// <summary>
+    /// 裸形态学码（M8510/3）→ 字典 5 位详码（M85100/3 甲状腺髓样癌）候选。
+    /// 索引写 4 位（ICD-O 3 版 morphology 主码补 0 成 5 位即字典形态学段前缀），
+    /// 按行为位过滤同族码（M8510 家族含 /0 良性与 /3 恶性，行为位错了就是另一个诊断）。
+    /// 常规门控（≥0.6）在这里过严：病历写 "甲状腺C细胞癌"，字典标题是 "髓样癌"，
+    /// 字面不沾但索引已判定同义 —— 只要标题与输入有 ≥2 字连续共同段即候选，
+    /// 打分取共同段占比，让 "髓样癌"（部位词 甲状腺 也被输入含住）赢过泛标题。
+    /// </summary>
+    private static IReadOnlyList<ExpandedItem> ExpandMorphologyDetailed(
+        string? morphologyCode,
+        IcdDictionarySnapshot dictionary,
+        string inputText,
+        string inputKey,
+        string pathKey)
+    {
+        if (morphologyCode is not { Length: >= 6 } code || code.IndexOf('/') < 0)
+        {
+            return [];
+        }
+
+        var slash = code.IndexOf('/');
+        var digit = code[(slash + 1)..];
+        if (digit.Length != 1)
+        {
+            return [];
+        }
+
+        // 索引 4 位形态学段（M8510）→ 字典 5 位段前缀（M85100）：补一个 0 再连行为位过滤。
+        var prefix = $"{code[..slash]}0".ToUpperInvariant();
+        var rows = dictionary.Prefix(prefix)
+            .Where(row => row.Code.EndsWith("/" + digit, StringComparison.Ordinal)
+                && row.Code.Length >= 8)
+            .ToList();
+
+        var items = new List<ExpandedItem>();
+        foreach (var row in rows)
+        {
+            var titleKey = TextMatch.NormalizeKey(row.Title);
+            if (titleKey.Length < 2 || inputKey.Length == 0)
+            {
+                continue;
+            }
+
+            var cover = TextMatch.CoverageOf(inputKey, titleKey);
+            if (cover.MaxSegment < 2)
+            {
+                continue;
+            }
+
+            items.Add(new ExpandedItem(
+                row.CodeSystemCode, row.Code, row.Title,
+                // 上限 0.68：形态学详码是"再加一码"的补充信息，部位码才是诊断本身，
+                // 不能让 M80900/3 这种详码压过肿瘤表查出的 C44.9 当 Top1。
+                Math.Min(0.68m, 0.55m + cover.Ratio * 0.45m),
+                IndexCodeFormatKind.Morphology,
+                IsIndexFallback: false, IsConditionalAddOn: false,
+                Note: $"肿瘤形态学详码（索引 {code}）",
+                TitleSpecificity: TextMatch.CoverageOf(titleKey, inputKey).Ratio));
+        }
+
+        _ = pathKey;
+        _ = inputText;
+        return Rank(items).Take(3).ToList();
+    }
+
+    /// <summary>部位码展开与形态学详码候选合并（部位候选在前，形态学详码补充粒度选项）。</summary>
+    private static IReadOnlyList<ExpandedItem> MergeMorphologyDetailed(
+        IReadOnlyList<ExpandedItem> siteItems,
+        string? morphologyCode,
+        IcdDictionarySnapshot dictionary,
+        string inputText,
+        string inputKey,
+        string pathKey,
+        TumorIndexSnapshot? tumor)
+    {
+        if (tumor is null || morphologyCode is not { Length: > 0 })
+        {
+            return siteItems;
+        }
+
+        var detailed = ExpandMorphologyDetailed(morphologyCode, dictionary, inputText, inputKey, pathKey);
+        var seen = siteItems.Select(item => item.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var extra = detailed.Where(item => seen.Add(item.Code)).ToList();
+        return extra.Count == 0 ? siteItems : [.. siteItems, .. extra];
     }
 
     private static readonly Regex BracketQualifierRegex = new("[（(]([^（）)]*)[）)]", RegexOptions.Compiled);

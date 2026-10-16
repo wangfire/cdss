@@ -151,6 +151,14 @@ public static class IcdIndexMatcher
             && !TextMatch.HasPhasePoleConflict(node.Term, inputKey)
             && !TextMatch.HasNegationPoleConflict(node.CoreTerm, inputKey);
 
+    /// <summary>ICD-O 形态学码（M8010/3、M9800/3:C95.9 的形态学段）。</summary>
+    private static readonly System.Text.RegularExpressions.Regex MorphologyCodeRegex =
+        new(@"M\d{4}/\d", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>本行（或本行编码组里任一码）是形态学码 → 肿瘤形态学树。</summary>
+    private static bool IsMorphologyLead(IcdIndexNode lead)
+        => lead.Code is { Length: > 0 } code && MorphologyCodeRegex.IsMatch(code);
+
     public static IReadOnlyList<LeadWordHit> RecallLeads(
         IcdIndexSnapshot snapshot,
         string inputKey,
@@ -176,7 +184,12 @@ public static class IcdIndexMatcher
             {
                 // 单字别名（"肾"）只作下钻目标，不足以定位主导词；
                 // RecallAnchor=false 的 或 尾段同理（它继承头段限定词，不是本行的主导词）。
-                if (!alias.RecallAnchor || GenericModifierKeys.Contains(alias.Key) || alias.Key.Length < 2)
+                // 例外：本行编码是 ICD-O 形态学码（M####/d）的单字主导词——索引里肿瘤形态
+                // 树的主导词按惯例就是一个字（143 癌 M8010/3），拦住它整棵形态学树就召不回，
+                // "甲状腺C细胞癌" 只能被 甲状腺X 疾病行借走。其余 59 条单字行（心/汗/红…）
+                // 照旧拦住，避免跨部位误召回。
+                if (!alias.RecallAnchor || GenericModifierKeys.Contains(alias.Key)
+                    || (alias.Key.Length < 2 && !IsMorphologyLead(lead)))
                 {
                     continue;
                 }

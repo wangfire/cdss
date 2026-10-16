@@ -28,7 +28,7 @@ import {
 
 /** Card 外壳是 py-6/gap-6，这里改成无内边距、由标题栏与内容区各自补 padding。 */
 const SHELL = 'gap-0 py-0'
-const HEAD = 'flex flex-wrap items-center gap-2 px-6 pt-5'
+const HEAD = 'flex flex-wrap items-center gap-2 px-6 pt-5 pb-3'
 const BODY = 'px-6 pb-5'
 
 const { t } = useI18n()
@@ -211,12 +211,17 @@ async function handleCreateUser() {
 }
 
 /* 新建角色 */
-const roleFormOpen = ref(false)
+const roleDialogOpen = ref(false)
 const roleSaving = ref(false)
 const roleForm = ref({ code: '', name: '', description: '' })
 const roleFormValid = computed(
   () => roleForm.value.code.trim().length > 0 && roleForm.value.name.trim().length > 0,
 )
+
+function openRoleDialog() {
+  roleForm.value = { code: '', name: '', description: '' }
+  roleDialogOpen.value = true
+}
 
 async function handleCreateRole() {
   if (roleSaving.value || !roleFormValid.value) return
@@ -228,8 +233,7 @@ async function handleCreateRole() {
       name: roleForm.value.name.trim(),
       description: roleForm.value.description.trim() || null,
     })
-    roleFormOpen.value = false
-    roleForm.value = { code: '', name: '', description: '' }
+    roleDialogOpen.value = false
     toast.success(t('account.roleCreated', { code }))
     await loadDirectory()
   }
@@ -426,36 +430,13 @@ onMounted(async () => {
             class="ml-auto gap-1"
             variant="outline"
             size="sm"
-            @click="roleFormOpen = !roleFormOpen"
+            @click="openRoleDialog"
           >
             <Plus class="size-4" />
             {{ t('account.newRole') }}
           </Button>
         </div>
         <div :class="BODY">
-          <form v-if="roleFormOpen" class="mb-3 space-y-2 rounded-lg bg-muted/50 p-3" @submit.prevent="handleCreateRole">
-            <div class="space-y-1">
-              <Label class="text-xs" for="role-code">{{ t('account.roleCode') }}</Label>
-              <Input id="role-code" v-model="roleForm.code" class="h-8 text-sm" placeholder="ROLE_CODER" required />
-            </div>
-            <div class="space-y-1">
-              <Label class="text-xs" for="role-name">{{ t('account.roleName') }}</Label>
-              <Input id="role-name" v-model="roleForm.name" class="h-8 text-sm" required />
-            </div>
-            <div class="space-y-1">
-              <Label class="text-xs" for="role-desc">{{ t('account.roleDescription') }}</Label>
-              <Input id="role-desc" v-model="roleForm.description" class="h-8 text-sm" />
-            </div>
-            <div class="flex items-center gap-2">
-              <Button type="submit" size="sm" :disabled="roleSaving || !roleFormValid">
-                <Loader2 v-if="roleSaving" class="mr-1.5 size-4 animate-spin" />
-                {{ t('common.save') }}
-              </Button>
-              <Button type="button" size="sm" variant="ghost" :disabled="roleSaving" @click="roleFormOpen = false">
-                {{ t('common.cancel') }}
-              </Button>
-            </div>
-          </form>
           <p v-if="roles.length === 0" class="py-6 text-center text-sm text-muted-foreground">
             {{ t('account.noRoles') }}
           </p>
@@ -499,6 +480,42 @@ onMounted(async () => {
             </DialogClose>
             <Button type="submit" :disabled="userSaving || !userFormValid">
               <Loader2 v-if="userSaving" class="mr-1.5 size-4 animate-spin" />
+              {{ t('common.save') }}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+
+    <!-- 新建角色 -->
+    <Dialog v-model:open="roleDialogOpen">
+      <DialogContent class="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle class="flex items-center gap-2">
+            <ShieldCheck class="size-5 text-primary" />
+            {{ t('account.newRole') }}
+          </DialogTitle>
+          <DialogDescription>{{ t('account.rolesDesc') }}</DialogDescription>
+        </DialogHeader>
+        <form class="space-y-4" @submit.prevent="handleCreateRole">
+          <div class="space-y-2">
+            <Label for="new-role-code">{{ t('account.roleCode') }}</Label>
+            <Input id="new-role-code" v-model="roleForm.code" placeholder="ROLE_CODER" required />
+          </div>
+          <div class="space-y-2">
+            <Label for="new-role-name">{{ t('account.roleName') }}</Label>
+            <Input id="new-role-name" v-model="roleForm.name" required />
+          </div>
+          <div class="space-y-2">
+            <Label for="new-role-desc">{{ t('account.roleDescription') }}</Label>
+            <Input id="new-role-desc" v-model="roleForm.description" />
+          </div>
+          <DialogFooter>
+            <DialogClose as-child>
+              <Button type="button" variant="outline" :disabled="roleSaving">{{ t('common.cancel') }}</Button>
+            </DialogClose>
+            <Button type="submit" :disabled="roleSaving || !roleFormValid">
+              <Loader2 v-if="roleSaving" class="mr-1.5 size-4 animate-spin" />
               {{ t('common.save') }}
             </Button>
           </DialogFooter>

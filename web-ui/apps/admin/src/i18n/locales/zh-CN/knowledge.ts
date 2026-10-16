@@ -78,6 +78,12 @@ export default {
   icdIndexRootProgress: '顶级索引已加载 {loaded} / {total}',
   loadMoreRoots: '加载更多顶级索引',
 
+  // CM3（手术操作）索引库浏览
+  cm3IndexTab: 'CM3索引库',
+  searchCm3IndexPlaceholder: '搜索手术索引名称、完整名称或编码',
+  noCm3Index: '暂无数据',
+  cm3IndexRootProgress: '顶级手术索引已加载 {loaded} / {total}',
+
   // 编码体系浏览
   codeColumn: '编码',
   nameColumn: '名称',

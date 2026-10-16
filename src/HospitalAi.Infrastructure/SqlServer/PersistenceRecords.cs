@@ -887,6 +887,48 @@ public sealed class IcdIndexRecord
 }
 
 /// <summary>
+/// CM3（ICD-9-CM 卷三 手术操作）索引库记录（源自《CM3索引整理_最终版.xlsx》sheet「索引中英对照」，保留原始全部列）。
+/// 平台级共享参考库，不按医院隔离；列口径与 <see cref="IcdIndexRecord"/> 一致，主导词状态 0=有效、1=无效。
+/// </summary>
+public sealed class Cm3IndexRecord
+{
+    public Guid Id { get; set; }
+
+    /// <summary>Excel「序号」列，全库唯一。</summary>
+    public int SeqNo { get; set; }
+
+    /// <summary>Excel「索引原始名称」列。</summary>
+    public string RawName { get; set; } = string.Empty;
+
+    /// <summary>Excel「索引原始英文名称」列，可为空。</summary>
+    public string? RawNameEn { get; set; }
+
+    /// <summary>Excel「索引名称」列。</summary>
+    public string IndexName { get; set; } = string.Empty;
+
+    /// <summary>Excel「索引编码」列，可为空（纯分类节点无编码）。</summary>
+    public string? IndexCode { get; set; }
+
+    /// <summary>Excel「索引级别」列（0 为顶层）。</summary>
+    public int IndexLevel { get; set; }
+
+    /// <summary>Excel「父节点」列，指向父记录的序号，0 表示无父节点。</summary>
+    public int ParentSeqNo { get; set; }
+
+    /// <summary>Excel「完整索引名称」列。</summary>
+    public string FullIndexName { get; set; } = string.Empty;
+
+    /// <summary>Excel「主导词状态」列：0=有效，1=无效。</summary>
+    public int LeadWordStatus { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; }
+
+    public DateTimeOffset UpdatedAt { get; set; }
+
+    public byte[] RowVersion { get; set; } = [];
+}
+
+/// <summary>
 /// 肿瘤索引（"肿瘤，肿瘤性"部位表）记录：源自《肿瘤索引.xlsx》，一行 = 索引书一行，
 /// 五个动态码并排存列（恶性原发/继发、原位、良性、动态未定）。
 /// 平台级共享，不按医院隔离；层级由行首全角横杠个数判定，父链用 SeqNo。

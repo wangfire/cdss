@@ -100,6 +100,33 @@ public sealed record ImportIcdIndexResponse(
     [property: JsonPropertyName("updatedCount")] int UpdatedCount);
 
 /// <summary>
+/// CM3（手术操作）索引库导入请求（全列保留，源自《CM3索引整理_最终版.xlsx》sheet「索引中英对照」）。
+/// </summary>
+public sealed record ImportCm3IndexRequest(
+    [property: JsonPropertyName("items")] IReadOnlyList<Cm3IndexImportItem> Items);
+
+/// <summary>
+/// CM3 索引库单条导入项。leadWordStatus：0=有效，1=无效。
+/// </summary>
+public sealed record Cm3IndexImportItem(
+    [property: JsonPropertyName("seqNo")] int SeqNo,
+    [property: JsonPropertyName("rawName")] string RawName,
+    [property: JsonPropertyName("rawNameEn")] string? RawNameEn,
+    [property: JsonPropertyName("indexName")] string IndexName,
+    [property: JsonPropertyName("indexCode")] string? IndexCode,
+    [property: JsonPropertyName("indexLevel")] int IndexLevel,
+    [property: JsonPropertyName("parentSeqNo")] int ParentSeqNo,
+    [property: JsonPropertyName("fullIndexName")] string FullIndexName,
+    [property: JsonPropertyName("leadWordStatus")] int LeadWordStatus);
+
+/// <summary>
+/// CM3 索引库导入结果。
+/// </summary>
+public sealed record ImportCm3IndexResponse(
+    [property: JsonPropertyName("importedCount")] int ImportedCount,
+    [property: JsonPropertyName("updatedCount")] int UpdatedCount);
+
+/// <summary>
 /// 术语同义词组导入请求（termType：DIAGNOSIS=诊断、PROCEDURE=手术，两侧口径互不串用）。
 /// </summary>
 public sealed record ImportTermSynonymRequest(

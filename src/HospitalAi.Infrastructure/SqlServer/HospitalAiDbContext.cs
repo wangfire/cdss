@@ -35,6 +35,8 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
 
     public DbSet<IcdIndexRecord> IcdIndexes => Set<IcdIndexRecord>();
 
+    public DbSet<Cm3IndexRecord> Cm3Indexes => Set<Cm3IndexRecord>();
+
     public DbSet<TumorIndexRecord> TumorIndexes => Set<TumorIndexRecord>();
 
     public DbSet<IcdTermSynonymRecord> IcdTermSynonyms => Set<IcdTermSynonymRecord>();
@@ -92,6 +94,7 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
         ConfigureTermSynonym(modelBuilder);
         ConfigureCodingRule(modelBuilder);
         ConfigureIcdIndex(modelBuilder);
+        ConfigureCm3Index(modelBuilder);
         ConfigureTumorIndex(modelBuilder);
         ConfigureIcdTermSynonym(modelBuilder);
         ConfigureMedicalCodeEmbedding(modelBuilder);
@@ -391,6 +394,32 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
             .HasDatabaseName("ix_icd_index_code");
         entity.HasIndex(item => item.LeadWordStatus)
             .HasDatabaseName("ix_icd_index_lead_word_status");
+    }
+
+    private static void ConfigureCm3Index(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<Cm3IndexRecord>();
+
+        entity.ToTable("cm3_index");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.SeqNo).HasColumnName("seq_no").IsRequired();
+        entity.Property(item => item.RawName).HasColumnName("raw_name").HasMaxLength(200).IsRequired();
+        entity.Property(item => item.RawNameEn).HasColumnName("raw_name_en").HasMaxLength(500);
+        entity.Property(item => item.IndexName).HasColumnName("index_name").HasMaxLength(200).IsRequired();
+        entity.Property(item => item.IndexCode).HasColumnName("index_code").HasMaxLength(100);
+        entity.Property(item => item.IndexLevel).HasColumnName("index_level").IsRequired();
+        entity.Property(item => item.ParentSeqNo).HasColumnName("parent_seq_no").IsRequired();
+        entity.Property(item => item.FullIndexName).HasColumnName("full_index_name").HasMaxLength(300).IsRequired();
+        entity.Property(item => item.LeadWordStatus).HasColumnName("lead_word_status").IsRequired();
+        entity.HasIndex(item => item.SeqNo)
+            .HasDatabaseName("ux_cm3_index_seq_no")
+            .IsUnique();
+        entity.HasIndex(item => item.IndexCode)
+            .HasDatabaseName("ix_cm3_index_code");
+        entity.HasIndex(item => item.ParentSeqNo)
+            .HasDatabaseName("ix_cm3_index_parent_seq_no");
+        entity.HasIndex(item => item.LeadWordStatus)
+            .HasDatabaseName("ix_cm3_index_lead_word_status");
     }
 
     private static void ConfigureTumorIndex(ModelBuilder modelBuilder)

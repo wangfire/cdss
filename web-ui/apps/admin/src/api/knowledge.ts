@@ -1,5 +1,7 @@
 import { http } from './http'
 import type {
+  Cm3IndexChildrenResponse,
+  Cm3IndexDto,
   CodeSystemDto,
   CodingRuleDto,
   ImportCodeSystemRequest,
@@ -48,4 +50,10 @@ export const knowledgeApi = {
 
   getIcdIndexChildren: (params: { parentSeqNo?: number; leadWordStatus?: number; offset?: number; limit?: number }) =>
     http.get<IcdIndexChildrenResponse>('/api/v1/knowledge/icd-index/children', params),
+
+  getCm3Index: (params?: { page?: number; pageSize?: number; keyword?: string; leadWordStatus?: number; indexLevel?: number }) =>
+    http.get<PagedResult<Cm3IndexDto>>('/api/v1/knowledge/cm3-index', params),
+
+  getCm3IndexChildren: (params: { parentSeqNo?: number; leadWordStatus?: number; offset?: number; limit?: number }) =>
+    http.get<Cm3IndexChildrenResponse>('/api/v1/knowledge/cm3-index/children', params),
 }

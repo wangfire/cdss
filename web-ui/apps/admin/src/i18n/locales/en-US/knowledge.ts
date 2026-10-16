@@ -78,6 +78,12 @@ export default {
   icdIndexRootProgress: 'Root indexes loaded {loaded} / {total}',
   loadMoreRoots: 'Load more root indexes',
 
+  // CM3 (procedure) index browsing
+  cm3IndexTab: 'CM3 Index',
+  searchCm3IndexPlaceholder: 'Search procedure index name, full name, or code',
+  noCm3Index: 'No data',
+  cm3IndexRootProgress: 'Root procedure indexes loaded {loaded} / {total}',
+
   // Code system browsing
   codeColumn: 'Code',
   nameColumn: 'Name',

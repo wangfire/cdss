@@ -578,6 +578,89 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                     b.ToTable("clinical_fact", (string)null);
                 });
 
+            modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.Cm3IndexRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("FullIndexName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)")
+                        .HasColumnName("full_index_name");
+
+                    b.Property<string>("IndexCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("index_code");
+
+                    b.Property<int>("IndexLevel")
+                        .HasColumnType("int")
+                        .HasColumnName("index_level");
+
+                    b.Property<string>("IndexName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("index_name");
+
+                    b.Property<int>("LeadWordStatus")
+                        .HasColumnType("int")
+                        .HasColumnName("lead_word_status");
+
+                    b.Property<int>("ParentSeqNo")
+                        .HasColumnType("int")
+                        .HasColumnName("parent_seq_no");
+
+                    b.Property<string>("RawName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("raw_name");
+
+                    b.Property<string>("RawNameEn")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("raw_name_en");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion")
+                        .HasColumnName("row_version");
+
+                    b.Property<int>("SeqNo")
+                        .HasColumnType("int")
+                        .HasColumnName("seq_no");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IndexCode")
+                        .HasDatabaseName("ix_cm3_index_code");
+
+                    b.HasIndex("LeadWordStatus")
+                        .HasDatabaseName("ix_cm3_index_lead_word_status");
+
+                    b.HasIndex("ParentSeqNo")
+                        .HasDatabaseName("ix_cm3_index_parent_seq_no");
+
+                    b.HasIndex("SeqNo")
+                        .IsUnique()
+                        .HasDatabaseName("ux_cm3_index_seq_no");
+
+                    b.ToTable("cm3_index", (string)null);
+                });
+
             modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.CodeSystemRecord", b =>
                 {
                     b.Property<Guid>("Id")

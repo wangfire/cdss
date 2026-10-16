@@ -18,6 +18,9 @@ public sealed class RerankOptions
     public string ModelCode { get; set; } = "bge-reranker-base";
 
     public int MaxLength { get; set; } = 96;
+
+    /// <summary>ONNX 推理线程上限，与嵌入同口径（见 <see cref="EmbeddingOptions.IntraOpThreads"/>）。</summary>
+    public int IntraOpThreads { get; set; } = 4;
 }
 
 /// <summary>
@@ -134,7 +137,7 @@ public sealed class OnnxReranker : IReranker
 
         try
         {
-            _session = new InferenceSession(modelPath);
+            _session = new InferenceSession(modelPath, OnnxEmbeddingProvider.CreateSessionOptions(_options.IntraOpThreads));
             _tokenizer = new XlmRUnigramTokenizer(tokenizerPath, _options.MaxLength);
             _inputIdsName = _session.InputMetadata.Keys.First(name => name.Contains("input_ids", StringComparison.OrdinalIgnoreCase));
             _attentionMaskName = _session.InputMetadata.Keys.First(name => name.Contains("attention", StringComparison.OrdinalIgnoreCase));

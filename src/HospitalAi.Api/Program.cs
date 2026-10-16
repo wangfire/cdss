@@ -513,6 +513,178 @@ app.MapGet(
         return Results.Ok(ApiEnvelope.Create(new { parentSeqNo = parentId, total, items }));
     }).RequireAuthorization(RbacPolicies.CodingReader);
 
+// CM3（手术操作）索引库导入（按序号 upsert，全列保留）。
+app.MapPost(
+    "/api/v1/cm3-index/import",
+    async (
+        ImportCm3IndexRequest request,
+        HospitalAiDbContext db,
+        CancellationToken cancellationToken) =>
+    {
+        var now = DateTimeOffset.UtcNow;
+        var seqNos = request.Items.Select(item => item.SeqNo).ToArray();
+        var existing = await db.Cm3Indexes
+            .Where(item => seqNos.Contains(item.SeqNo))
+            .ToDictionaryAsync(item => item.SeqNo, cancellationToken);
+
+        var imported = 0;
+        var updated = 0;
+        foreach (var item in request.Items)
+        {
+            if (existing.TryGetValue(item.SeqNo, out var record))
+            {
+                record.RawName = item.RawName;
+                record.RawNameEn = item.RawNameEn;
+                record.IndexName = item.IndexName;
+                record.IndexCode = item.IndexCode;
+                record.IndexLevel = item.IndexLevel;
+                record.ParentSeqNo = item.ParentSeqNo;
+                record.FullIndexName = item.FullIndexName;
+                record.LeadWordStatus = item.LeadWordStatus;
+                record.UpdatedAt = now;
+                updated++;
+            }
+            else
+            {
+                db.Cm3Indexes.Add(new Cm3IndexRecord
+                {
+                    Id = Guid.NewGuid(),
+                    SeqNo = item.SeqNo,
+                    RawName = item.RawName,
+                    RawNameEn = item.RawNameEn,
+                    IndexName = item.IndexName,
+                    IndexCode = item.IndexCode,
+                    IndexLevel = item.IndexLevel,
+                    ParentSeqNo = item.ParentSeqNo,
+                    FullIndexName = item.FullIndexName,
+                    LeadWordStatus = item.LeadWordStatus,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                });
+                imported++;
+            }
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.Ok(ApiEnvelope.Create(
+            new ImportCm3IndexResponse(imported, updated)));
+    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
+
+// 查询 CM3 索引库（leadWordStatus：0=有效，1=无效，缺省返回全部）。
+app.MapGet(
+    "/api/v1/knowledge/cm3-index",
+    async (
+        HospitalAiDbContext db,
+        int? page,
+        int? pageSize,
+        string? keyword,
+        int? leadWordStatus,
+        int? indexLevel,
+        CancellationToken cancellationToken) =>
+    {
+        var query = db.Cm3Indexes.AsQueryable();
+        if (!string.IsNullOrEmpty(keyword))
+        {
+            query = query.Where(item =>
+                item.RawName.Contains(keyword)
+                || item.IndexName.Contains(keyword)
+                || item.FullIndexName.Contains(keyword)
+                || (item.IndexCode != null && item.IndexCode.Contains(keyword))
+                || (item.RawNameEn != null && item.RawNameEn.Contains(keyword)));
+        }
+        if (leadWordStatus is int status)
+            query = query.Where(item => item.LeadWordStatus == status);
+        if (indexLevel is int level)
+            query = query.Where(item => item.IndexLevel == level);
+
+        var total = await query.CountAsync(cancellationToken);
+        var pageNum = page ?? 1;
+        var size = Math.Min(pageSize ?? 20, 200);
+        var items = await query
+            .OrderBy(item => item.SeqNo)
+            .Skip((pageNum - 1) * size)
+            .Take(size)
+            .Select(item => new
+            {
+                item.Id,
+                item.SeqNo,
+                item.RawName,
+                item.RawNameEn,
+                item.IndexName,
+                item.IndexCode,
+                item.IndexLevel,
+                item.ParentSeqNo,
+                item.FullIndexName,
+                item.LeadWordStatus,
+            })
+            .ToListAsync(cancellationToken);
+
+        return Results.Ok(ApiEnvelope.Create(new { total, page = pageNum, pageSize = size, items }));
+    }).RequireAuthorization(RbacPolicies.CodingReader);
+
+// CM3 索引库节点树：按父序号取直接子节点，并标记每个节点是否还有下一级。
+app.MapGet(
+    "/api/v1/knowledge/cm3-index/children",
+    async (
+        HospitalAiDbContext db,
+        int? parentSeqNo,
+        int? leadWordStatus,
+        int? offset,
+        int? limit,
+        CancellationToken cancellationToken) =>
+    {
+        var parentId = parentSeqNo ?? 0;
+        var take = Math.Min(limit ?? 500, 1000);
+        var query = db.Cm3Indexes.Where(item => item.ParentSeqNo == parentId);
+        if (leadWordStatus is int status)
+            query = query.Where(item => item.LeadWordStatus == status);
+
+        var total = await query.CountAsync(cancellationToken);
+        var children = await query
+            .OrderBy(item => item.SeqNo)
+            .Skip(offset ?? 0)
+            .Take(take)
+            .Select(item => new
+            {
+                item.Id,
+                item.SeqNo,
+                item.RawName,
+                item.RawNameEn,
+                item.IndexName,
+                item.IndexCode,
+                item.IndexLevel,
+                item.ParentSeqNo,
+                item.FullIndexName,
+                item.LeadWordStatus,
+            })
+            .ToListAsync(cancellationToken);
+
+        var seqNos = children.Select(item => item.SeqNo).ToArray();
+        var parentsWithChildren = await db.Cm3Indexes
+            .Where(item => seqNos.Contains(item.ParentSeqNo))
+            .Select(item => item.ParentSeqNo)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        var parentSet = parentsWithChildren.ToHashSet();
+
+        var items = children.Select(item => new
+        {
+            item.Id,
+            item.SeqNo,
+            item.RawName,
+            item.RawNameEn,
+            item.IndexName,
+            item.IndexCode,
+            item.IndexLevel,
+            item.ParentSeqNo,
+            item.FullIndexName,
+            item.LeadWordStatus,
+            hasChildren = parentSet.Contains(item.SeqNo),
+        });
+
+        return Results.Ok(ApiEnvelope.Create(new { parentSeqNo = parentId, total, items }));
+    }).RequireAuthorization(RbacPolicies.CodingReader);
+
 app.MapPost(
     "/api/v1/icd-term-synonym/import",
     async (
@@ -937,6 +1109,16 @@ app.MapGet(
         return Results.Ok(ApiEnvelope.Create(response));
     }).RequireAuthorization(RbacPolicies.CodingReader);
 
+app.MapGet(
+    "/api/v1/users",
+    async (
+        ISecurityService service,
+        CancellationToken cancellationToken) =>
+    {
+        var users = await service.ListUsersAsync(cancellationToken);
+        return Results.Ok(ApiEnvelope.Create(users));
+    }).RequireAuthorization(RbacPolicies.UserAdmin);
+
 app.MapPost(
     "/api/v1/users",
     async (
@@ -946,6 +1128,16 @@ app.MapPost(
     {
         var response = await service.CreateUserAsync(request, cancellationToken);
         return Results.Created($"/api/v1/users/{response.Id}", ApiEnvelope.Create(response));
+    }).RequireAuthorization(RbacPolicies.UserAdmin);
+
+app.MapGet(
+    "/api/v1/roles",
+    async (
+        ISecurityService service,
+        CancellationToken cancellationToken) =>
+    {
+        var roles = await service.ListRolesAsync(cancellationToken);
+        return Results.Ok(ApiEnvelope.Create(roles));
     }).RequireAuthorization(RbacPolicies.UserAdmin);
 
 app.MapPost(
@@ -971,6 +1163,18 @@ app.MapPost(
         return Results.Ok(ApiEnvelope.Create(new { ok = true }));
     }).RequireAuthorization(RbacPolicies.UserAdmin);
 
+app.MapDelete(
+    "/api/v1/users/{userId:guid}/roles/{roleId:guid}",
+    async (
+        Guid userId,
+        Guid roleId,
+        ISecurityService service,
+        CancellationToken cancellationToken) =>
+    {
+        await service.RemoveRoleAsync(userId, roleId, cancellationToken);
+        return Results.Ok(ApiEnvelope.Create(new { ok = true }));
+    }).RequireAuthorization(RbacPolicies.UserAdmin);
+
 app.MapGet(
     "/api/v1/users/{userId:guid}/roles",
     async (
@@ -986,10 +1190,11 @@ app.MapPatch(
     "/api/v1/users/{userId:guid}/status",
     async (
         Guid userId,
+        UpdateUserStatusRequest request,
         ISecurityService service,
         CancellationToken cancellationToken) =>
     {
-        await service.SetUserStatusAsync(userId, "DISABLED", cancellationToken);
+        await service.SetUserStatusAsync(userId, request.Status, cancellationToken);
         return Results.Ok(ApiEnvelope.Create(new { ok = true }));
     }).RequireAuthorization(RbacPolicies.UserAdmin);
 

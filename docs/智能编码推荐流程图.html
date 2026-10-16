@@ -2,273 +2,248 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>智能编码推荐流程图</title>
+<title>智能编码推荐流程图（病案编码员视角）</title>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
-    background: linear-gradient(135deg, #f5f7fa 0%, #e8eef5 100%);
-    padding: 40px 20px;
-    min-height: 100vh;
-  }
-  .container {
-    max-width: 1100px;
-    margin: 0 auto;
-    background: white;
-    border-radius: 16px;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.08);
-    padding: 48px;
-  }
-  h1 {
-    text-align: center;
-    color: #1a365d;
-    font-size: 32px;
-    margin-bottom: 8px;
-  }
-  .subtitle {
-    text-align: center;
-    color: #718096;
-    font-size: 15px;
-    margin-bottom: 40px;
-  }
-  .flowchart {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0;
-  }
-  .step {
-    width: 520px;
-    padding: 20px 28px;
-    border-radius: 12px;
-    text-align: center;
-    position: relative;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.06);
-    transition: transform 0.2s;
-  }
-  .step:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.1); }
-  .step-title {
-    font-size: 18px;
-    font-weight: 600;
-    margin-bottom: 6px;
-  }
-  .step-desc {
-    font-size: 13px;
-    line-height: 1.6;
-    opacity: 0.92;
-  }
-  .step-num {
-    position: absolute;
-    left: -44px;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
-    background: white;
-    border: 2px solid currentColor;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 700;
-    font-size: 15px;
-  }
-  .arrow {
-    width: 3px;
-    height: 32px;
-    background: #a0aec0;
-    position: relative;
-    margin: 0 auto;
-  }
-  .arrow::after {
-    content: '';
-    position: absolute;
-    bottom: -6px;
-    left: 50%;
-    transform: translateX(-50%);
-    border-left: 7px solid transparent;
-    border-right: 7px solid transparent;
-    border-top: 9px solid #a0aec0;
-  }
-
-  /* 颜色主题 */
-  .step-input { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
-  .step-preprocess { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; }
-  .step-core { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; }
-  .step-recall { background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); color: #1a365d; }
-  .step-drill { background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); color: #1a365d; }
-  .step-expand { background: linear-gradient(135deg, #30cfd0 0%, #330867 100%); color: white; }
-  .step-output { background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%); color: #1a365d; }
-  .step-result { background: linear-gradient(135deg, #5ee7df 0%, #b490ca 100%); color: white; }
-
-  .core-group {
-    border: 2px dashed #4facfe;
-    border-radius: 16px;
-    padding: 32px 24px;
-    background: rgba(79, 172, 254, 0.04);
-    position: relative;
-  }
-  .core-label {
-    position: absolute;
-    top: -14px;
-    left: 50%;
-    transform: translateX(-50%);
-    background: white;
-    padding: 4px 16px;
-    border: 2px solid #4facfe;
-    border-radius: 20px;
-    color: #4facfe;
-    font-weight: 600;
-    font-size: 14px;
-  }
-
-  .principles {
-    margin-top: 48px;
-    padding: 28px;
-    background: linear-gradient(135deg, #f6f9fc 0%, #eef2f7 100%);
-    border-radius: 12px;
-  }
-  .principles h2 {
-    color: #1a365d;
-    font-size: 20px;
-    margin-bottom: 16px;
-    text-align: center;
-  }
-  .principle-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 16px;
-    margin-top: 16px;
-  }
-  .principle {
-    background: white;
-    padding: 16px;
-    border-radius: 8px;
-    border-left: 4px solid #4facfe;
-  }
-  .principle-title {
-    font-weight: 600;
-    color: #1a365d;
-    margin-bottom: 4px;
-  }
-  .principle-desc {
-    font-size: 13px;
-    color: #4a5568;
-    line-height: 1.5;
-  }
-
-  .summary {
-    margin-top: 32px;
-    padding: 24px;
-    background: linear-gradient(135deg, #1a365d 0%, #2d3748 100%);
-    color: white;
-    border-radius: 12px;
-    text-align: center;
-    font-size: 16px;
-    line-height: 1.8;
-  }
-
-  @media print {
-    body { background: white; padding: 0; }
-    .container { box-shadow: none; }
-  }
+  body{margin:0;background:#eef1f5;padding:28px 14px;font-family:"Microsoft YaHei","PingFang SC",sans-serif}
+  .page{max-width:1000px;margin:0 auto;background:#fff;border-radius:10px;padding:26px 24px 30px;box-shadow:0 4px 18px rgba(0,0,0,.08)}
+  @media print{body{background:#fff;padding:0}.page{box-shadow:none;border-radius:0;padding:8px}
+    .cd h2{break-before:auto}.cd table{break-inside:auto}.cd tr{break-inside:avoid}}
 </style>
 </head>
 <body>
-<div class="container">
-  <h1>智能编码推荐流程</h1>
-  <div class="subtitle">从医生诊断输入到 ICD 编码输出的完整链路</div>
+<div class="page">
+<div class="cd">
+<style>
+  .cd{max-width:1000px;margin:0 auto;padding:18px 16px 30px;font-family:"Microsoft YaHei","PingFang SC",sans-serif;color:#1f2933;line-height:1.55;background:#fff}
+  .cd h1{font-size:21px;margin:0 0 4px}
+  .cd .sub{font-size:13px;color:#52606d;margin:0 0 14px}
+  .cd .oneliner{border-left:4px solid #1976d2;background:#f2f7fd;padding:9px 12px;font-size:14px;margin:0 0 18px}
+  .cd .flow{display:flex;flex-direction:column;gap:0}
+  .cd .node{border:1.5px solid #cbd2d9;border-radius:8px;padding:11px 13px;background:#fff}
+  .cd .node.key{border-color:#f9a825;background:#fffdf5}
+  .cd .node.out{border-color:#388e3c;background:#f4fbf5}
+  .cd .node.stop{border-color:#b0656a;background:#fdf5f5}
+  .cd .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.5px;color:#fff;background:#52606d;border-radius:3px;padding:1px 7px;margin-right:7px;vertical-align:2px}
+  .cd .tag.y{background:#f9a825;color:#3d2c00}
+  .cd .tag.g{background:#388e3c}
+  .cd .tag.r{background:#b0656a}
+  .cd .t{font-size:15px;font-weight:700;margin:0 0 5px}
+  .cd .an{font-size:12.5px;color:#52606d;font-style:italic;margin:0 0 6px}
+  .cd ul{margin:0;padding-left:19px}
+  .cd li{font-size:13px;margin:2px 0}
+  .cd .arrow{align-self:center;color:#9aa5b1;font-size:18px;line-height:1;margin:5px 0}
+  .cd .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .cd .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+  .cd .mini{border:1px solid #dbe0e6;border-radius:6px;padding:8px 10px;background:#fbfcfd}
+  .cd .mini b{display:block;font-size:13px;margin-bottom:3px}
+  .cd .mini span{font-size:12.5px;color:#52606d}
+  .cd .diamond{align-self:center;border:1.5px solid #7b8794;background:#f5f7fa;border-radius:16px;padding:7px 16px;font-size:13.5px;font-weight:700;color:#3e4c59}
+  .cd .branch{display:flex;gap:8px;margin:6px 0 0}
+  .cd .branch .b{flex:1;border:1px dashed #b3bcc4;border-radius:6px;padding:7px 9px;font-size:12.5px;background:#fff}
+  .cd .branch .b b{font-size:12.5px}
+  .cd h2{font-size:16px;margin:26px 0 8px;padding-bottom:4px;border-bottom:1px solid #e4e7eb}
+  .cd h3{font-size:14px;margin:16px 0 6px}
+  .cd table{width:100%;border-collapse:collapse;font-size:12.5px}
+  .cd th,.cd td{border:1px solid #dbe0e6;padding:6px 8px;text-align:left;vertical-align:top}
+  .cd th{background:#f5f7fa;font-weight:700}
+  .cd code{background:#eef1f4;border-radius:3px;padding:0 4px;font-size:12px}
+  .cd .note{font-size:12px;color:#7b8794;margin-top:16px}
+  .cd .ok td{background:#f4fbf5}
+  .cd .half td{background:#fffdf5}
+  .cd .bad td{background:#fdf5f5}
+  .cd .none td{background:#f7f8fa}
+  .cd .cap{font-size:12.5px;color:#52606d;margin:4px 0 10px}
+  .cd .legend{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 10px}
+  .cd .legend span{font-size:12px;border:1px solid #dbe0e6;border-radius:4px;padding:2px 8px;background:#fbfcfd}
+</style>
 
-  <div class="flowchart">
+<h1>智能编码推荐：系统是怎么"想"出一个 ICD 码的</h1>
+<p class="sub">面向病案编码员 · 每一步都对应你手工编码时的一个动作 · 数据口径见文末（2026-10-15）</p>
 
-    <div class="step step-input">
-      <div class="step-num">1</div>
-      <div class="step-title">医生录入临床诊断</div>
-      <div class="step-desc">首页入院/出院诊断、手术操作,或病历文书自动抽取<br>如:"左肺微小结节并钙化""慢性阻塞性肺病"</div>
-    </div>
+<p class="oneliner">一句话：<b>系统做的就是你翻 ICD 索引书的那套动作</b> —— 定主导词 → 逐级往下钻 → 把索引行上的码展开成可用码 → 再和字典精确命中、全文检索、语义近义的结果放一起比 → 打分取前 3 → 告诉你"为什么是这个码"。</p>
 
-    <div class="arrow"></div>
+<div class="flow">
 
-    <div class="step step-preprocess">
-      <div class="step-num">2</div>
-      <div class="step-title">文本预处理</div>
-      <div class="step-desc">去除书写噪声 · 识别病程(急性/慢性) · 识别否定(排除XX) · 提取部位(左/右/双侧)</div>
-    </div>
-
-    <div class="arrow"></div>
-
-    <div class="core-group">
-      <div class="core-label">ICD 索引通道(核心)</div>
-
-      <div class="step step-recall">
-        <div class="step-num">3</div>
-        <div class="step-title">主导词召回</div>
-        <div class="step-desc">翻到索引书的哪一页<br>5.1万行索引别名匹配输入,覆盖度≥60%,黑名单过滤泛化词</div>
-      </div>
-
-      <div class="arrow"></div>
-
-      <div class="step step-drill">
-        <div class="step-num">4</div>
-        <div class="step-title">逐级下钻</div>
-        <div class="step-desc">在子目录里找更细分类<br>子节点必须带来输入新内容 · 部位门控 · 病程极互斥 · "见X"跳转竞争</div>
-      </div>
-
-      <div class="arrow"></div>
-
-      <div class="step step-expand">
-        <div class="step-num">5</div>
-        <div class="step-title">编码展开</div>
-        <div class="step-desc">把索引条目变成具体 ICD 码<br>支持 7 种索引格式 · 本地字典展开 · 展不开时显式标注"回退"</div>
-      </div>
-    </div>
-
-    <div class="arrow"></div>
-
-    <div class="step step-output">
-      <div class="step-num">6</div>
-      <div class="step-title">排序与输出</div>
-      <div class="step-desc">按覆盖度未截断排序 · 每个诊断输入输出 Top 1–3 条推荐</div>
-    </div>
-
-    <div class="arrow"></div>
-
-    <div class="step step-result">
-      <div class="step-num">7</div>
-      <div class="step-title">推荐结果 + 推理证据</div>
-      <div class="step-desc">每条推荐附带完整路径:主导词 → 修饰词 → 索引节点 → 最终编码<br>编码员可一键查看推理依据</div>
-    </div>
-
+  <div class="node">
+    <p class="t"><span class="tag">1</span>收料：把这一份病案要编码的条目收齐</p>
+    <p class="an">对应动作：拿到首页和病历，先看有多少条要编</p>
+    <ul>
+      <li>来源：首页<b>出院诊断</b>、首页<b>入院诊断</b>、<b>手术操作</b>，以及病历文书里自动抽取的诊断</li>
+      <li>清洗：去掉序号、"可能性大 / 待查"这类连接噪声；识别<b>侧别与部位</b>（左/右/双侧）、<b>病程</b>（急性/慢性）、<b>否定</b>（已排除）</li>
+      <li>同一条诊断在首页和文书里都出现时，只编一次，优先采用首页写法</li>
+    </ul>
   </div>
+  <div class="arrow">▼</div>
 
-  <div class="principles">
-    <h2>关键设计原则</h2>
-    <div class="principle-grid">
-      <div class="principle">
-        <div class="principle-title">宁缺毋错</div>
-        <div class="principle-desc">找不到匹配时返回 0 条推荐,而不是给一条"差不多"的错码</div>
-      </div>
-      <div class="principle">
-        <div class="principle-title">可解释</div>
-        <div class="principle-desc">每条推荐都有可读的推理路径,编码员能复核</div>
-      </div>
-      <div class="principle">
-        <div class="principle-title">按索引书规则</div>
-        <div class="principle-desc">不是字符串相似度,而是完全遵循 ICD 索引书的层级、跳转、星号等规范</div>
-      </div>
-      <div class="principle">
-        <div class="principle-title">双通道兜底</div>
-        <div class="principle-desc">主通道为 ICD 索引;字典直匹配作为兜底,覆盖率 100%</div>
-      </div>
+  <div class="node stop">
+    <p class="t"><span class="tag r">2</span>体检：这份病案现在能编吗</p>
+    <p class="an">对应动作：发现缺页、时间矛盾，先退回临床而不是硬编</p>
+    <ul>
+      <li>检查：文书是否存在且非空、是否重复提交、出入院时间是否自相矛盾</li>
+      <li>不合格 → 标记<b>「需人工处理」</b>，本次不出推荐结果（不会给一个"差不多"的码）</li>
+    </ul>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="diamond">分流：这一条是"诊断"还是"手术操作"？</div>
+  <div class="branch">
+    <div class="b"><b>诊断</b> → 走 ICD 索引书通道（下面第 3 步为主），再加语义近义检索补充</div>
+    <div class="b"><b>手术操作</b> → 走操作字典通道（ICD-9-C3 卷三），以同名/同义词精确命中 + 全文检索为主；诊断码不会混进来</div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node key">
+    <p class="t"><span class="tag y">3</span>查索引书：内置一本 5.1 万行的 ICD 索引，分四小步</p>
+    <p class="an">对应动作：定主导词 → 翻子目录 → 抄下条目码 → 实在没有才用"病，疾病"</p>
+    <div class="grid" style="margin-top:6px">
+      <div class="mini"><b>3.1 定主导词（翻到哪一页）</b><span>词条的主词、别名、括号异体都拿去和你的诊断名匹配，别名要在诊断名里<b>真的出现</b>（去标点、等义词换算后按字序比）；泛词（动脉 / 慢性 / 综合征…）不许当锚点；写法不同的等义词先换算（霉菌病 = 真菌病、乳房 = 乳腺、癫癎 = 癫痫）；最多同时试 <b>8 个</b>主导词。</span></div>
+      <div class="mini"><b>3.2 逐级下钻（子目录里找更细）</b><span>子节点必须带来输入的<b>新字符（≥2 个）</b>才往下走；部位门控（输入的"腰椎"不会被带到"颈椎"分支）；急性 ↔ 慢性、近期 ↔ 陈旧不跨分支；碰到"<b>见</b> / <b>另见</b>"按索引书改道，且与下钻比较谁覆盖输入更多；整条链路对输入的覆盖<b>不足 30%</b> 直接丢弃。</span></div>
+      <div class="mini"><b>3.3 展开编码（条目码变成可用码）</b><span>认 7 种索引写法（类目码、横线详码、星号剑号、范围、替代组…），通过本地 ICD 字典展开：<b>字典标题要连续覆盖诊断名 ≥60%</b> 才算这个码成立；<b>肿瘤形态学码</b>（M8000/3 这类只说性质不说部位）另查肿瘤部位表补出部位码。</span></div>
+      <div class="mini"><b>3.4 末位兜底（实在找不到）</b><span>所有具体主导词都落空时，才走"见情况"翻泛词 <b>病，疾病 / 疾患</b>；这类推荐会<b>显式标注「兜底」并降权（×0.8）</b>，永远排在具体链路之后。</span></div>
+    </div>
+    <ul style="margin-top:8px">
+      <li>索引行上写的码在字典里<b>展不开</b>时：只推荐索引码本身并<b>标注「回退」</b>，让编码员知情，而不是编一个看起来对的码</li>
+    </ul>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node">
+    <p class="t"><span class="tag">4</span>另外三路一起找，结果并到一起（同一个码只留一条）</p>
+    <p class="an">对应动作：不只翻索引，也会对着字典和历史病案再核一遍</p>
+    <div class="grid3" style="margin-top:6px">
+      <div class="mini"><b>字典精确命中</b><span>名称完全同名、或命中已登记的同义词 → 直接进候选，分数最高一档</span></div>
+      <div class="mini"><b>全文检索</b><span>对着编码知识库全文找相似标题；要求<b>连续覆盖 ≥0.6 且最长公共段 ≥3 字</b>才保留（治"神经根型腰椎病 → 糖尿病腰骶神经根病"这类字面像、临床不对）</span></div>
+      <div class="mini"><b>语义近义检索</b><span>找"说法不同、意思相同"的标题（术后状态、化疗后这类跨表述）；只在诊断通道启用</span></div>
     </div>
   </div>
+  <div class="arrow">▼</div>
 
-  <div class="summary">
-    <strong>一句话总结:</strong><br>
-    系统 = 一本会自己翻的 ICD 索引书 + 一套严格的匹配规则 + 一条可追溯的推理链<br>
-    医生写诊断名,系统按索引书规则给出 1–3 条最可能的 ICD 码,并告诉编码员"为什么是这个码"
+  <div class="node">
+    <p class="t"><span class="tag">5</span>排序打分：谁更像这个诊断</p>
+    <p class="an">对应动作：把几个候选摆一起，挑最贴合的那一个</p>
+    <ul>
+      <li>先由模型对池内<b>前 8 条</b>做精排，再按<b>七个维度</b>加权：<b>完全同名、语义相近、检索命中、模型精排、规则校验、病历证据、大模型复核</b></li>
+      <li><b>证据维度权重最高</b>：推荐必须能在病历原文里找到支撑段落</li>
+      <li><b>一族一席</b>：同一索引族（同一类目下的近亲码）只占一个位置，避免 3 个候选全是同一个码的变体</li>
+      <li>每条诊断<b>最多交付 3 条</b>候选 —— 精度优先，宁少不错</li>
+    </ul>
   </div>
+  <div class="arrow">▼</div>
 
+  <div class="diamond">6 · 结论分档：这条推荐敢不敢直接用？</div>
+  <div class="branch">
+    <div class="b"><b>高置信（建议直接采用）</b>：总分 ≥0.85、有病历证据支撑、且明显领先第二名</div>
+    <div class="b"><b>需人工复核</b>：第 2、3 名一律需复核；或证据不足、领先不明显、规则只给了部分放行</div>
+    <div class="b"><b>不给推荐</b>：没有安全候选就空着 —— 空推荐好过错推荐</div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node out">
+    <p class="t"><span class="tag g">7</span>编码员在工作台看到的</p>
+    <ul>
+      <li><b>编码 + 名称 + 分数 + 置信度档位</b>，每条都带<b>推理路径</b>：主导词 → 修饰词 → 索引节点 → 最终编码，以及是"具体链路 / 兜底 / 回退"哪一种</li>
+      <li>带<b>病历原文证据段落</b>，可直接核对依据，不是黑箱</li>
+      <li>你<b>已确认</b>的编码在系统重跑时不会被覆盖；系统再次运行只会把旧推荐转成「历史版本」</li>
+      <li>任一条不满意都能查"是哪一步没走通"（召回？下钻？字典展开？），可复现、可反馈</li>
+    </ul>
+  </div>
+</div>
+
+<h2>案例速查：一条推荐的结果分四档，怎么读</h2>
+<p class="cap">下面 9 个案例全部取自 <b>1 万条真实临床诊断名</b>的回归台账（2026-10-14 版本），"病案编码"就是病案里实际用的码。这一版在<b>口径内 6,760 条</b>（其余按验收口径的剔除判据不计）上的分布是：<b>Top-1 精确命中 1,516 · 类目命中但码不同 1,052 · 有推荐但类目不对 3,177 · 无推荐 1,015</b>；按全部 1 万条统计则是 <b>1,945 / 1,319 / 4,099 / 2,637</b>。</p>
+<div class="legend">
+  <span>① Top-1 命中 = 第一选择就是病案码</span>
+  <span>② 类目命中 = 三位数类目对了，后面一两位不同</span>
+  <span>③ 有推荐但类目不对 = 需要人工换码</span>
+  <span>④ 无推荐 = 系统主动留白，不猜</span>
+</div>
+
+<h3>① Top-1 精确命中</h3>
+<table class="ok">
+  <tr><th style="width:14%">病历原文</th><th style="width:18%">系统 Top-1</th><th style="width:12%">病案编码</th><th style="width:27%">索引走的链路</th><th>怎么读</th></tr>
+  <tr>
+    <td>（右侧）声带息肉</td>
+    <td><code>J38.102</code> 声带息肉<br><span style="color:#7b8794">候选 2：<code>J38.100</code> 声带和喉的息肉</span></td>
+    <td><code>J38.102</code></td>
+    <td>主导词 <code>息肉</code> → 修饰词 <code>声带(粘液性)</code> → 索引编码 <code>J38.1</code> → 字典展开</td>
+    <td>括号里的"右侧"是侧别噪声，不参与匹配。索引只钻到 <code>J38.1</code> 一级，取 102 还是 100 由字典详码决定 —— 编码员只需确认有没有累及喉。</td>
+  </tr>
+  <tr>
+    <td>十二指肠溃疡伴出血可能性大</td>
+    <td><code>K26.400X001</code> 十二指肠溃疡伴出血<br><span style="color:#7b8794">候选 2、3：<code>K29.800</code> 十二指肠炎、<code>Q43.804</code> 先天性巨十二指肠</span></td>
+    <td><code>K26.400X001</code></td>
+    <td>主导词 <code>溃疡(性)</code> → <code>十二指肠(腐蚀性)(消化性)</code> → <code>伴有</code> → <code>出血</code>，并触发索引书改道 <code>[跳转：溃疡 → 溃疡，十二指肠，伴有，出血]</code></td>
+    <td>三层下钻 + "伴有"关系 + 见/另见改道都走对了；"可能性大"这类不确定后缀被清洗掉，不影响匹配。后两条属于"字面沾到、临床不对"的备选，排在后面供复核。</td>
+  </tr>
+</table>
+
+<h3>② 类目命中：类目对、码差一号（多数不是错，是"细度不同"）</h3>
+<table class="half">
+  <tr><th style="width:14%">病历原文</th><th style="width:18%">系统 Top-1</th><th style="width:12%">病案编码</th><th style="width:27%">索引走的链路</th><th>怎么读</th></tr>
+  <tr>
+    <td>陈旧性下壁心肌梗死</td>
+    <td><code>I25.207</code> 陈旧性下壁心肌梗死<br><span style="color:#7b8794">候选 2：<code>I25.200</code> 陈旧性心肌梗死</span></td>
+    <td><code>I25.200</code></td>
+    <td>主导词 <code>梗死，梗塞</code> → <code>心肌(急性或…4 周以内)</code> → <code>治愈的或陈旧性</code> → 索引编码 <code>I25.2</code></td>
+    <td>类目 <code>I25.2</code> 一致，系统给的其实是<b>更细一号</b>、把"下壁"用上了的码，口径里只算类目命中。<b>编码员在两条里挑一条即可，不用怀疑系统走错。</b></td>
+  </tr>
+  <tr>
+    <td>（颈部）淋巴结非典性增生</td>
+    <td><code>R59.000</code> 局限性淋巴结增大<br><span style="color:#7b8794">候选 2、3：<code>I88.900X006</code>、<code>I88.900X005</code></span></td>
+    <td><code>R59.900</code> 淋巴结增大</td>
+    <td>主导词 <code>增生(性)</code> → 修饰词 <code>颈淋巴结</code> → 索引编码 <code>R59.0</code></td>
+    <td>索引书把"颈部淋巴结增生"归到 <code>R59.0</code>（局限性），病案编的是未特指 <code>R59.9</code>；类目 <code>R59</code> 命中。分歧在"能不能算局限性"这个判断，属人工裁量，不是匹配错。</td>
+  </tr>
+</table>
+
+<h3>③ 有推荐但类目不对：看"卡在哪一步"</h3>
+<table class="bad">
+  <tr><th style="width:14%">病历原文</th><th style="width:18%">系统给的</th><th style="width:12%">病案编码</th><th style="width:27%">卡在哪</th><th>怎么读 / 怎么修</th></tr>
+  <tr>
+    <td>胆囊继发可能性大</td>
+    <td><code>R93.204</code> 胆囊占位性病变（只此 1 条）</td>
+    <td><code>K82.900X001</code> 胆囊病变</td>
+    <td>召回到的主导词是索引里的 <code>无显影，胆囊</code>（那一行讲的是 X 线检查不显影），整条链路只覆盖输入 <b>0.25</b>，<b>低于 30% 的链路覆盖线</b>；因为没有别的链路，最后兜着给出这一条</td>
+    <td>病历写的是<b>影像结论的缩句</b>（"胆囊继发〔影像改变〕可能性大"），索引里没有对应的修饰词层。修法：补主导词行或等义词；系统不会替你猜一个胆囊病码。</td>
+  </tr>
+  <tr>
+    <td>掌肌微黑角膜霉菌病</td>
+    <td>改造前：<code>B36.900</code> 皮霉菌病 / <code>B47.100</code> 链霉菌病 / <code>B37.000</code> 口霉菌病<br><span style="color:#7b8794">改造后 Top-1：<code>B36.100X001</code>，第 2：<code>B49.X00</code> 真菌病</span></td>
+    <td><code>B36.100X001</code></td>
+    <td>索引主导词写的是 <code>真菌病[霉菌病]，真菌性 NEC</code>，"霉菌病"三个字在<b>括号</b>里 → 属次优别名（权重 0.85），于是 B49 被四个整词"× 霉菌病"挤到第 5 名，<b>前 3 截断后就看不见</b></td>
+    <td><b>不是规则算错，是索引词面 ≠ 病历写法。</b>补一条等义词 <b>霉菌病 = 真菌病</b> 后，改写后的文本又召回了整词主导词 <b>角膜真菌病</b> → Top-1 直接是期望码。这类问题一律靠补等义词 / 补主导词行解决。</td>
+  </tr>
+  <tr>
+    <td>中心细胞性淋巴瘤</td>
+    <td><code>C83.809</code> 等 C83.8 一族</td>
+    <td><code>C83.101</code> 中心细胞性淋巴瘤</td>
+    <td>链路<b>完全走通</b>：主导词 <code>淋巴瘤(恶性)</code> → 修饰词 <code>中心细胞性</code>，覆盖率 1.00。但<b>这一行索引上写的码是 <code>M9674/3:C83.8</code></b>，展开只能出 C83.8 一族；期望码在 C83.1 下，而索引里指向 C83.1 的行全部写成 <code>核裂细胞性</code>（M9672/3）</td>
+    <td><b>逻辑没问题，是索引书的写法差异。</b>要命中得由编码员裁定：补等义词「中心细胞性 = 核裂细胞性」，还是在索引里补一行 <code>淋巴瘤(恶性) → －中心细胞性</code>。</td>
+  </tr>
+</table>
+
+<h3>④ 无推荐 / 看着像没命中：分清"系统留白"和"对照码本身有问题"</h3>
+<table class="none">
+  <tr><th style="width:14%">病历原文</th><th style="width:18%">系统给的</th><th style="width:12%">病案编码</th><th style="width:27%">实测归因</th><th>怎么读 / 怎么修</th></tr>
+  <tr>
+    <td>1 型呼衰原因待查</td>
+    <td><b>无推荐</b></td>
+    <td><code>J96.900</code> 未特指的呼吸衰竭</td>
+    <td>只召回到泛词主导词 <code>原因</code>，它的子层是 <code>外部，全身性效应 T75.8</code>、<code>未述及(疾病) R69</code>，钻不出可用码 → 0 条。<b>同一条写成"呼吸衰竭"就能走通</b>：<code>衰竭(全身 NEC) → 呼吸 = J96.9</code> → 展开 <code>J96.900X001 / X002 / X003</code></td>
+    <td><b>"呼衰"是简称，索引书里没有这一页</b> —— 属词汇缺口。修法：补等义词（呼衰 = 呼吸衰竭），或请临床写全称。空推荐好过错推荐，所以系统选择留白。</td>
+  </tr>
+  <tr>
+    <td>胎盘早剥</td>
+    <td><code>O45.900X003</code> 重度胎盘早剥 / <code>O45.900</code> 胎盘早期剥离 / <code>O45.900X002</code> 胎盘早期剥离伴出血</td>
+    <td>对照码写的是 <code>O20.000</code>（该码在字典里的名称是<b>先兆流产</b>）</td>
+    <td>两条主导词都召回并钻通：<code>胎盘早剥</code> 独立成行 = <code>O45.9</code>；<code>胎盘(另见情况) → 早剥(另见 胎盘早剥)</code> 的改道也成功，链路覆盖 1.00</td>
+    <td><b>这是一条"假未命中"</b> —— 对照源编码与诊断名本身不相符（<code>O20.0</code> 属产前出血章节，而索引书规定胎盘早剥归 <code>O45.9</code>）。<b>看命中率榜单时先扫一眼对照码是否名码相符</b>，否则会把系统实际水平算低。</td>
+  </tr>
+</table>
+
+<p class="note">口径提示：诊断侧<b>不做</b>字典名直匹配兜底，编码只能来自索引链路或检索通道，所以"字典里有这个码"不等于"系统能推荐它"。规则改动一律先过万名离线回归，硬线是<b>不允许任何一条输入因为改动而失去推荐</b>。想复核上表任意一条：离线诊断工具（<code>tools/IcdIndexDiag</code>）能逐名打印"召回了哪些主导词、每个子层为什么被剔除、最终展开成哪些码"，把诊断名发给开发即可复现。<br>
+数据来源：<code>logs/batch_1014_conn4_jzey.tsv</code>（万名离线台账，当前代码）× <code>data/exports/2026-10-08-精度口径-逐名台账.tsv</code>（病案对照码），重算脚本 <code>logs/tally_1015.mjs</code>。</p>
+</div>
 </div>
 </body>
 </html>

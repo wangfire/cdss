@@ -192,6 +192,27 @@ export interface IcdIndexChildrenResponse {
   items: (IcdIndexDto & { hasChildren: boolean })[]
 }
 
+/** CM3（手术操作）索引库条目，列口径与 ICD 索引库一致（全列保留；leadWordStatus 0=有效，1=无效）。 */
+export interface Cm3IndexDto {
+  id: string
+  seqNo: number
+  rawName: string
+  rawNameEn: string | null
+  indexName: string
+  indexCode: string | null
+  indexLevel: number
+  parentSeqNo: number
+  fullIndexName: string
+  leadWordStatus: number
+}
+
+/** CM3 索引库节点树子节点响应。 */
+export interface Cm3IndexChildrenResponse {
+  parentSeqNo: number
+  total: number
+  items: (Cm3IndexDto & { hasChildren: boolean })[]
+}
+
 export interface IcdTermSynonymVariantDto {
   id: string
   variantTerm: string

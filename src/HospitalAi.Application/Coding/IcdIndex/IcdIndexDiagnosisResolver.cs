@@ -64,6 +64,7 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         string inputText,
         IReadOnlyList<string>? aliasTexts = null,
         IcdTermSynonymSnapshot? synonyms = null,
+        TumorIndexSnapshot? tumor = null,
         CancellationToken cancellationToken = default)
     {
         var texts = new List<string> { inputText };
@@ -96,6 +97,13 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         texts.AddRange(PostoperativeStateVariants(inputText)
             .Where(text => text.Length > 0 && !texts.Contains(text)));
 
+        // 肿瘤动态词的"性"尾缀：索引写成 继发性（瘤 －继发性 M8000/6 - 见 肿瘤，继发性），
+        // 临床常省成 继发（基底节继发恶性肿瘤）。差一个字，主导词召回覆盖率只有 2/3，
+        // 进不了名额 → 只剩 瘤→恶性 M8000/3，行为位取错列，肿瘤表按 /3 给出原发部位码
+        // （基底节继发恶性肿瘤 期望 C79.300X021，实给 C71.000X006 基底节恶性肿瘤）。
+        texts.AddRange(TumorDynamicFormVariants(inputText)
+            .Where(text => text.Length > 0 && !texts.Contains(text)));
+
         var ranked = new List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)>();
         // 另见-1 提示候选：只在常规链路的名额没占满时补位，不参与 Top1 竞争。
         var hints = new List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)>();
@@ -104,7 +112,7 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         var conditionFallbacks = new List<ConditionFallback>();
         foreach (var text in texts)
         {
-            ResolveText(snapshot, dictionary, text, ranked, hints, conditionFallbacks, cancellationToken);
+            ResolveText(snapshot, dictionary, text, ranked, hints, conditionFallbacks, tumor, cancellationToken);
         }
 
         if (ranked.Count == 0 && conditionFallbacks.Count > 0)
@@ -112,7 +120,7 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
             foreach (var fallback in conditionFallbacks)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                RunConditionFallback(snapshot, dictionary, fallback, ranked);
+                RunConditionFallback(snapshot, dictionary, fallback, ranked, tumor);
             }
         }
 
@@ -206,6 +214,7 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)> ranked,
         List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)> hints,
         List<ConditionFallback> conditionFallbacks,
+        TumorIndexSnapshot? tumor,
         CancellationToken cancellationToken)
     {
         var inputKey = TextMatch.NormalizeKey(inputText);
@@ -221,7 +230,7 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
             }
 
             Collect(snapshot, dictionary, inputText,
-                IcdIndexMatcher.Drill(snapshot, exactHit, inputKey), exactHit.Alias.Weight, ranked, hints);
+                IcdIndexMatcher.Drill(snapshot, exactHit, inputKey), exactHit.Alias.Weight, ranked, hints, tumor: tumor);
             return;
         }
 
@@ -243,7 +252,7 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
             cancellationToken.ThrowIfCancellationRequested();
             Collect(snapshot, dictionary, inputText,
                 IcdIndexMatcher.Drill(snapshot, hit, inputKey, genericJumps: genericJumps),
-                hit.Alias.Weight, ranked, hints);
+                hit.Alias.Weight, ranked, hints, tumor: tumor);
         }
 
         // 见-1 的 level-0 形态（"剖腹产 - 见 剖宫产"）：这些行不是主导词，原先只有整条输入
@@ -289,7 +298,8 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
                     jumpTrace: $"{key} → {redirectLead.Term}"),
                 1m,
                 ranked,
-                hints);
+                hints,
+                tumor: tumor);
         }
 
         // 常规主导词只要有产出，泛词 病，疾病 通道就不启用（编码员也是先找真主导词，
@@ -373,6 +383,29 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
             : [$"{head}手术后状态", PostoperativeStateLead];
     }
 
+    /// <summary>索引里的肿瘤动态写法（瘤 －继发性 M8000/6 - 见 肿瘤，继发性）。</summary>
+    private const string SecondaryTumorStem = "继发";
+
+    private const string SecondaryTumorLead = "继发性";
+
+    /// <summary>
+    /// 肿瘤动态词补「性」形变体：输入含 继发 而不含 继发性 时，把 继发 改写成 继发性 再跑一路。
+    /// 主导词召回按别名键对输入的覆盖率卡名额，「继发」对「继发性」只有 2/3，进不了名额，
+    /// 于是只剩 瘤→恶性(M8000/3)，肿瘤表按行为位 3 取「恶性-原发」列，给出的是原发部位码
+    /// （基底节继发恶性肿瘤 期望 C79.300X021，实给 C71.000X006 基底节恶性肿瘤）。
+    /// 补的是变体不是替换，原文照跑，所以这一路不可能让输入失去既有推荐。
+    /// </summary>
+    private static IReadOnlyList<string> TumorDynamicFormVariants(string inputText)
+    {
+        if (!inputText.Contains(SecondaryTumorStem, StringComparison.Ordinal)
+            || inputText.Contains(SecondaryTumorLead, StringComparison.Ordinal))
+        {
+            return [];
+        }
+
+        return [inputText.Replace(SecondaryTumorStem, SecondaryTumorLead, StringComparison.Ordinal)];
+    }
+
     /// <summary>
     /// 末位兜底：在泛化主导词族下按锚点词精确定位子节点并下钻。
     /// 索引里 病，疾病(2972) -另见 综合征(50429)、疾患(16842) -另见 病 互为指针，
@@ -384,7 +417,8 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         IcdIndexSnapshot snapshot,
         IcdDictionarySnapshot dictionary,
         ConditionFallback fallback,
-        List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)> ranked)
+        List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)> ranked,
+        TumorIndexSnapshot? tumor)
     {
         var inputKey = TextMatch.NormalizeKey(fallback.InputText);
         foreach (var target in GenericConditionFamily)
@@ -410,7 +444,7 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
                 }
 
                 var before = ranked.Count;
-                Collect(snapshot, dictionary, fallback.InputText, drill, 1m, ranked);
+                Collect(snapshot, dictionary, fallback.InputText, drill, 1m, ranked, tumor: tumor);
                 if (ranked.Count > before)
                 {
                     return;
@@ -426,15 +460,16 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         DrillResult? drill,
         decimal leadBoost,
         List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)> ranked,
-        List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)>? hints = null)
+        List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)>? hints = null,
+        TumorIndexSnapshot? tumor = null)
     {
-        var produced = CollectOnce(snapshot, dictionary, inputText, drill, leadBoost, ranked);
+        var produced = CollectOnce(snapshot, dictionary, inputText, drill, leadBoost, ranked, tumor: tumor);
 
         // 见-1 强制改道让位给跳转链路的本地祖先兜底链路：改道链路展不开时回退，
         // 规则要求的是"优先"，不是"没有别的码就不出推荐"。
         if (!produced && drill?.Displaced is { } displaced)
         {
-            CollectOnce(snapshot, dictionary, inputText, displaced, leadBoost, ranked);
+            CollectOnce(snapshot, dictionary, inputText, displaced, leadBoost, ranked, tumor: tumor);
         }
 
         // 另见-1：Top1 保持本行直接采用码，跳转树的更细码只进提示池补位。
@@ -443,7 +478,8 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
             foreach (var hint in drill.SeeAlsoHints)
             {
                 CollectOnce(snapshot, dictionary, inputText, hint, leadBoost, hints,
-                    $"本行 {drill.CodeNode.Code} 为直接采用码，更详细情况见");
+                    $"本行 {drill.CodeNode.Code} 为直接采用码，更详细情况见",
+                    tumor: tumor);
             }
         }
     }
@@ -455,7 +491,8 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         DrillResult? drill,
         decimal leadBoost,
         List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)> ranked,
-        string? hintNote = null)
+        string? hintNote = null,
+        TumorIndexSnapshot? tumor = null)
     {
         var rankedBefore = ranked.Count;
         if (drill?.CodeNode.Code is not { Length: > 0 } indexCode)
@@ -471,7 +508,26 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         }
 
         var expanded = IndexCodeExpander.Expand(
-            parsed, dictionary, inputText, drill.PathKey, maxResults, diagnosisCodeSystem);
+            parsed, dictionary, inputText, drill.PathKey, maxResults, diagnosisCodeSystem, tumor);
+
+        // 形态学码在肿瘤表没查到部位（输入只写 "C细胞癌"，没有部位词）：索引在同一节点下备了
+        // "－－未特指部位" 行（全库 311 条、269 条带码，值就是该形态的最常见部位码
+        // C细胞癌→C73、胃癌→C16.9），编码员口径 "没指出部位就按最常见编码处理"。
+        // 只在肿瘤表查找落空后启用：输入写出部位时（甲状腺C细胞癌）必须用查得的部位码，
+        // 不能让"最常见"顶掉"特指"。
+        if (expanded.Count == 0
+            && parsed.Kind == IndexCodeFormatKind.Morphology
+            && parsed.SiteCode is not { Length: > 0 }
+            && FindUnspecifiedSiteRow(drill.CodeNode) is { } unspecified
+            && unspecified.Code is { Length: > 0 } unspecifiedCode)
+        {
+            pathDisplay += $" → {unspecified.Term}";
+            indexCode = unspecifiedCode;
+            parsed = ParsedIndexCode.Parse(unspecifiedCode);
+            expanded = IndexCodeExpander.Expand(
+                parsed, dictionary, inputText, drill.PathKey, maxResults, diagnosisCodeSystem, tumor);
+        }
+
         if (expanded.Count == 0)
         {
             return false;
@@ -547,6 +603,15 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
     /// "原因待查/可能性大" 类引导语与程度修饰是书写噪声，
     /// 否则 "2.肝大原因待查 → 肝大" 这类短名会被稀释到门槛之下。
     /// </summary>
+    /// <summary>
+    /// 形态学节点下的 "未特指部位" 子行（索引惯例：该形态的最常见部位码）。
+    /// 只认带编码的末级行，"特指部位 - 见 肿瘤，恶性" 那一条由肿瘤表通道处理，不算兜底。
+    /// </summary>
+    private static IcdIndexNode? FindUnspecifiedSiteRow(IcdIndexNode node)
+        => node.Children.FirstOrDefault(child => child.Code is { Length: > 0 }
+            && (child.CoreTerm.Contains("未特指部位", StringComparison.Ordinal)
+                || child.CoreTerm.Contains("部位未特指", StringComparison.Ordinal)));
+
     private static decimal PathOverlapRatio(IReadOnlyList<IcdIndexNode> path, string inputText)
     {
         var inputKey = TextMatch.StripIndexingFillers(inputText);

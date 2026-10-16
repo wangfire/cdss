@@ -77,15 +77,15 @@ function openChangePassword() { resetPwdForm(); pwdOpen.value = true }
 const pwdMismatch = computed(
   () => pwdForm.value.confirmNewPassword.length > 0 && pwdForm.value.newPassword !== pwdForm.value.confirmNewPassword,
 )
-const pwdTooShort = computed(() => pwdForm.value.newPassword.length > 0 && pwdForm.value.newPassword.length < 6)
+const pwdTooShort = computed(() => pwdForm.value.newPassword.length > 0 && pwdForm.value.newPassword.length < 8)
 const pwdFormValid = computed(
-  () => pwdForm.value.oldPassword.length > 0 && pwdForm.value.newPassword.length >= 6 && pwdForm.value.newPassword === pwdForm.value.confirmNewPassword,
+  () => pwdForm.value.oldPassword.length > 0 && pwdForm.value.newPassword.length >= 8 && pwdForm.value.newPassword === pwdForm.value.confirmNewPassword,
 )
 
 async function handleChangePassword() {
   if (pwdSaving.value) return
   if (!pwdForm.value.oldPassword) { toast.warning(t('common.oldPassword')); return }
-  if (pwdForm.value.newPassword.length < 6) { toast.warning(t('common.passwordTooShort')); return }
+  if (pwdForm.value.newPassword.length < 8) { toast.warning(t('common.passwordTooShort')); return }
   if (pwdForm.value.newPassword !== pwdForm.value.confirmNewPassword) { toast.warning(t('common.passwordMismatch')); return }
   pwdSaving.value = true
   try {

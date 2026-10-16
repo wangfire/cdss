@@ -33,6 +33,12 @@ public sealed class ElasticsearchCodingKnowledgeIndexer : ICodingKnowledgeIndexe
     private readonly HttpClient httpClient;
     private readonly ElasticsearchOptions options;
     private readonly ILogger<ElasticsearchCodingKnowledgeIndexer> logger;
+
+    /// <summary>
+    /// 一片 2000 文档：整发 5 万文档的单个 _bulk 会被 ES coordinating 断路器拒
+    /// （es_rejected_execution_exception: rejected execution of coordinating operation，索引建好但 0 文档）。
+    /// </summary>
+    private const int BulkChunkDocuments = 2000;
     public async Task<ElasticsearchIndexResult> EnsureIndexAsync(
         Guid hospitalId,
         string knowledgeVersion,
@@ -146,6 +152,16 @@ public sealed class ElasticsearchCodingKnowledgeIndexer : ICodingKnowledgeIndexe
             operations.Append("{\"index\":{\"_id\":\"").Append(id).Append("\"}}\n");
             operations.Append(JsonSerializer.Serialize(document)).Append('\n');
             indexed++;
+
+            if (indexed % BulkChunkDocuments == 0)
+            {
+                var failure = await PostBulkAsync(index, operations.ToString(), cancellationToken);
+                operations.Clear();
+                if (failure is not null)
+                {
+                    return new ElasticsearchIndexResult(index, false, indexed, failure);
+                }
+            }
         }
 
         var coveredCodes = codes
@@ -176,23 +192,57 @@ public sealed class ElasticsearchCodingKnowledgeIndexer : ICodingKnowledgeIndexe
                 .Append(synonym.CodeSystemCode).Append(':').Append(synonym.Code).Append("\"}}\n");
             operations.Append(JsonSerializer.Serialize(document)).Append('\n');
             indexed++;
+
+            if (indexed % BulkChunkDocuments == 0)
+            {
+                var failure = await PostBulkAsync(index, operations.ToString(), cancellationToken);
+                operations.Clear();
+                if (failure is not null)
+                {
+                    return new ElasticsearchIndexResult(index, false, indexed, failure);
+                }
+            }
         }
 
-        if (operations.Length == 0)
+        if (operations.Length > 0)
         {
-            return new ElasticsearchIndexResult(index, true, 0, null);
+            var failure = await PostBulkAsync(index, operations.ToString(), cancellationToken);
+            operations.Clear();
+            if (failure is not null)
+            {
+                return new ElasticsearchIndexResult(index, false, indexed, failure);
+            }
         }
 
-        using var content = new StringContent(operations.ToString(), Encoding.UTF8, "application/x-ndjson");
-        var bulkResponse = await httpClient.PostAsync($"{index}/_bulk?refresh=true", content, cancellationToken);
-        if (!bulkResponse.IsSuccessStatusCode)
+        if (indexed > 0)
         {
-            var body = await bulkResponse.Content.ReadAsStringAsync(cancellationToken);
-            logger.LogWarning("ES bulk 索引失败，Index={Index}, Status={StatusCode}", index, (int)bulkResponse.StatusCode);
-            return new ElasticsearchIndexResult(index, false, 0, body);
+            // 分片 bulk 不带 refresh=true，写完后统一 refresh 一次，语义与整发 bulk 一致。
+            await httpClient.PostAsync($"{index}/_refresh", new StringContent(string.Empty), cancellationToken);
         }
 
         return new ElasticsearchIndexResult(index, true, indexed, null);
+    }
+
+    private async Task<string?> PostBulkAsync(
+        string index,
+        string ndjson,
+        CancellationToken cancellationToken)
+    {
+        if (ndjson.Length == 0)
+        {
+            return null;
+        }
+
+        using var content = new StringContent(ndjson, Encoding.UTF8, "application/x-ndjson");
+        var bulkResponse = await httpClient.PostAsync($"{index}/_bulk", content, cancellationToken);
+        if (bulkResponse.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        var body = await bulkResponse.Content.ReadAsStringAsync(cancellationToken);
+        logger.LogWarning("ES bulk 索引失败，Index={Index}, Status={StatusCode}", index, (int)bulkResponse.StatusCode);
+        return body;
     }
 }
 

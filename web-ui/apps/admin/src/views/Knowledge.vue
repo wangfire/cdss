@@ -19,6 +19,7 @@ import { useI18n } from 'vue-i18n'
 import { ApiError, knowledgeApi } from '@/api'
 import type {
   CodeSystemDto,
+  Cm3IndexDto,
   CodingRuleDto,
   IcdIndexDto,
   IcdTermSynonymGroupDto,
@@ -528,6 +529,185 @@ function onIcdIndexStatusFilterChange() {
   }
 }
 
+/* ============== 数据浏览 — CM3 索引库（节点树 + 关键词搜索） ============== */
+interface Cm3IndexTreeNode extends Cm3IndexDto {
+  hasChildren: boolean
+}
+interface Cm3IndexVisibleRow {
+  node: Cm3IndexTreeNode
+  depth: number
+}
+
+const cm3IndexKeyword = ref('')
+const cm3IndexStatusFilter = ref('__ALL__')
+const cm3IndexIsSearch = computed(() => cm3IndexKeyword.value.trim() !== '')
+
+/* 表格固定为视口剩余高度，只在表格容器内滚动，避免外层页面出现滚动条 */
+const cm3IndexTableWrap = ref<HTMLElement | null>(null)
+const cm3IndexTableHeight = ref(480)
+
+async function updateCm3IndexTableHeight() {
+  const el = cm3IndexTableWrap.value
+  if (!el) return
+  let panel: HTMLElement | null = el.parentElement
+  while (panel && !/(auto|scroll)/.test(getComputedStyle(panel).overflowY))
+    panel = panel.parentElement
+  panel?.scrollTo({ top: 0 })
+  // 同 ICD 索引库：卡片带负下外边距抵掉面板下边距与页面内边距，直接把表格增高到视口底约 10px
+  const card = el.parentElement?.parentElement?.parentElement ?? null
+  for (let i = 0; i < 4; i++) {
+    const rect = (card ?? el).getBoundingClientRect()
+    const gap = window.innerHeight - rect.bottom
+    if (gap > 12) {
+      cm3IndexTableHeight.value += Math.floor(gap - 10)
+      await nextTick()
+    } else if (gap < 6) {
+      cm3IndexTableHeight.value = Math.max(120, cm3IndexTableHeight.value + Math.ceil(gap - 10))
+      await nextTick()
+    } else {
+      break
+    }
+  }
+}
+
+watch(cm3IndexTableWrap, () => {
+  nextTick(updateCm3IndexTableHeight)
+  setTimeout(updateCm3IndexTableHeight, 150)
+})
+
+function cm3IndexStatusParam() {
+  return cm3IndexStatusFilter.value !== '__ALL__' ? Number(cm3IndexStatusFilter.value) : undefined
+}
+
+/* 树模式：根节点分页加载，子节点按父序号懒加载 */
+const cm3IndexTreeLoading = ref(false)
+const cm3IndexMoreLoading = ref(false)
+const cm3IndexRoots = ref<Cm3IndexTreeNode[]>([])
+const cm3IndexRootTotal = ref(0)
+const cm3IndexRootPageSize = 200
+const cm3IndexChildrenMap = ref<Record<number, Cm3IndexTreeNode[]>>({})
+const cm3IndexExpanded = ref<Record<number, boolean>>({})
+const cm3IndexNodeLoading = ref<Record<number, boolean>>({})
+
+const cm3IndexVisibleRows = computed<Cm3IndexVisibleRow[]>(() => {
+  const rows: Cm3IndexVisibleRow[] = []
+  const walk = (nodes: Cm3IndexTreeNode[], depth: number) => {
+    for (const node of nodes) {
+      rows.push({ node, depth })
+      if (cm3IndexExpanded.value[node.seqNo])
+        walk(cm3IndexChildrenMap.value[node.seqNo] ?? [], depth + 1)
+    }
+  }
+  walk(cm3IndexRoots.value, 0)
+  return rows
+})
+
+async function loadCm3IndexTree() {
+  cm3IndexTreeLoading.value = true
+  try {
+    const result = await knowledgeApi.getCm3IndexChildren({
+      parentSeqNo: 0,
+      leadWordStatus: cm3IndexStatusParam(),
+      offset: 0,
+      limit: cm3IndexRootPageSize,
+    })
+    cm3IndexRoots.value = result.items
+    cm3IndexRootTotal.value = result.total
+    cm3IndexChildrenMap.value = {}
+    cm3IndexExpanded.value = {}
+    cm3IndexNodeLoading.value = {}
+  } catch { toast.error(t('knowledge.loadFailed')) }
+  finally { cm3IndexTreeLoading.value = false }
+}
+
+async function loadMoreCm3IndexRoots() {
+  if (cm3IndexMoreLoading.value) return
+  cm3IndexMoreLoading.value = true
+  try {
+    const result = await knowledgeApi.getCm3IndexChildren({
+      parentSeqNo: 0,
+      leadWordStatus: cm3IndexStatusParam(),
+      offset: cm3IndexRoots.value.length,
+      limit: cm3IndexRootPageSize,
+    })
+    cm3IndexRoots.value = [...cm3IndexRoots.value, ...result.items]
+    cm3IndexRootTotal.value = result.total
+  } catch { toast.error(t('knowledge.loadFailed')) }
+  finally { cm3IndexMoreLoading.value = false }
+}
+
+async function toggleCm3IndexNode(node: Cm3IndexTreeNode) {
+  if (cm3IndexExpanded.value[node.seqNo]) {
+    cm3IndexExpanded.value = { ...cm3IndexExpanded.value, [node.seqNo]: false }
+    return
+  }
+  if (!cm3IndexChildrenMap.value[node.seqNo]) {
+    cm3IndexNodeLoading.value = { ...cm3IndexNodeLoading.value, [node.seqNo]: true }
+    try {
+      const result = await knowledgeApi.getCm3IndexChildren({
+        parentSeqNo: node.seqNo,
+        leadWordStatus: cm3IndexStatusParam(),
+        limit: 1000,
+      })
+      cm3IndexChildrenMap.value = { ...cm3IndexChildrenMap.value, [node.seqNo]: result.items }
+    } catch { toast.error(t('knowledge.loadFailed')) }
+    finally {
+      const next = { ...cm3IndexNodeLoading.value }
+      delete next[node.seqNo]
+      cm3IndexNodeLoading.value = next
+    }
+  }
+  cm3IndexExpanded.value = { ...cm3IndexExpanded.value, [node.seqNo]: true }
+}
+
+/* 搜索模式：关键词命中时按平铺分页结果展示 */
+const cm3Index = ref<Cm3IndexDto[]>([])
+const cm3IndexTotal = ref(0)
+const cm3IndexPage = ref(1)
+const cm3IndexPageSize = 20
+const cm3IndexLoading = ref(false)
+
+const cm3IndexTotalPages = computed(() =>
+  Math.max(1, Math.ceil(cm3IndexTotal.value / cm3IndexPageSize)),
+)
+
+async function loadCm3IndexSearch() {
+  cm3IndexLoading.value = true
+  try {
+    const result = await knowledgeApi.getCm3Index({
+      page: cm3IndexPage.value,
+      pageSize: cm3IndexPageSize,
+      keyword: cm3IndexKeyword.value.trim(),
+      leadWordStatus: cm3IndexStatusParam(),
+    })
+    cm3Index.value = result.items
+    cm3IndexTotal.value = result.total
+  } catch { toast.error(t('knowledge.loadFailed')) }
+  finally { cm3IndexLoading.value = false }
+}
+
+let cm3IndexSearchTimer: ReturnType<typeof setTimeout> | null = null
+function onCm3IndexSearchInput() {
+  if (cm3IndexSearchTimer) clearTimeout(cm3IndexSearchTimer)
+  cm3IndexSearchTimer = setTimeout(() => {
+    if (cm3IndexIsSearch.value) {
+      cm3IndexPage.value = 1
+      loadCm3IndexSearch()
+    } else {
+      cm3Index.value = []
+    }
+  }, 400)
+}
+
+function onCm3IndexStatusFilterChange() {
+  if (cm3IndexIsSearch.value) {
+    cm3IndexPage.value = 1
+    loadCm3IndexSearch()
+  } else {
+    loadCm3IndexTree()
+  }
+}
+
 /* ============== 浏览 Tab 切换加载 ============== */
 const browseTab = ref('code-systems')
 
@@ -538,15 +718,19 @@ watch(browseTab, (tab) => {
   if (tab === 'rules' && codingRules.value.length === 0) loadCodingRules()
   if (tab === 'icd-index' && icdIndexRoots.value.length === 0) loadIcdIndexTree()
   if (tab === 'icd-index') nextTick(updateIcdIndexTableHeight)
+  if (tab === 'cm3-index' && cm3IndexRoots.value.length === 0) loadCm3IndexTree()
+  if (tab === 'cm3-index') nextTick(updateCm3IndexTableHeight)
 })
 
 onMounted(() => {
   loadCodeSystems()
   window.addEventListener('resize', updateIcdIndexTableHeight)
+  window.addEventListener('resize', updateCm3IndexTableHeight)
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', updateIcdIndexTableHeight)
+  window.removeEventListener('resize', updateCm3IndexTableHeight)
 })
 
 /* ============== 统计 ============== */
@@ -693,8 +877,8 @@ async function handleImportRules() {
 
 <template>
   <div class="space-y-6">
-    <!-- 页面标题（ICD索引库树/搜索模式隐藏，让表格占满可视高度） -->
-    <div v-if="!(activeMainTab === 'browse' && browseTab === 'icd-index')" class="flex items-center gap-4">
+    <!-- 页面标题（索引库树/搜索模式隐藏，让表格占满可视高度） -->
+    <div v-if="!(activeMainTab === 'browse' && (browseTab === 'icd-index' || browseTab === 'cm3-index'))" class="flex items-center gap-4">
       <div class="p-2 rounded-lg bg-emerald-500/10">
         <BookOpen class="h-5 w-5 text-emerald-500" />
       </div>
@@ -713,8 +897,8 @@ async function handleImportRules() {
 
       <!-- ============ 数据浏览 ============ -->
       <TabsContent value="browse" class="space-y-6">
-        <!-- 统计卡片（ICD索引库树模式隐藏，让表格占满可视高度） -->
-        <div v-if="browseTab !== 'icd-index'" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <!-- 统计卡片（索引库树模式隐藏，让表格占满可视高度） -->
+        <div v-if="browseTab !== 'icd-index' && browseTab !== 'cm3-index'" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <Card class="border-border/40">
             <CardContent class="pt-6 flex items-center gap-3">
               <div class="p-2 rounded-lg bg-blue-500/10">
@@ -769,6 +953,7 @@ async function handleImportRules() {
             <TabsTrigger value="synonyms">{{ t('knowledge.termSynonyms') }}</TabsTrigger>
             <TabsTrigger value="rules">{{ t('knowledge.codingRulesTab') }}</TabsTrigger>
             <TabsTrigger value="icd-index">{{ t('knowledge.icdIndexTab') }}</TabsTrigger>
+            <TabsTrigger value="cm3-index">{{ t('knowledge.cm3IndexTab') }}</TabsTrigger>
           </TabsList>
 
           <!-- 编码体系列表 -->
@@ -1241,6 +1426,150 @@ async function handleImportRules() {
                     <span class="text-sm text-muted-foreground">{{ t('knowledge.icdIndexRootProgress', { loaded: icdIndexRoots.length, total: icdIndexRootTotal }) }}</span>
                     <Button variant="outline" size="sm" :disabled="icdIndexRoots.length >= icdIndexRootTotal || icdIndexMoreLoading" @click="loadMoreIcdIndexRoots">
                       <Loader2 v-if="icdIndexMoreLoading" class="h-4 w-4 mr-1 animate-spin" />
+                      {{ t('knowledge.loadMoreRoots') }}
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+          <!-- CM3 索引库列表 -->
+          <TabsContent value="cm3-index" class="space-y-4">
+            <div class="flex flex-col sm:flex-row gap-3">
+              <div class="relative flex-1">
+                <Search class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  v-model="cm3IndexKeyword"
+                  :placeholder="t('knowledge.searchCm3IndexPlaceholder')"
+                  class="pl-9"
+                  @input="onCm3IndexSearchInput"
+                />
+              </div>
+              <Select v-model="cm3IndexStatusFilter" @update:model-value="onCm3IndexStatusFilterChange">
+                <SelectTrigger class="w-full sm:w-[200px]">
+                  <SelectValue :placeholder="t('knowledge.filterByLeadWordStatus')" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__ALL__">{{ t('knowledge.allLeadWordStatus') }}</SelectItem>
+                  <SelectItem value="0">{{ t('knowledge.leadWordValid') }}</SelectItem>
+                  <SelectItem value="1">{{ t('knowledge.leadWordInvalid') }}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <!-- 搜索模式：关键词命中的平铺结果 -->
+            <Card v-if="cm3IndexIsSearch" class="border-border/40 -mb-[38px]">
+              <CardContent class="pt-2">
+                <div v-if="cm3IndexLoading" class="flex items-center justify-center py-12">
+                  <Loader2 class="h-5 w-5 animate-spin text-muted-foreground mr-2" />
+                  <span class="text-sm text-muted-foreground">{{ t('knowledge.loading') }}</span>
+                </div>
+                <div v-else-if="cm3Index.length === 0" class="text-center py-12 text-muted-foreground text-sm">
+                  {{ t('knowledge.noCm3Index') }}
+                </div>
+                <div v-else class="space-y-4">
+                  <div ref="cm3IndexTableWrap" class="overflow-auto" :style="{ height: `${cm3IndexTableHeight}px` }">
+                    <table class="w-full table-fixed text-sm">
+                      <thead>
+                        <tr class="border-b border-border/40">
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[8%]">{{ t('knowledge.seqNoColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[26%]">{{ t('knowledge.indexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[16%]">{{ t('knowledge.indexCodeColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[36%]">{{ t('knowledge.fullIndexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[16%]">{{ t('knowledge.leadWordStatusColumn') }}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="row in cm3Index" :key="row.id" class="border-b border-border/20 hover:bg-muted/30 transition-colors">
+                          <td class="py-3 px-4 font-mono text-xs whitespace-nowrap">{{ row.seqNo }}</td>
+                          <td class="py-3 px-4 truncate" :title="row.indexName">{{ row.indexName }}</td>
+                          <td class="py-3 px-4 font-mono text-xs">{{ row.indexCode || '-' }}</td>
+                          <td class="py-3 px-4 text-muted-foreground text-xs truncate" :title="row.fullIndexName">{{ row.fullIndexName }}</td>
+                          <td class="py-3 px-4">
+                            <Badge v-if="row.leadWordStatus === 0" variant="default" class="bg-emerald-500/15 text-emerald-700">{{ t('knowledge.leadWordValid') }}</Badge>
+                            <Badge v-else variant="secondary">{{ t('knowledge.leadWordInvalid') }}</Badge>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div class="flex items-center justify-between" data-cm3-footer>
+                    <span class="text-sm text-muted-foreground">{{ t('knowledge.totalRecords', { total: cm3IndexTotal }) }}</span>
+                    <div class="flex items-center gap-2">
+                      <Button variant="outline" size="sm" :disabled="cm3IndexPage <= 1" @click="cm3IndexPage--; loadCm3IndexSearch()">
+                        <ChevronLeft class="h-4 w-4 mr-1" />
+                        {{ t('knowledge.previousPage') }}
+                      </Button>
+                      <span class="text-sm text-muted-foreground">{{ t('knowledge.pagination', { page: cm3IndexPage, totalPages: cm3IndexTotalPages }) }}</span>
+                      <Button variant="outline" size="sm" :disabled="cm3IndexPage >= cm3IndexTotalPages" @click="cm3IndexPage++; loadCm3IndexSearch()">
+                        {{ t('knowledge.nextPage') }}
+                        <ChevronRight class="h-4 w-4 ml-1" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <!-- 树模式：按父节点层级展开 -->
+            <Card v-else class="border-border/40 -mb-[38px]">
+              <CardContent class="pt-2">
+                <div v-if="cm3IndexTreeLoading" class="flex items-center justify-center py-12">
+                  <Loader2 class="h-5 w-5 animate-spin text-muted-foreground mr-2" />
+                  <span class="text-sm text-muted-foreground">{{ t('knowledge.loading') }}</span>
+                </div>
+                <div v-else-if="cm3IndexRoots.length === 0" class="text-center py-12 text-muted-foreground text-sm">
+                  {{ t('knowledge.noCm3Index') }}
+                </div>
+                <div v-else class="space-y-4">
+                  <div ref="cm3IndexTableWrap" class="overflow-auto" :style="{ height: `${cm3IndexTableHeight}px` }">
+                    <table class="w-full table-fixed text-sm">
+                      <thead>
+                        <tr class="border-b border-border/40">
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[26%]">{{ t('knowledge.indexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[8%]">{{ t('knowledge.seqNoColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[16%]">{{ t('knowledge.indexCodeColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[36%]">{{ t('knowledge.fullIndexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[16%]">{{ t('knowledge.leadWordStatusColumn') }}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="row in cm3IndexVisibleRows" :key="row.node.seqNo" class="border-b border-border/20 hover:bg-muted/30 transition-colors">
+                          <td class="py-2 pr-4 pl-4">
+                            <div class="flex items-center min-w-0" :style="{ paddingLeft: `${row.depth * 24}px` }">
+                              <button
+                                v-if="row.node.hasChildren"
+                                class="p-0.5 rounded hover:bg-muted/50 text-muted-foreground shrink-0"
+                                :title="cm3IndexExpanded[row.node.seqNo] ? t('knowledge.collapseNode') : t('knowledge.expandNode')"
+                                @click="toggleCm3IndexNode(row.node)"
+                              >
+                                <ChevronDown v-if="cm3IndexExpanded[row.node.seqNo]" class="h-4 w-4" />
+                                <ChevronRight v-else class="h-4 w-4" />
+                              </button>
+                              <span v-else class="w-5 shrink-0" />
+                              <span v-if="cm3IndexNodeLoading[row.node.seqNo]" class="mr-1.5 shrink-0">
+                                <Loader2 class="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                              </span>
+                              <span class="truncate min-w-0 flex-1" :title="row.node.indexName">{{ row.node.indexName }}</span>
+                            </div>
+                          </td>
+                          <td class="py-2 px-4 font-mono text-xs">{{ row.node.seqNo }}</td>
+                          <td class="py-2 px-4 font-mono text-xs">{{ row.node.indexCode || '-' }}</td>
+                          <td class="py-2 px-4 text-muted-foreground text-xs truncate" :title="row.node.fullIndexName">{{ row.node.fullIndexName }}</td>
+                          <td class="py-2 px-4">
+                            <Badge v-if="row.node.leadWordStatus === 0" variant="default" class="bg-emerald-500/15 text-emerald-700">{{ t('knowledge.leadWordValid') }}</Badge>
+                            <Badge v-else variant="secondary">{{ t('knowledge.leadWordInvalid') }}</Badge>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div class="flex items-center justify-between" data-cm3-footer>
+                    <span class="text-sm text-muted-foreground">{{ t('knowledge.cm3IndexRootProgress', { loaded: cm3IndexRoots.length, total: cm3IndexRootTotal }) }}</span>
+                    <Button variant="outline" size="sm" :disabled="cm3IndexRoots.length >= cm3IndexRootTotal || cm3IndexMoreLoading" @click="loadMoreCm3IndexRoots">
+                      <Loader2 v-if="cm3IndexMoreLoading" class="h-4 w-4 mr-1 animate-spin" />
                       {{ t('knowledge.loadMoreRoots') }}
                     </Button>
                   </div>

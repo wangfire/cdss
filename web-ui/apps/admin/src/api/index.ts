@@ -14,6 +14,7 @@ export const authApi = {
 export * from './http'
 export * from './types'
 export * from './types-cdss'
+export * from './security'
 export * from './workbench'
 export * from './case-entry'
 export * from './knowledge'

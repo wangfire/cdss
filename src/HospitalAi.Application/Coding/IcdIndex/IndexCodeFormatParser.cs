@@ -92,6 +92,21 @@ public sealed class ParsedIndexCode
             };
         }
 
+        // 裸形态学码（M8510/3，无冒号部位）：肿瘤索引链路要按行为位去肿瘤表查部位，
+        // 归入 Morphology 并留空 SiteCode；字典侧 4 位码需补 0 成 5 位（M8510/3→M85100/3）。
+        if (BareMorphologyRegex.IsMatch(text))
+        {
+            var morphology = text.TrimEnd('*', '†').Trim();
+            return new ParsedIndexCode
+            {
+                Kind = IndexCodeFormatKind.Morphology,
+                Raw = text,
+                MorphologyCode = morphology,
+                SiteCode = null,
+                Prefix = morphology,
+            };
+        }
+
         var daggerIndex = text.IndexOf('†');
         if (daggerIndex >= 0)
         {
@@ -146,6 +161,10 @@ public sealed class ParsedIndexCode
     private static readonly System.Text.RegularExpressions.Regex RangeRegex =
         new(@"^([A-Z]\d{2}(?:\.\d+)?)-([A-Z]\d{2}(?:\.\d+)?)$",
             System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static readonly System.Text.RegularExpressions.Regex BareMorphologyRegex =
+        new(@"^M\d{4}/\d$",
+            System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     /// <summary>
     /// 范围端点展开为逐类目前缀（D65-D69 → D65..D69；I00-I99 只展开类目字母+两位数字）。

@@ -49,6 +49,45 @@ public sealed class SqlServerSecurityService(
         return ToResponse(user);
     }
 
+    public async Task<IReadOnlyList<AppUserSummaryResponse>> ListUsersAsync(
+        CancellationToken cancellationToken = default)
+    {
+        EnsureHospital();
+
+        var users = await dbContext.AppUsers
+            .AsNoTracking()
+            .Where(item => item.HospitalId == requestContext.HospitalId)
+            .OrderBy(item => item.Code)
+            .ToListAsync(cancellationToken);
+
+        // 角色表按医院隔离，链接表量级很小，一次取回后在内存里按用户归组，避免 N+1。
+        var roleLinks = await dbContext.AppUserRoles
+            .AsNoTracking()
+            .Where(item => item.HospitalId == requestContext.HospitalId)
+            .Join(
+                dbContext.AppRoles.AsNoTracking(),
+                link => link.AppRoleId,
+                role => role.Id,
+                (link, role) => new { link.AppUserId, role.Code })
+            .ToListAsync(cancellationToken);
+
+        return users
+            .Select(item => new AppUserSummaryResponse(
+                item.Id,
+                item.Code,
+                item.DisplayName,
+                item.Status,
+                item.CreatedAt,
+                item.LastLoginAt,
+                roleLinks
+                    .Where(link => link.AppUserId == item.Id)
+                    .Select(link => link.Code)
+                    .Distinct()
+                    .OrderBy(code => code, StringComparer.Ordinal)
+                    .ToList()))
+            .ToList();
+    }
+
     public async Task<AppRoleResponse> CreateRoleAsync(
         CreateRoleRequest request,
         CancellationToken cancellationToken = default)
@@ -80,6 +119,20 @@ public sealed class SqlServerSecurityService(
         dbContext.AppRoles.Add(role);
         await dbContext.SaveChangesAsync(cancellationToken);
         return ToResponse(role);
+    }
+
+    public async Task<IReadOnlyList<AppRoleResponse>> ListRolesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        EnsureHospital();
+
+        var roles = await dbContext.AppRoles
+            .AsNoTracking()
+            .Where(item => item.HospitalId == requestContext.HospitalId)
+            .OrderBy(item => item.Code)
+            .ToListAsync(cancellationToken);
+
+        return roles.Select(ToResponse).ToList();
     }
 
     public async Task AssignRoleAsync(
@@ -132,6 +185,28 @@ public sealed class SqlServerSecurityService(
             CreatedAt = now,
             UpdatedAt = now
         });
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task RemoveRoleAsync(
+        Guid userId,
+        Guid roleId,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureHospital();
+
+        var link = await dbContext.AppUserRoles
+            .SingleOrDefaultAsync(
+                item => item.HospitalId == requestContext.HospitalId
+                    && item.AppUserId == userId
+                    && item.AppRoleId == roleId,
+                cancellationToken);
+        if (link is null)
+        {
+            return;
+        }
+
+        dbContext.AppUserRoles.Remove(link);
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 

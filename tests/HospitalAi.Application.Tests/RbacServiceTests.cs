@@ -106,6 +106,112 @@ public sealed class RbacServiceTests
         Assert.Equal("DISABLED", updated.Status);
     }
 
+    [Fact]
+    public async Task SetUserStatusAsync_停用后可以改回启用()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var hospitalId = Guid.NewGuid();
+        await database.SeedHospitalAsync(hospitalId);
+        await using var context = database.CreateContext();
+        var service = CreateService(context, hospitalId);
+
+        var user = await service.CreateUserAsync(new CreateUserRequest("op-001", "张三"));
+        await service.SetUserStatusAsync(user.Id, "DISABLED");
+
+        await service.SetUserStatusAsync(user.Id, "ACTIVE");
+
+        var updated = await context.AppUsers.SingleAsync(item => item.Id == user.Id);
+        Assert.Equal("ACTIVE", updated.Status);
+    }
+
+    [Fact]
+    public async Task SetUserStatusAsync_拒绝不支持的状态值()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var hospitalId = Guid.NewGuid();
+        await database.SeedHospitalAsync(hospitalId);
+        await using var context = database.CreateContext();
+        var service = CreateService(context, hospitalId);
+
+        var user = await service.CreateUserAsync(new CreateUserRequest("op-001", "张三"));
+
+        await Assert.ThrowsAsync<ValidationException>(
+            () => service.SetUserStatusAsync(user.Id, "LOCKED"));
+    }
+
+    [Fact]
+    public async Task ListUsersAsync_只返回本院用户并附带角色代码()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var hospitalId = Guid.NewGuid();
+        var otherHospitalId = Guid.NewGuid();
+        await database.SeedHospitalAsync(hospitalId);
+        await database.SeedHospitalAsync(otherHospitalId);
+        await using var context = database.CreateContext();
+        var service = CreateService(context, hospitalId);
+
+        await service.CreateUserAsync(new CreateUserRequest("op-002", "李四"));
+        var coder = await service.CreateUserAsync(new CreateUserRequest("op-001", "张三"));
+        var role = await service.CreateRoleAsync(new CreateRoleRequest("ROLE_CODER", "编码员"));
+        var adminRole = await service.CreateRoleAsync(new CreateRoleRequest("ADMIN", "管理员"));
+        await service.AssignRoleAsync(coder.Id, role.Id);
+        await service.AssignRoleAsync(coder.Id, adminRole.Id);
+
+        await using var otherContext = database.CreateContext();
+        await new SqlServerSecurityService(otherContext, new FixedRequestContext(otherHospitalId))
+            .CreateUserAsync(new CreateUserRequest("op-900", "外院用户"));
+
+        var users = await service.ListUsersAsync();
+
+        Assert.Equal(2, users.Count);
+        Assert.Equal("op-001", users[0].Code);
+        Assert.Equal("op-002", users[1].Code);
+        Assert.Equal("ADMIN,ROLE_CODER", string.Join(",", users[0].Roles));
+        Assert.Empty(users[1].Roles);
+    }
+
+    [Fact]
+    public async Task ListRolesAsync_只返回本院角色()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var hospitalId = Guid.NewGuid();
+        var otherHospitalId = Guid.NewGuid();
+        await database.SeedHospitalAsync(hospitalId);
+        await database.SeedHospitalAsync(otherHospitalId);
+        await using var context = database.CreateContext();
+        var service = CreateService(context, hospitalId);
+
+        await service.CreateRoleAsync(new CreateRoleRequest("ROLE_CODER", "编码员"));
+        await using var otherContext = database.CreateContext();
+        await new SqlServerSecurityService(otherContext, new FixedRequestContext(otherHospitalId))
+            .CreateRoleAsync(new CreateRoleRequest("ROLE_AUDITOR", "审核员"));
+
+        var roles = await service.ListRolesAsync();
+
+        Assert.Single(roles);
+        Assert.Equal("ROLE_CODER", roles.Single().Code);
+    }
+
+    [Fact]
+    public async Task RemoveRoleAsync_移除角色且重复移除保持幂等()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var hospitalId = Guid.NewGuid();
+        await database.SeedHospitalAsync(hospitalId);
+        await using var context = database.CreateContext();
+        var service = CreateService(context, hospitalId);
+
+        var user = await service.CreateUserAsync(new CreateUserRequest("op-001", "张三"));
+        var role = await service.CreateRoleAsync(new CreateRoleRequest("ROLE_CODER", "编码员"));
+        await service.AssignRoleAsync(user.Id, role.Id);
+
+        await service.RemoveRoleAsync(user.Id, role.Id);
+        await service.RemoveRoleAsync(user.Id, role.Id);
+
+        Assert.Empty(await context.AppUserRoles.Where(item => item.AppUserId == user.Id).ToListAsync());
+        Assert.Empty(await service.GetRolesByUserAsync(user.Id));
+    }
+
     private static ISecurityService CreateService(
         HospitalAiDbContext context,
         Guid hospitalId)

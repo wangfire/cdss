@@ -12,11 +12,22 @@ public interface ISecurityService
         CreateUserRequest request,
         CancellationToken cancellationToken = default);
 
+    Task<IReadOnlyList<AppUserSummaryResponse>> ListUsersAsync(
+        CancellationToken cancellationToken = default);
+
     Task<AppRoleResponse> CreateRoleAsync(
         CreateRoleRequest request,
         CancellationToken cancellationToken = default);
 
+    Task<IReadOnlyList<AppRoleResponse>> ListRolesAsync(
+        CancellationToken cancellationToken = default);
+
     Task AssignRoleAsync(
+        Guid userId,
+        Guid roleId,
+        CancellationToken cancellationToken = default);
+
+    Task RemoveRoleAsync(
         Guid userId,
         Guid roleId,
         CancellationToken cancellationToken = default);

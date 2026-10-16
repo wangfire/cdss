@@ -41,17 +41,34 @@ internal sealed record MergedCandidate(
     int FamilyRank = 0);
 
 /// <summary>
-/// 模型解释校验结果：Validated 表示通过 Schema 校验，Supported 表示解释能被证据支持。
+/// 模型一致性校验的调用结论形态。四种状态必须分开：
+/// 折叠成"模型不可用"会掩盖模型侧真实的质量问题（验证文档 §模型输出不合法不得当作不可用）。
 /// </summary>
-internal sealed record ModelExplanationCheck(bool Validated, bool Supported);
+internal enum ExplanationState
+{
+    /// <summary>模型路由不可用，未发起调用。</summary>
+    NotRequested,
+
+    /// <summary>调用了但没有任何响应（网络/服务错误）。</summary>
+    Unavailable,
+
+    /// <summary>有响应但重试后仍未通过 Schema 校验。</summary>
+    OutputInvalid,
+
+    /// <summary>通过 Schema 校验，字段可进入判据换算。</summary>
+    Validated
+}
 
 /// <summary>
-/// 模型解释的一次调用结论。OutputInvalid 与 Available 必须分开：
-/// 模型接通但输出始终不合法时禁止按"模型不可用"处理，否则会掩盖质量问题。
+/// 单个候选的模型自述。四个业务判据不在这里算，
+/// 由 LlmConsistencyJudge 用检索池与证据原文复核后换算。
 /// </summary>
-internal sealed record ModelExplanationOutcome(
-    ModelExplanationCheck? Check,
-    bool OutputInvalid);
+internal sealed record CandidateExplanation(
+    ExplanationState State,
+    string? EchoedCode = null,
+    bool Supported = false,
+    IReadOnlyList<int>? CitedEvidenceIndexes = null,
+    bool ModelReportsViolation = false);
 
 /// <summary>
 /// V2.2-Lite 推荐流水线执行器。
@@ -73,6 +90,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
     private readonly IModelRouter _modelRouter;
     private readonly IJsonSchemaValidator _schemaValidator;
     private readonly IIcdIndexSource _indexSource;
+    private readonly ITumorIndexSource _tumorIndexSource;
     private readonly IIcdDictionarySource _dictionarySource;
     private readonly IIcdTermSynonymSource _termSynonymSource;
     private readonly IOptions<V22PipelineOptions> _options;
@@ -88,6 +106,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         IModelRouter modelRouter,
         IJsonSchemaValidator schemaValidator,
         IIcdIndexSource indexSource,
+        ITumorIndexSource tumorIndexSource,
         IIcdDictionarySource dictionarySource,
         IIcdTermSynonymSource termSynonymSource,
         IOptions<V22PipelineOptions> options,
@@ -102,6 +121,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         _modelRouter = modelRouter;
         _schemaValidator = schemaValidator;
         _indexSource = indexSource;
+        _tumorIndexSource = tumorIndexSource;
         _dictionarySource = dictionarySource;
         _termSynonymSource = termSynonymSource;
         _options = options;
@@ -422,6 +442,16 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
             try
             {
                 var indexSnapshot = _indexSource.GetSnapshot(cancellationToken);
+                // 肿瘤部位表可选：表为空/加载失败时按无肿瘤链路继续（裸形态学码照旧丢弃）。
+                TumorIndexSnapshot? tumorSnapshot = null;
+                try
+                {
+                    tumorSnapshot = _tumorIndexSource.GetSnapshot(cancellationToken);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "肿瘤索引快照加载失败，本次按无部位链路执行");
+                }
                 var diagnosisDictionary = _dictionarySource.GetDictionary(
                     task.HospitalId, settings.IndexDiagnosisCodeSystem, cancellationToken);
                 var termSynonyms = _termSynonymSource.GetSnapshot(cancellationToken);
@@ -441,7 +471,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                         : null;
                     indexResults[input.Id] = resolver.Resolve(
                         indexSnapshot, diagnosisDictionary, inputName, aliasTexts,
-                        termSynonyms, cancellationToken);
+                        termSynonyms, tumorSnapshot, cancellationToken);
                 }
 
                 indexSucceeded = true;
@@ -510,31 +540,17 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
             ? await LoadRulesAsync(task, settings, cancellationToken)
             : new List<RuleDefinition>();
 
-        // Step 9：模型解释与一致性校验口径。
+        // Step 9：模型一致性校验。校验器要判断的是"这一条候选有没有证据支持"，
+        // 所以请求只能在候选与证据都齐备后按"逐输入×逐候选"发出（每输入至多 MaxCandidatesPerInput 次），
+        // 每次调用都带诊断原文、候选编码与证据原文——判据必须由这些内容决定，不能是任务级常数。
         var modelRoute = await _modelRouter.ResolveAsync(settings.ExplanationModelCode, cancellationToken);
-        var modelOutcome = modelRoute.Available
-            ? await GetValidatedExplanationAsync(selectedInputs, settings, cancellationToken)
-            : new ModelExplanationOutcome(null, OutputInvalid: false);
-        var modelExplanation = modelOutcome.Check;
-        var modelExplanationValid = modelExplanation?.Validated ?? false;
-        var explanationSupported = modelExplanation?.Supported ?? false;
-        var modelVersion = modelExplanationValid ? settings.ExplanationModelCode : null;
-        var promptVersion = modelExplanationValid ? settings.PromptVersion : null;
-        if (!modelExplanationValid)
+        var modelCalled = modelRoute.Available;
+        var explanationCalls = 0;
+        var anyExplanationValidated = false;
+        var anyExplanationInvalid = false;
+        if (!modelCalled)
         {
             degradedFlags.Add("DEGRADED.NO_MODEL");
-        }
-
-        // 模型有响应但 Schema 重试后仍不合法：记录 LLM_OUTPUT_INVALID，
-        // 该次输出不得进入任何评分口径。
-        if (modelOutcome.OutputInvalid)
-        {
-            degradedFlags.Add("DEGRADED.LLM_OUTPUT_INVALID");
-            qualityIssues.Add(CreateQualityIssue(
-                QualityIssueType.LlmOutputInvalid,
-                "HIGH",
-                $"模型 {settings.ExplanationModelCode} 输出经 2 次重试仍未通过 Schema 校验，本次解释不参与评分。",
-                task));
         }
 
         // Step 9 / 10 / 11：评分、Policy、持久化（软失效旧推荐）。
@@ -637,15 +653,8 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                 .OrderByDescending(evidence => evidence.EvidenceScore)
                 .ToList();
             var evidenceScore = evidenceForInput.Count > 0 ? evidenceForInput[0].EvidenceScore : 0m;
-            decimal? ComputeLlmScore() => modelExplanationValid
-                ? LlmConsistencyScorer.Compute(new LlmConsistencyInput(
-                    ModelAvailable: true,
-                    OutputValidated: true,
-                    EvidenceReferencesValid: evidenceForInput.Count > 0,
-                    CandidateExistsInRetrieval: true,
-                    ExplanationSupportedByEvidence: explanationSupported,
-                    NegationOrTemporalViolation: false))
-                : null;
+            // 检索池用于核验模型回显的编码确实被召回过；证据原文按候选各自选取（见 ExplanationEvidenceTexts）。
+            var retrievalCodes = merged.Select(item => item.Code).ToList();
 
             // Step 8.5（每输入）：交叉编码 Rerank——候选池 Top-K 精排，分数入七维 Rerank 槽位（WP-B3-2）。
             // 交叉编码看的是 query-doc 全注意力，能修正双塔向量的语义近似误差（如"心房梗死"混入）。
@@ -692,7 +701,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     && string.Equals(fact.FactName, normalizedText, StringComparison.Ordinal))
                 || string.Equals(fact.FactName, input.OriginalText, StringComparison.Ordinal));
 
-            var scored = new List<(MergedCandidate Candidate, decimal Final, RuleEvaluationResult Rule, ScoreComputation Score)>();
+            var scored = new List<(MergedCandidate Candidate, decimal Final, RuleEvaluationResult Rule, ScoreComputation Score, decimal? Llm)>();
             foreach (var candidate in merged.Take(settings.MaxCandidatesPerInput))
             {
                 var ruleResult = RuleEngine.Evaluate(rules, new RuleEvaluationContext(
@@ -720,6 +729,69 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     continue;
                 }
 
+                // 逐候选一致性校验：校验器必须看到"这一条候选 + 这一条输入的证据原文"，
+                // 才能给出可被检索池与证据核验的判断（每输入至多 MaxCandidatesPerInput 次调用）。
+                // 送入模型的证据与复核引用时用的是同一份列表，编号才能对得上。
+                var candidateEvidenceTexts = ExplanationEvidenceTexts(evidenceForInput, candidate.Title);
+                var explanation = modelCalled
+                    ? await ExplainCandidateAsync(
+                        inputName,
+                        candidate,
+                        candidateEvidenceTexts,
+                        linkedFact,
+                        settings,
+                        cancellationToken)
+                    : new CandidateExplanation(ExplanationState.NotRequested);
+                if (modelCalled)
+                {
+                    explanationCalls++;
+                }
+                if (explanation.State == ExplanationState.Validated)
+                {
+                    anyExplanationValidated = true;
+                }
+                else if (explanation.State == ExplanationState.OutputInvalid)
+                {
+                    anyExplanationInvalid = true;
+                }
+
+                // 模型只有断言权：四判据由 LlmConsistencyJudge 用候选池与证据原文复核后换算。
+                var consistency = explanation.State == ExplanationState.Validated
+                    ? LlmConsistencyJudge.Judge(
+                        new ModelConsistencyJudgement(
+                            explanation.EchoedCode,
+                            explanation.Supported,
+                            explanation.CitedEvidenceIndexes ?? [],
+                            explanation.ModelReportsViolation),
+                        new LlmConsistencyContext(
+                            candidate.Code,
+                            candidate.Title,
+                            retrievalCodes,
+                            candidateEvidenceTexts,
+                            linkedFact?.Negation ?? false,
+                            linkedFact?.Certainty ?? FactCertainty.Unknown,
+                            linkedFact?.Temporality ?? FactTemporality.Unknown))
+                    : null;
+                var llmScore = consistency is null
+                    ? null
+                    : LlmConsistencyScorer.Compute(consistency);
+                if (consistency is not null)
+                {
+                    // 判据明细都是流水线自己复核出的结论（编号与布尔值，不含模型原文），
+                    // 否则落库的 llm_score 只有一个聚合值，事后无法判断是哪一维被否掉。
+                    _logger.LogDebug(
+                        "一致性校验判据，TaskId={TaskId}, CandidateCode={CandidateCode}, Evidence={EvidenceReferencesValid}, InRetrieval={CandidateExistsInRetrieval}, Supported={ExplanationSupportedByEvidence}, Violation={NegationOrTemporalViolation}, Cited=[{Cited}], EvidenceCount={EvidenceCount}, LlmScore={LlmScore}",
+                        task.Id,
+                        candidate.Code,
+                        consistency.EvidenceReferencesValid,
+                        consistency.CandidateExistsInRetrieval,
+                        consistency.ExplanationSupportedByEvidence,
+                        consistency.NegationOrTemporalViolation,
+                        string.Join(",", explanation.CitedEvidenceIndexes ?? []),
+                        candidateEvidenceTexts.Count,
+                        llmScore);
+                }
+
                 var computed = SevenDimensionScorer.Compute(scoringOptions, new CandidateScoreInput(
                     // 族内名次以每级 0.01 折入 ExactScore：同族分数钳位同分后，重排噪声
                     // 曾能随意翻转族内秩序（实测 高血压病2级 被带括号变体顶替）；该幅度
@@ -732,9 +804,10 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     RerankScore: candidate.RerankScore,
                     RuleScore: ruleResult.RuleScore,
                     EvidenceScore: evidenceScore,
-                    LlmScore: ComputeLlmScore()));
+                    LlmScore: llmScore));
 
-                scored.Add((candidate, computed.FinalScore, ruleResult, computed));            }
+                scored.Add((candidate, computed.FinalScore, ruleResult, computed, llmScore));
+            }
 
             // 索引通道的整标题逐字贴合度先于七维分：标题被输入逐字连续包含（且解释掉 ≥75% 输入字符）
             // 时，编码员认定的就是这一条，粒度加权的相关性分只能在其后参与比较（字典/手术通道该值恒为 0）。
@@ -752,8 +825,10 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     RuleBlocked: false,
                     GranularityInsufficient: ranked.Count > 0
                         && DetermineGranularity(ranked[0].Candidate.Code) == "GENERIC",
-                    ModelAvailable: modelExplanation != null,
-                    ModelOutputValidated: modelExplanationValid,
+                    // 模型可用性以本输入 Top1 候选的实际校验结论为准：
+                    // 未调用或调用未通过 Schema 时都不允许据此升高置信。
+                    ModelAvailable: ranked.Count > 0 && modelCalled,
+                    ModelOutputValidated: ranked.Count > 0 && ranked[0].Llm is not null,
                     UnresolvedConflict: false,
                     QualityGateFailed: false,
                     DegradedFlags: degradedFlags.ToList()),
@@ -826,7 +901,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     RerankScore = item.Candidate.RerankScore,
                     RuleScore = item.Rule.RuleScore,
                     EvidenceScore = evidenceScore,
-                    LlmScore = ComputeLlmScore(),
+                    LlmScore = item.Llm,
                     MarginScore = rank == 1 ? margin : null,
                     ScoreProfile = item.Score.ScoreProfile,
                     CreatedAt = now,
@@ -862,8 +937,10 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     EvidenceSufficiency = evidenceScore,
                     RiskLevel = policy.RiskLevel,
                     Reason = policy.Reason,
-                    ModelVersion = modelVersion,
-                    PromptVersion = promptVersion,
+                    // 模型与 Prompt 版本按候选自身记账：只有该候选的解释通过 Schema 校验才盖版本，
+                    // 否则留空——避免"整批统一盖章"把未采信的候选伪装成模型产物。
+                    ModelVersion = item.Llm is not null ? settings.ExplanationModelCode : null,
+                    PromptVersion = item.Llm is not null ? settings.PromptVersion : null,
                     KnowledgeVersion = settings.KnowledgeVersion,
                     RuleVersion = settings.RuleVersion,
                     CodingVersion = settings.CodingVersion,
@@ -972,6 +1049,18 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                 policy.Outcome);
         }
 
+        // 模型有响应但 Schema 重试后仍不合法：必须留下结构化质量问题，
+        // 且该候选的解释不进入任何评分口径（Policy 已按 ModelOutputValidated 拦住高置信）。
+        if (anyExplanationInvalid)
+        {
+            degradedFlags.Add("DEGRADED.LLM_OUTPUT_INVALID");
+            qualityIssues.Add(CreateQualityIssue(
+                QualityIssueType.LlmOutputInvalid,
+                "HIGH",
+                $"模型 {settings.ExplanationModelCode} 输出经 2 次重试仍未通过 Schema 校验，相关候选的解释不参与评分。",
+                task));
+        }
+
         _dbContext.CodingCandidates.AddRange(candidates);
         _dbContext.RecommendationScores.AddRange(scoreRecords);
         _dbContext.CodingRecommendations.AddRange(recommendations);
@@ -1003,10 +1092,17 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
             rerankSucceeded || !rerankAttempted ? null : "DEGRADED.NO_RERANK",
             startedAt);
         recorder.Record("RULE", "SUCCESS", null, startedAt);
+        // 模型维降级口径：无网关即 NO_MODEL；有网关但全部候选输出不合法即 LLM_OUTPUT_INVALID；
+        // 有网关却没有可校验的候选时不算模型维降级。
+        var modelStageError = !modelCalled
+            ? "DEGRADED.NO_MODEL"
+            : anyExplanationValidated || (explanationCalls == 0 && !anyExplanationInvalid)
+                ? null
+                : anyExplanationInvalid ? "DEGRADED.LLM_OUTPUT_INVALID" : "DEGRADED.NO_MODEL";
         recorder.Record(
             "SCORE",
-            modelExplanationValid ? "SUCCESS" : "DEGRADED",
-            modelExplanationValid ? null : "DEGRADED.NO_MODEL",
+            modelStageError is null ? "SUCCESS" : "DEGRADED",
+            modelStageError,
             startedAt);
         recorder.Record("POLICY", "SUCCESS", null, startedAt);
         recorder.Record("PERSIST", "SUCCESS", null, startedAt);
@@ -1068,9 +1164,8 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
 
     private static bool EvidenceMatchesTitle(string? evidenceText, string title)
     {
-        return title.Length >= 2
-            && !string.IsNullOrWhiteSpace(evidenceText)
-            && evidenceText.Contains(title, StringComparison.Ordinal);
+        // 与模型一致性校验的证据复核同一口径，避免两套"逐字支持"定义。
+        return TextMatch.EvidenceSupportsTitle(evidenceText, title);
     }
 
     private static bool IsProcedureCodeSystem(string? codeSystem)
@@ -1084,19 +1179,52 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         return code.Length >= 3 ? "SPECIFIC" : "GENERIC";
     }
 
-    private async Task<ModelExplanationOutcome> GetValidatedExplanationAsync(
-        IReadOnlyList<CodingDiagnosisInputRecord> inputs,
+    /// <summary>一致性校验引用的证据条数上限（引用编号必须与送入模型的条数一致）。</summary>
+    private const int ExplanationEvidenceLimit = 5;
+
+    /// <summary>
+    /// 该候选的证据原文列表（按引用编号顺序）：逐字含该标题的证据优先，其余按证据分补齐。
+    /// 只按证据分取前 5 条时，病历切片（往往是唯一能佐证该编码的原文）会被索引推导条目挤掉，
+    /// 校验器看到的就全是"看标题不像"的证据，判据退化成与病历无关的常数。
+    /// </summary>
+    private static IReadOnlyList<string> ExplanationEvidenceTexts(
+        IReadOnlyList<ClinicalEvidenceRecord> evidenceForInput,
+        string candidateTitle)
+    {
+        return evidenceForInput
+            .OrderByDescending(evidence =>
+                TextMatch.EvidenceSupportsTitle(evidence.OriginalText, candidateTitle) ? 1 : 0)
+            .ThenByDescending(evidence => evidence.EvidenceScore)
+            .Take(ExplanationEvidenceLimit)
+            .Select(evidence => evidence.OriginalText)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 单候选的模型一致性校验：请求带诊断原文、候选编码与带编号的证据原文，
+    /// 输出必须通过 Schema 校验（最多 2 次重试）才允许进入判据换算。
+    /// </summary>
+    private async Task<CandidateExplanation> ExplainCandidateAsync(
+        string? inputName,
+        MergedCandidate candidate,
+        IReadOnlyList<string> evidenceTexts,
+        ClinicalFactRecord? linkedFact,
         V22PipelineOptions settings,
         CancellationToken cancellationToken)
     {
-        // LlmScore 一致性校验口径：模型输出必须通过 Schema 校验，最多重试 2 次。
         const string schemaJson = """
             {
               "type": "object",
-              "required": ["explanation", "supported"],
+              "required": ["code", "supported", "cited_evidence", "negation_or_temporal_violation"],
               "properties": {
-                "explanation": { "type": "string" },
-                "supported": { "type": "boolean" }
+                "code": { "type": "string" },
+                "supported": { "type": "boolean" },
+                "cited_evidence": {
+                  "type": "array",
+                  "maxItems": 5,
+                  "items": { "type": "integer", "minimum": 1 }
+                },
+                "negation_or_temporal_violation": { "type": "boolean" }
               },
               "additionalProperties": false
             }
@@ -1104,63 +1232,121 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
 
         var request = new ModelGenerationRequest(
             settings.ExplanationModelCode,
-            $"诊断输入数量：{inputs.Count}。请判断推荐解释能否被证据支持。",
-            SystemPrompt: "你是编码推荐一致性校验器，只输出 JSON。",
+            BuildExplanationPrompt(inputName, candidate, evidenceTexts, linkedFact),
+            SystemPrompt: "你是 ICD 编码推荐的一致性校验器：只判断给定证据原文能否支持给定候选编码，只输出 JSON。",
+            MaxTokens: 160,
             ResponseSchemaJson: schemaJson);
 
-        var invalid = false;
+        var responded = false;
         for (var attempt = 1; attempt <= 2; attempt++)
         {
             var result = await _modelGateway.GenerateAsync(request, cancellationToken);
             if (!result.Success || result.ContentJson is null)
             {
                 _logger.LogWarning(
-                    "模型解释请求失败，ModelCode={ModelCode}, Attempt={Attempt}, ErrorCode={ErrorCode}",
+                    "模型一致性校验请求失败，ModelCode={ModelCode}, CandidateCode={CandidateCode}, Attempt={Attempt}, ErrorCode={ErrorCode}",
                     result.ModelCode,
+                    candidate.Code,
                     attempt,
                     result.ErrorCode);
                 continue;
             }
 
+            responded = true;
             var validation = _schemaValidator.Validate(schemaJson, result.ContentJson);
             if (!validation.IsValid)
             {
                 // 只记录错误条数：AI 响应内容不得进入普通应用日志。
                 _logger.LogWarning(
-                    "模型输出未通过 Schema 校验，ModelCode={ModelCode}, Attempt={Attempt}, ErrorCount={ErrorCount}",
+                    "模型输出未通过 Schema 校验，ModelCode={ModelCode}, CandidateCode={CandidateCode}, Attempt={Attempt}, ErrorCount={ErrorCount}",
                     result.ModelCode,
+                    candidate.Code,
                     attempt,
                     validation.Errors.Count);
-                invalid = true;
                 continue;
             }
 
-            return new ModelExplanationOutcome(
-                new ModelExplanationCheck(
-                    Validated: true,
-                    Supported: ReadSupportedFlag(result.ContentJson)),
-                OutputInvalid: false);
+            return ParseCandidateExplanation(result.ContentJson);
         }
 
-        // 重试耗尽：区分"根本没响应"与"响应了但始终不合法"。
-        return new ModelExplanationOutcome(null, OutputInvalid: invalid);
+        // 重试耗尽：区分"根本没响应"（模型不可用）与"响应了但始终不合法"（模型侧质量问题）。
+        return new CandidateExplanation(
+            responded ? ExplanationState.OutputInvalid : ExplanationState.Unavailable);
     }
 
     /// <summary>
-    /// 读取模型输出中的 supported 字段。Schema 已校验通过，解析异常按“无法被证据支持”处理。
+    /// 一致性校验 Prompt：诊断原文 + 候选编码 + 带编号的证据原文 + 结构化事实线索。
+    /// 输入与证据按长度截断，避免小模型的有限上下文被病历正文淹没。
     /// </summary>
-    private static bool ReadSupportedFlag(string contentJson)
+    private static string BuildExplanationPrompt(
+        string? inputName,
+        MergedCandidate candidate,
+        IReadOnlyList<string> evidenceTexts,
+        ClinicalFactRecord? linkedFact)
+    {
+        var evidenceLines = evidenceTexts.Count == 0
+            ? "（无证据原文）"
+            : string.Join(
+                "\n",
+                evidenceTexts.Select((text, index) => $"{index + 1}. {Ellipsize(text, 120)}"));
+        var factLine = linkedFact is null
+            ? "否定=未知 确定性=Unknown 时间=Unknown"
+            : $"否定={(linkedFact.Negation ? "是" : "否")} 确定性={linkedFact.Certainty} 时间={linkedFact.Temporality}";
+
+        return $$"""
+            诊断原文：{{Ellipsize(inputName, 60)}}
+            候选编码：{{candidate.Code}} {{Ellipsize(candidate.Title, 60)}}
+            证据原文（引用编号从 1 开始）：
+            {{evidenceLines}}
+            事实线索：{{factLine}}
+            问题：上述证据原文能否支持把本条诊断编为候选编码？
+            - code：只填候选编码的编码值本身，不要带名称、说明或其他文字。
+            - supported：能支持填 true，不能支持或证据不足填 false。
+            - cited_evidence：支撑该判断的证据编号列表，只能使用上面列出的编号；无可用证据时填空数组 []。
+            - negation_or_temporal_violation：证据表明该诊断被否定、属于既往史或家族史时填 true。
+            """;
+    }
+
+    /// <summary>
+    /// 解析已通过 Schema 校验的模型输出为候选自述。解析异常按"输出不合法"处理，不采信。
+    /// </summary>
+    private static CandidateExplanation ParseCandidateExplanation(string contentJson)
     {
         try
         {
             using var document = JsonDocument.Parse(contentJson);
-            return document.RootElement.TryGetProperty("supported", out var element)
-                && element.ValueKind == JsonValueKind.True;
+            var root = document.RootElement;
+            var cited = root.TryGetProperty("cited_evidence", out var citations)
+                && citations.ValueKind == JsonValueKind.Array
+                ? citations.EnumerateArray()
+                    .Where(item => item.ValueKind == JsonValueKind.Number && item.TryGetInt32(out _))
+                    .Select(item => item.GetInt32())
+                    .ToList()
+                : new List<int>();
+
+            return new CandidateExplanation(
+                ExplanationState.Validated,
+                root.TryGetProperty("code", out var code) ? code.GetString() : null,
+                ReadBooleanTrue(root, "supported"),
+                cited,
+                ReadBooleanTrue(root, "negation_or_temporal_violation"));
         }
         catch (JsonException)
         {
-            return false;
+            return new CandidateExplanation(ExplanationState.OutputInvalid);
         }
+    }
+
+    private static bool ReadBooleanTrue(JsonElement root, string name)
+    {
+        return root.TryGetProperty(name, out var element)
+            && element.ValueKind == JsonValueKind.True;
+    }
+
+    private static string Ellipsize(string? text, int maxLength)
+    {
+        var value = text ?? string.Empty;
+        return value.Length <= maxLength ? value : value[..maxLength] + "…";
     }
 
     private static QualityIssueRecord CreateQualityIssue(

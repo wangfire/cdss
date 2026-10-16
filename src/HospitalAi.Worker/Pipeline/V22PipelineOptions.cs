@@ -53,5 +53,5 @@ public sealed class V22PipelineOptions
     public string ExplanationModelCode { get; set; } = HospitalAi.Contracts.Models.ModelCodes.Small;
 
     /// <summary>LlmScore 校验用的解释 Prompt 版本。</summary>
-    public string PromptVersion { get; set; } = "v22-explanation-v1";
+    public string PromptVersion { get; set; } = "v22-explanation-v2";
 }

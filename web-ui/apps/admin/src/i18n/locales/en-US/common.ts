@@ -108,7 +108,7 @@ export default {
   newPassword: 'New password',
   confirmNewPassword: 'Confirm new password',
   passwordMismatch: 'The two passwords do not match',
-  passwordTooShort: 'New password must be at least 6 characters',
+  passwordTooShort: 'New password must be at least 8 characters',
   changePasswordSuccess: 'Password updated',
   changePasswordFailed: 'Failed to change password',
 

@@ -200,8 +200,9 @@ const activeSidebarId = computed(() => {
 /**
  * 处理用户登出
  */
-function handleLogout() {
-  userStore.logout()
+async function handleLogout() {
+  // 必须等 logout 清掉 token 再跳转：守卫见 localStorage 里还有 token 会把 /login 弹回 /dashboard
+  await userStore.logout()
   router.push({ name: 'Login' })
 }
 

@@ -13,7 +13,8 @@ using Microsoft.Extensions.Logging;
 namespace HospitalAi.Tools;
 
 /// <summary>
-/// evaluate-accuracy：常见病/手术诊断名称精度评测（WP-B3 验收口径，决策 3）。
+/// evaluate-accuracy：常见病/手术诊断名称精度评测（L3 精标语料口径，用于防退化冒烟；
+/// 决策 3 的验收线归属见 docs/2026-10-08-精度验收口径规范.md §7，不能只看本表判达标）。
 /// 把源医院（已导入字典/向量/规则）的知识克隆到临时医院，逐条名称真实跑一遍
 /// V2.2-Lite（索引两段式 + 向量 + Rerank），计算：
 ///   编码级 Top1 / Top3（精确码一致）与类目级 Top1（编码首段一致，如 K35/I21/47）。
@@ -481,6 +482,9 @@ public static class AccuracyCommand
         Console.WriteLine($"类目级 Top1      {categoryTop1}/{total} = {Percent(categoryTop1, total)}   （验收线 ≥50%）");
         Console.WriteLine($"出码率           {covered}/{total} = {Percent(covered, total)}");
         Console.WriteLine($"平均耗时         {(total == 0 ? 0 : results.Average(item => item.LatencyMs)):F0} ms/例");
+        Console.WriteLine(
+            "口径说明         本表是 L3 精标语料口径（小规模人工构造，样本量小且经人工挑选），只用于防退化冒烟；" +
+            "决策 3 的验收线挂在哪一层见 docs/2026-10-08-精度验收口径规范.md §7");
         var top1Channels = results
             .Where(item => item.CodingTop1Hit)
             .Select(item => item.Channels.Split('/')[0])
@@ -514,10 +518,11 @@ public static class AccuracyCommand
             {
                 totalCases,
                 evaluated = total,
+                caliber = "L3 精标语料口径（小规模人工构造，非万条口径）；分层判据与验收线归属见 docs/2026-10-08-精度验收口径规范.md",
                 excludedMissingCode = warnings,
-                codingTop1 = new { hit = codingTop1, total, percent = Percent(codingTop1, total), acceptance = "≥25%" },
+                codingTop1 = new { hit = codingTop1, total, percent = Percent(codingTop1, total), acceptance = "≥25%（决策 3 原线，归属待拍板）" },
                 codingTop3 = new { hit = codingTop3, total, percent = Percent(codingTop3, total) },
-                categoryTop1 = new { hit = categoryTop1, total, percent = Percent(categoryTop1, total), acceptance = "≥50%" },
+                categoryTop1 = new { hit = categoryTop1, total, percent = Percent(categoryTop1, total), acceptance = "≥50%（决策 3 原线，归属待拍板）" },
                 coverage = new { covered, total, percent = Percent(covered, total) },
                 avgLatencyMs = total == 0 ? 0 : Math.Round(results.Average(item => item.LatencyMs), 0)
             },

@@ -37,6 +37,8 @@ public static class ToolHost
                     return await EmbeddingCommand.RunAsync(configuration);
                 case "evaluate-accuracy":
                     return await AccuracyCommand.RunAsync(configuration);
+                case "caliber":
+                    return await AccuracyCaliberCommand.RunAsync(configuration);
                 case "help":
                 case "--help":
                 case "-h":
@@ -88,6 +90,8 @@ public static class ToolHost
               backfill --mode dry-run|apply|verify --connection "<conn>" [--hospital <guid>]
               evaluate --connection "<conn>" [--golden <dir>] [--hospital <guid>]
               golden --validate [--golden <dir>]
+              evaluate-accuracy --connection "<conn>" --hospital <guid> [--accuracy <json>] [--report <path>]
+              caliber --connection "<conn>" [--hospital <guid>] [--attribution <norec.tsv>] [--report <path>] [--excluded <path>]
             """);
     }
 }

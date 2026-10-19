@@ -26,6 +26,7 @@ public sealed record DrillResult(
 /// <summary>
 /// 主导词召回 + 逐级修饰词下钻。
 /// 召回门控：别名被输入完整/高覆盖命中（TextMatch.MatchesInput），且词条部位限定词须在输入中声明；
+/// 单字主导词只有在它是输入结尾的核心词时才参与召回（见 IsTailCoreWord）；
 /// "A病或B" 式的 或 尾段若在别处另有自己的主导词行，不得独立锚定本行（见 IcdIndexSnapshotBuilder.Build）；
 /// 下钻门控：子节点（任一变体别名）对输入"新增长连续段 ≥2"才进入（同样受部位限定词约束），同层取增益最大者；
 /// 命中链上无码节点回退最近有码祖先，最终回退主导词码；"见"子节点改道与本树下钻并列，取输入覆盖更多者，
@@ -159,6 +160,31 @@ public static class IcdIndexMatcher
     private static bool IsMorphologyLead(IcdIndexNode lead)
         => lead.Code is { Length: > 0 } code && MorphologyCodeRegex.IsMatch(code);
 
+    /// <summary>
+    /// 单字主导词的尾重心门控。中文诊断名是"修饰语 + 核心名词"结构，编码员取的主导词
+    /// 就是末尾那个核心名词（手术后尿道会阴瘘 → 瘘、内痔 → 痔、马蹄肾 → 肾）。
+    /// 索引里 60 条 0 级单字主导词（瘘 194 子行/189 带码、痛 86、疹 9、痔、龋、疮、肾、
+    /// 心、双、无、大、性…）原先整族召不回：按覆盖字数排序，1 个字永远排在任何 2 字词之后，
+    /// 且 <code>alias.Key.Length &lt; 2</code> 直接拦住——万条实测 肛瘘、内痔 这类输入
+    /// 一个主导词都召不到，整条索引通道返回空。
+    /// 全量放开会让 心/性/大/无 沾住一切含该字的输入（跨部位误锚），所以只认结尾位置：
+    /// 单字必须是本条病历写到的最后一个词，出现在中部（心肌梗死）仍按原口径拦住。
+    /// 泛词 病 即使收尾也不放行（万条实测的唯一流失来源）：按编码员查典顺序它只能在
+    /// 所有真主导词落空后末位兜底，放行会让 高血压病 的 病，疾病→高血压 抢在常规链路前面。
+    /// </summary>
+    private static bool IsTailCoreWord(string aliasKey, string inputKey)
+        => aliasKey.Length == 1
+            && !IsGenericConditionLeadKey(aliasKey)
+            && inputKey.Length > 1
+            && inputKey.EndsWith(aliasKey, StringComparison.Ordinal);
+
+    /// <summary>
+    /// 索引惯例里的泛化主导词族（情况 = 病，疾病 一族）。它们不携带"这行说的是哪个病"，
+    /// 召回层与失效主导词改道层都要用它拦住，只有末位兜底通道允许进入。
+    /// </summary>
+    public static bool IsGenericConditionLeadKey(string aliasKey)
+        => aliasKey is "病" or "疾病" or "情况" or "疾患" or "综合征";
+
     public static IReadOnlyList<LeadWordHit> RecallLeads(
         IcdIndexSnapshot snapshot,
         string inputKey,
@@ -184,12 +210,13 @@ public static class IcdIndexMatcher
             {
                 // 单字别名（"肾"）只作下钻目标，不足以定位主导词；
                 // RecallAnchor=false 的 或 尾段同理（它继承头段限定词，不是本行的主导词）。
-                // 例外：本行编码是 ICD-O 形态学码（M####/d）的单字主导词——索引里肿瘤形态
+                // 例外一：本行编码是 ICD-O 形态学码（M####/d）的单字主导词——索引里肿瘤形态
                 // 树的主导词按惯例就是一个字（143 癌 M8010/3），拦住它整棵形态学树就召不回，
-                // "甲状腺C细胞癌" 只能被 甲状腺X 疾病行借走。其余 59 条单字行（心/汗/红…）
-                // 照旧拦住，避免跨部位误召回。
+                // "甲状腺C细胞癌" 只能被 甲状腺X 疾病行借走。
+                // 例外二：单字正是本条病历的结尾核心词（见 IsTailCoreWord）。
+                // 心/汗/红 这类单字行只在收尾时锚定，出现在中部（心肌梗死）照旧拦住。
                 if (!alias.RecallAnchor || GenericModifierKeys.Contains(alias.Key)
-                    || (alias.Key.Length < 2 && !IsMorphologyLead(lead)))
+                    || (alias.Key.Length < 2 && !IsMorphologyLead(lead) && !IsTailCoreWord(alias.Key, inputKey)))
                 {
                     continue;
                 }

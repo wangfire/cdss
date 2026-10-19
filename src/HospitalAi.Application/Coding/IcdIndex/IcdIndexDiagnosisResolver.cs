@@ -342,7 +342,7 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
     /// 原发性干燥综合征伴间质性肺病 的 M35.000（正确码）挤出了 Top3。
     /// </summary>
     private static bool IsGenericConditionWord(string key)
-        => GenericConditionFamily.Contains(key) || key is "病" or "疾病";
+        => IcdIndexMatcher.IsGenericConditionLeadKey(key);
 
     private const string PostoperativeSuffix = "术后";
 

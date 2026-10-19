@@ -361,6 +361,63 @@ public sealed class IcdIndexTests
         Assert.Empty(recommendations);
     }
 
+    /// <summary>
+    /// 单字主导词的尾重心门控（真实索引行 22727 瘘 L98.8 → －尿道会阴 N36.0）：
+    /// 中文诊断名是"修饰语 + 核心名词"结构，编码员取的主导词就是末尾那个字
+    /// （手术后尿道会阴瘘 → 瘘）；单字出现在中部（心肌梗死 的 心）仍不召回。
+    /// </summary>
+    private static IcdIndexSnapshot FistulaSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(22727, "瘘", "L98.8"),
+        ChildRow(22868, 22727, "－尿道会阴", "N36.0"),
+        LeadRow(43106, "心", "I51.9"),
+        ChildRow(43112, 43106, "－肺[肺心病](慢性)", "I27.9"),
+    ]);
+
+    [Theory]
+    [InlineData("手术后尿道会阴瘘", true)]
+    [InlineData("尿道瘘", true)]
+    [InlineData("瘘管", false)]
+    [InlineData("心肌梗死", false)]
+    public void 单字主导词_只认输入结尾的核心词(string input, bool recalled)
+    {
+        var hits = IcdIndexMatcher.RecallLeads(FistulaSnapshot(), TextMatch.NormalizeKey(input), 8);
+
+        Assert.Equal(recalled, hits.Any(hit => hit.Node.SeqNo == 22727 || hit.Node.SeqNo == 43106));
+    }
+
+    [Fact]
+    public void 结尾单字主导词_下钻出码()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 8, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("L98.8", "瘘"),
+            Dict("N36.0", "尿道瘘"),
+            Dict("N36.004", "手术后尿道会阴瘘"),
+        ]);
+
+        var recommendations = resolver.Resolve(FistulaSnapshot(), dictionary, "手术后尿道会阴瘘");
+
+        Assert.NotEmpty(recommendations);
+        Assert.StartsWith("N36", recommendations[0].Code, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 泛词 病 即使收尾也不进常规召回：按编码员查典顺序它只能在所有真主导词落空后末位兜底，
+    /// 否则 高血压病 的 病，疾病→高血压 会抢在常规链路前面改写 Top1（万条实测的唯一流失来源）。
+    /// </summary>
+    [Fact]
+    public void 泛词病_收尾也不锚定常规召回()
+    {
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(2972, "病，疾病"),
+            ChildRow(2973, 2972, "－高血压", "I10"),
+        ]);
+
+        var hits = IcdIndexMatcher.RecallLeads(snapshot, TextMatch.NormalizeKey("高血压病"), 8);
+
+        Assert.Empty(hits);
+    }
+
     [Fact]
     public void 同族括号变体_限定词未被满足时被剔除()
     {

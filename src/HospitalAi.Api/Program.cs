@@ -519,6 +519,7 @@ app.MapPost(
     async (
         ImportCm3IndexRequest request,
         HospitalAiDbContext db,
+        HospitalAi.Application.Coding.Cm3Index.ICm3IndexSource cm3Source,
         CancellationToken cancellationToken) =>
     {
         var now = DateTimeOffset.UtcNow;
@@ -566,6 +567,8 @@ app.MapPost(
         }
 
         await db.SaveChangesAsync(cancellationToken);
+        // 与 ICD 索引导入对称：快照是单例内存缓存，不失效就会一直用导入前的旧树。
+        cm3Source.Invalidate();
         return Results.Ok(ApiEnvelope.Create(
             new ImportCm3IndexResponse(imported, updated)));
     }).RequireAuthorization(RbacPolicies.KnowledgeManager);

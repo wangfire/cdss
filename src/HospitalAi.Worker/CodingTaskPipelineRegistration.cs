@@ -34,6 +34,8 @@ public static class CodingTaskPipelineRegistration
         services.AddSingleton<Application.Coding.IcdIndex.ITumorIndexSource, EfTumorIndexSnapshotSource>();
         services.AddSingleton<Application.Coding.IcdIndex.IIcdDictionarySource, EfIcdDictionarySource>();
         services.AddSingleton<Application.Coding.Matching.IIcdTermSynonymSource, EfIcdTermSynonymSource>();
+        // CM3（手术操作）索引两段式链路：与 ICD 索引同待遇的平台级共享快照。
+        services.AddSingleton<Application.Coding.Cm3Index.ICm3IndexSource, EfCm3IndexSnapshotSource>();
         // 与 API 共用同一份灰度配置：新建编码任务缺省使用的 PipelineVersion。
         services.AddSingleton(
             _ => Infrastructure.CodingTasks.CodingTaskPipelineOptions.FromConfiguration(configuration));

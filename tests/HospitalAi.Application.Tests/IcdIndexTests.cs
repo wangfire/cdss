@@ -418,6 +418,67 @@ public sealed class IcdIndexTests
         Assert.Empty(hits);
     }
 
+    /// <summary>
+    /// 裸属性尾段（先天性/遗传性/病理性/异常的）不作召回锚点。索引把病名写成
+    /// "病名，先天性" 的 0 级行时，尾段只是 ICD 第三字符那一类形态属性，不是主导词：
+    /// 任何含"先天性"的输入都会被它锚到不相干的病种行、且那些行靠"主导词自身带码"直接出题
+    /// （万条实测 345 名被它占席、146 名交付先天/围生章节以外的码；
+    /// 又因它覆盖 3 字压住单字结尾核心词，泌尿道之间的先天性瘘 的 瘘 落在第 32 名）。
+    /// 头段本身就是该属性词的行不受影响（41907 先天性 → 畸形 → 鼻 是 鼻先天性畸形→Q30.900 的通路）。
+    /// </summary>
+    private static IcdIndexSnapshot CongenitalAttributeSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(22727, "瘘", "L98.8"),
+        ChildRow(22760, 22727, "－泌尿道", "Q64.9"),
+        LeadRow(39553, "吞噬细胞功能不良，先天性", "D71"),
+        LeadRow(41907, "先天性", "Q89.9"),
+        ChildRow(41908, 41907, "－畸形", "Q89.9"),
+        ChildRow(41909, 41908, "－－鼻", "Q30.9"),
+    ]);
+
+    [Fact]
+    public void 裸属性尾段_不作召回锚点_结尾核心词才进名额()
+    {
+        var hits = IcdIndexMatcher.RecallLeads(
+            CongenitalAttributeSnapshot(), TextMatch.NormalizeKey("泌尿道之间的先天性瘘"), 8);
+
+        Assert.DoesNotContain(hits, hit => hit.Node.SeqNo == 39553);
+        Assert.Contains(hits, hit => hit.Node.SeqNo == 22727);
+        Assert.Contains(hits, hit => hit.Node.SeqNo == 41907);
+    }
+
+    [Fact]
+    public void 属性词作头段时_仍可锚定并下钻到部位码()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 8, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("Q30.9", "鼻畸形"),
+            Dict("Q30.900", "鼻先天性畸形"),
+            Dict("D71", "先天性吞噬细胞功能不良"),
+        ]);
+
+        var recommendations = resolver.Resolve(CongenitalAttributeSnapshot(), dictionary, "鼻先天性畸形");
+
+        Assert.NotEmpty(recommendations);
+        Assert.StartsWith("Q30", recommendations[0].Code, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 属性尾段行_不再带出跨章码()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 8, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("L98.8", "瘘"),
+            Dict("Q64.9", "泌尿道瘘"),
+            Dict("Q64.900", "泌尿道之间的先天性瘘"),
+            Dict("D71", "先天性吞噬细胞功能不良"),
+            Dict("D71.X00X004", "先天性吞噬细胞功能不良"),
+        ]);
+
+        var recommendations = resolver.Resolve(CongenitalAttributeSnapshot(), dictionary, "泌尿道之间的先天性瘘");
+
+        Assert.DoesNotContain(recommendations, r => r.Code.StartsWith("D71", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void 同族括号变体_限定词未被满足时被剔除()
     {

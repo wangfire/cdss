@@ -140,6 +140,13 @@ public static class IcdIndexSnapshotBuilder
 {
     private static readonly char[] DashCharacters = ['－', '-', '—', '–', '﹘', '─'];
 
+    /// <summary>
+    /// 只作形态/病因属性、不作主导词的裸尾段词表（ICD 第三字符那一类）。
+    /// 收录判据是万条实测的"占用召回名额"热族：先天性 315、遗传性 17、异常的 13、病理性 7。
+    /// </summary>
+    private static readonly HashSet<string> GenericAttributeTailKeys =
+        new(StringComparer.Ordinal) { "先天性", "遗传性", "病理性", "异常的" };
+
     public static IcdIndexSnapshot Build(IReadOnlyList<IcdIndexRow> rows)
     {
         var nodes = new Dictionary<int, IcdIndexNode>();
@@ -184,6 +191,21 @@ public static class IcdIndexSnapshotBuilder
         foreach (var alias in leads.SelectMany(lead => lead.Aliases))
         {
             if (alias.HuoTail && headAliasKeys.Contains(alias.Key))
+            {
+                alias.RecallAnchor = false;
+            }
+
+            // 索引把 "病名，先天性" / "病名(先天性)" 整条写成 0 级行时，尾段的 先天性 是形态属性
+            // （ICD 第三字符），不是主导词：任何含这三个字的输入都会被它锚到毫不相干的病种行上，
+            // 而且这些行靠"主导词自身带码"直接交付本行病种码。万条实测 345 个名的 top-8 里有这种行，
+            // 233 个的索引 Top1 未命中期望码、146 个给的码根本不在先天/围生章节
+            // （先天性鼻瘘→D71.X00X004 先天性吞噬细胞功能不良）。更糟的是它覆盖 3 个字，
+            // 在"先按覆盖字数排序"的召回名额里整族压住真正的结尾核心词
+            // （泌尿道之间的先天性瘘 的 瘘 L98.8→－泌尿道→Q64.9 落在第 32 名）。
+            // 只关召回，别名集合/权重/下钻/链路覆盖度一律不动（同 或 尾段口径）。
+            // 行头段本身就是该属性词（权重 1.0）不在射程内：41907 先天性 - 另见情况 是泛词兜底入口，
+            // 实测 先天性畸形→Q89.900、鼻先天性畸形→Q30.900 都靠它下钻出来。
+            if (alias.Weight < 1.0m && GenericAttributeTailKeys.Contains(alias.Key))
             {
                 alias.RecallAnchor = false;
             }

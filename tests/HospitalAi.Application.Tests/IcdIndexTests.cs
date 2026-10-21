@@ -286,6 +286,55 @@ public sealed class IcdIndexTests
     }
 
     /// <summary>
+    /// 真实索引行：泛术式主导词 手术(35943，R69，只有 35944/35945 两条分娩子行) 与
+    /// 这件事真正的病种主导词 瘘(22727，L98.8 → －尿道会阴 N36.0)。
+    /// 索引紧接着还写了 35946 手术的 -见情况 与 35947 手术后的 -见情况。
+    /// </summary>
+    private static IcdIndexSnapshot SurgeryPrefixSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(35943, "手术", "R69"),
+        ChildRow(35944, 35943, "－母体，与近期分娩无关，影响到胎儿或新生儿", "P00.6"),
+        LeadRow(22727, "瘘", "L98.8"),
+        ChildRow(22868, 22727, "－尿道会阴", "N36.0"),
+    ]);
+
+    [Fact]
+    public void 手术后前缀_不让泛术式主导词抢在结尾核心词前面()
+    {
+        var leads = IcdIndexMatcher.RecallLeads(
+            SurgeryPrefixSnapshot(), TextMatch.NormalizeKey("手术后尿道会阴瘘"), 12);
+
+        // 手术 只是 手术后 状态前缀的一部分（索引 35947 手术后的 -见情况：见情况不是主导词），
+        // 它按覆盖字数排序会压过 1 个字的 瘘 排到名次1，工作簿因此读成"主导词=手术"。
+        Assert.DoesNotContain(leads, hit => hit.Node.SeqNo == 35943);
+        Assert.Equal(22727, leads[0].Node.SeqNo);
+    }
+
+    [Fact]
+    public void 手术后前缀_交付结尾核心词的码而不是R69兜底()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 12, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("R69.X00", "原因不知的发病"),
+            Dict("L98.8", "瘘"),
+            Dict("N36.0", "尿道瘘"),
+            Dict("N36.004", "手术后尿道会阴瘘"),
+        ]);
+
+        var results = resolver.Resolve(SurgeryPrefixSnapshot(), dictionary, "手术后尿道会阴瘘");
+
+        Assert.Equal("N36.004", results[0].Code);
+        Assert.DoesNotContain(results, item => item.Code.StartsWith("R69", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void 手术是输入结尾核心词时仍可锚定()
+    {
+        var leads = IcdIndexMatcher.RecallLeads(SurgeryPrefixSnapshot(), TextMatch.NormalizeKey("白内障手术"), 12);
+
+        Assert.Contains(leads, hit => hit.Node.SeqNo == 35943);
+    }
+
+    /// <summary>
     /// 同族名额实测夹具：索引编码 E04.9 一个族就展开出 3 条字典详码（族内分数钳位同分），
     /// 与 状态 链路的 Z98.800 / E89.000 抢同一份 Top3 名额。
     /// </summary>

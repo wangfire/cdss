@@ -28,6 +28,7 @@ public sealed record DrillResult(
 /// 召回门控：别名被输入完整/高覆盖命中（TextMatch.MatchesInput），且词条部位限定词须在输入中声明；
 /// 单字主导词只有在它是输入结尾的核心词时才参与召回（见 IsTailCoreWord）；
 /// "A病或B" 式的 或 尾段若在别处另有自己的主导词行，不得独立锚定本行（见 IcdIndexSnapshotBuilder.Build）；
+/// 输入写成 "手术后X" 时 手术 只是状态前缀的一部分，不锚定 手术 这类以 术 收尾的主导词（见 IsGenericSurgeryAliasOutsideTail）；
 /// 下钻门控：子节点（任一变体别名）对输入"新增长连续段 ≥2"才进入（同样受部位限定词约束），同层取增益最大者；
 /// 命中链上无码节点回退最近有码祖先，最终回退主导词码；"见"子节点改道与本树下钻并列，取输入覆盖更多者，
 /// 但本地只能靠祖先兜底取码时改道结果无条件优先（索引惯例里"见 X"即命令转换主导词）；
@@ -178,6 +179,23 @@ public static class IcdIndexMatcher
             && inputKey.Length > 1
             && inputKey.EndsWith(aliasKey, StringComparison.Ordinal);
 
+    /// <summary>泛术式主导词：词面是"手术"这一件事的统称，不带任何病种信息。</summary>
+    private const string GenericSurgeryAlias = "手术";
+
+    /// <summary>
+    /// 泛术式主导词 手术 的尾重心门控（与 <see cref="IsTailCoreWord"/> 同一判据，管的是两字词）。
+    /// "手术后尿道会阴瘘" 里 手术 只是 手术后 这个状态前缀的一部分：索引紧接着就写了
+    /// 35946 手术的 -见情况 与 35947 手术后的 -见情况 两行（编码员口径：见情况不是主导词），
+    /// 管术后状态的正牌主导词是 50034 状态 → －手术后 NEC 与 35948 手术后状态 NEC；
+    /// 而 0 级行 35943 手术(R69) 只有 2 条 分娩 子行，锚住即以祖先兜底展开成 R69.X00，
+    /// 且按覆盖字数排序它永远排在真正的结尾核心词 瘘 之前（工作簿因此读成"主导词=手术"）。
+    /// 万条实测噪声面：JZEY 1361 条 手术/术后 词面输入里 470 条候选含 R69.X00、CAP 189 条里 27 条，
+    /// 双语料 0 条以 R69 为真值；同义词等价类把 术后 写成 手术后 是它扩散到 470 条的通道。
+    /// 只在 手术 就是输入结尾核心词时放行（与单字主导词同一让位判据）。
+    /// </summary>
+    private static bool IsGenericSurgeryAliasOutsideTail(string aliasKey, string inputKey)
+        => aliasKey == GenericSurgeryAlias && !inputKey.EndsWith(GenericSurgeryAlias, StringComparison.Ordinal);
+
     /// <summary>
     /// 索引惯例里的泛化主导词族（情况 = 病，疾病 一族）。它们不携带"这行说的是哪个病"，
     /// 召回层与失效主导词改道层都要用它拦住，只有末位兜底通道允许进入。
@@ -216,6 +234,7 @@ public static class IcdIndexMatcher
                 // 例外二：单字正是本条病历的结尾核心词（见 IsTailCoreWord）。
                 // 心/汗/红 这类单字行只在收尾时锚定，出现在中部（心肌梗死）照旧拦住。
                 if (!alias.RecallAnchor || GenericModifierKeys.Contains(alias.Key)
+                    || IsGenericSurgeryAliasOutsideTail(alias.Key, inputKey)
                     || (alias.Key.Length < 2 && !IsMorphologyLead(lead) && !IsTailCoreWord(alias.Key, inputKey)))
                 {
                     continue;

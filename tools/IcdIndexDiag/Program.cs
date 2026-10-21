@@ -31,6 +31,8 @@ var exportOut = (string?)null;
 var leadsIn = (string?)null;
 var leadsOut = (string?)null;
 var tumorSiteMorph = (string?)null;
+var tumorLedgerIn = (string?)null;
+var tumorLedgerOut = (string?)null;
 var procedureMode = false;
 var cm3TreeSeq = -1;
 var cm3BatchIn = (string?)null;
@@ -97,6 +99,11 @@ for (var i = 0; i < args.Length; i++)
     else if (args[i] == "--tumorsite" && i + 1 < args.Length)
     {
         tumorSiteMorph = args[++i];
+    }
+    else if (args[i] == "--tumorledger" && i + 2 < args.Length)
+    {
+        tumorLedgerIn = args[++i];
+        tumorLedgerOut = args[++i];
     }
     else
     {
@@ -180,6 +187,24 @@ if (batchIn is not null && batchOut is not null)
 {
     // 批量台账固定用生产口径 maxResults=3，便于改动前后逐名 Top1 对比。
     RunBatch(snapshot, dictionary, synonyms, new IcdIndexDiagnosisResolver(8, 3, codeSystem), batchIn, batchOut, tumor);
+    return 0;
+}
+
+// 肿瘤专项台账：逐名同时带出「生产链路交付了什么」与「肿瘤表按各行为位能解出什么部位码」，
+// 用于回答 M8000/3 这类泛形态码该不该丢、丢了以后部位码在表里到底有没有。
+if (tumorLedgerIn is not null && tumorLedgerOut is not null)
+{
+    if (tumor is null)
+    {
+        Console.Error.WriteLine("tumor_index 表为空。");
+        return 1;
+    }
+
+    var ledgerLeadK = int.TryParse(Environment.GetEnvironmentVariable("ICD_INDEX_DIAG_LEADK"), out var parsedLedgerK)
+        ? parsedLedgerK
+        : 8;
+    RunTumorLedger(snapshot, dictionary, synonyms, tumor,
+        new IcdIndexDiagnosisResolver(ledgerLeadK, 3, codeSystem), tumorLedgerIn, tumorLedgerOut);
     return 0;
 }
 
@@ -411,6 +436,58 @@ static void RunBatch(
     File.WriteAllText(outFile, sb.ToString(), new UTF8Encoding(false));
     Console.WriteLine("wrote " + outFile);
 }
+
+/// <summary>
+/// 肿瘤专项台账：逐名同时带出「链路实际交付了什么」与「肿瘤索引表按该行为位能解出什么部位码」，
+/// 用于判定 M8000/3 这类泛形态码是「表里没部位」还是「部位词锚不上表」，两者修法不同。
+/// 输出：名称 \t 交付编码 \t 交付标题 \t Top1证据 \t 交付形态码数 \t 行为位 \t 肿瘤表部位码 \t 肿瘤表候选Top5
+/// </summary>
+static void RunTumorLedger(
+    IcdIndexSnapshot snapshot,
+    IcdDictionarySnapshot dictionary,
+    IcdTermSynonymSnapshot synonyms,
+    TumorIndexSnapshot tumor,
+    IcdIndexDiagnosisResolver resolver,
+    string inFile,
+    string outFile)
+{
+    var sb = new StringBuilder();
+    sb.AppendLine(string.Join('\t',
+        "名称", "交付编码", "交付标题", "Top1证据", "交付形态码数", "行为位", "肿瘤表部位码", "肿瘤表候选Top5"));
+    foreach (var name in File.ReadLines(inFile).Select(line => line.Trim()).Where(line => line.Length > 0))
+    {
+        var results = resolver.Resolve(snapshot, dictionary, name, null, synonyms, tumor: tumor);
+        var morphological = results.Where(item => System.Text.RegularExpressions.Regex
+            .IsMatch(item.Code.ToUpperInvariant(), @"^M\d{4,5}/\d")).ToList();
+        var digit = BehaviorDigitOfInput(name);
+        var site = tumor.TryResolveSiteCode($"M8000/{digit}", name);
+        var candidates = string.Join(" ‖ ", tumor
+            .DescribeCandidates(name, $"M8000/{digit}", 5)
+            .Select(item => $"{item.FullIndexName}[级{item.Level} 别名{item.AliasScore}/{item.AliasLength}字 父路{item.PathScore}"
+                + $" 出码{item.EmittedCode ?? "-"}{(item.TiedWithBest ? " 并列" : "")}]"));
+
+        sb.Append(Sanitize(name))
+            .Append('\t').Append(Sanitize(string.Join("|", results.Select(item => item.Code))))
+            .Append('\t').Append(Sanitize(string.Join("|", results.Select(item => item.Title))))
+            .Append('\t').Append(Sanitize(results.Count > 0 ? results[0].EvidencePath : string.Empty))
+            .Append('\t').Append(morphological.Count)
+            .Append('\t').Append(digit)
+            .Append('\t').Append(site?.Code ?? "-")
+            .Append('\t').Append(Sanitize(candidates))
+            .AppendLine();
+    }
+
+    File.WriteAllText(outFile, sb.ToString(), new UTF8Encoding(false));
+    Console.WriteLine("wrote " + outFile);
+}
+
+/// <summary>输入词面 → 动态码行为位（肿瘤表列）：写 继发/转移 走 /6，良性 /0，原位 /2，动态未定 /1，其余按原发 /3。</summary>
+static string BehaviorDigitOfInput(string name)
+    => name.Contains("继发", StringComparison.Ordinal) || name.Contains("转移", StringComparison.Ordinal) ? "6"
+        : name.Contains("良性", StringComparison.Ordinal) ? "0"
+        : name.Contains("原位", StringComparison.Ordinal) ? "2"
+        : name.Contains("动态未定", StringComparison.Ordinal) || name.Contains("交界", StringComparison.Ordinal) ? "1"
+        : "3";
 
 /// <summary>
 /// 对照导出的明细台账（本地复算，不写库）：每个诊断名先按生产口径（maxResults=3）取推荐，

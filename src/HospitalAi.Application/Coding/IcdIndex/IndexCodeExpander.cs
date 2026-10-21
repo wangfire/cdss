@@ -133,50 +133,51 @@ public static class IndexCodeExpander
             {
                 // 索引已给部位码（M8332/3:C73）→ 直接用，不查肿瘤表；
                 // 裸形态学码（M8510/3）→ 按行为位到肿瘤索引表查特指部位码。
-                var site = parsed.SiteCode;
-                string? siteNote = null;
-                if (site is not { Length: > 0 } && tumor is not null && parsed.MorphologyCode is { } morph)
+                var morph = parsed.MorphologyCode;
+                IReadOnlyList<(string Prefix, string? Note)> families = [];
+                if (parsed.SiteCode is { Length: > 0 } indexSite)
                 {
-                    var match = tumor.TryResolveSiteCode(morph, inputText);
-                    if (match is not null)
+                    families = [(indexSite, null)];
+                }
+                else if (tumor is not null && morph is { } morphologyCode)
+                {
+                    // 肿瘤表解出的并列族（颅◇=C79.5 与 颅(窝，任何)=C79.3 之于 颅底、
+                    // 腹壁 在 神经/皮肤/结缔组织 三族）：表本身分不出，但字典标题分得出——
+                    // 都展开交给字典门控裁决，不再一枪打死整张表。
+                    families = tumor.ResolveSiteCodes(morphologyCode, inputText)
+                        .Select(match => (match.Code, (string?)SiteNote(match, morphologyCode)))
+                        .ToList();
+
+                    // 部位词一个都没锚上表，且形态学码本身不含部位信息（M8000/x 肿瘤、M8010/x 癌）：
+                    // 交付肿瘤表对"未特指部位"给的码（C80 / D36.9 / D09.9 / D48.9），
+                    // 而不是 M80000/3 这种补零后仍然没有部位的形态学码。
+                    if (families.Count == 0 && IsSitelessMorphology(morphologyCode)
+                        && tumor.ResolveUnspecifiedSiteCode(morphologyCode) is { } unspecified)
                     {
-                        site = match.Code;
-                        siteNote = $"形态学编码 {morph} 按动态码 {match.BehaviorDigit}「{match.ColumnName}」"
-                            + $"在肿瘤索引查得部位: {match.DisplayPath}";
+                        families =
+                        [
+                            (unspecified.Code, $"形态学编码 {morphologyCode} 不含部位信息，"
+                                + $"按动态码 {unspecified.BehaviorDigit}「{unspecified.ColumnName}」"
+                                + $"取肿瘤索引表未特指部位码: {unspecified.DisplayPath}")
+                        ];
                     }
                 }
 
-                if (site is { Length: > 0 })
+                if (families.Count > 0)
                 {
-                    var items = ExpandByPrefix(
-                        site.ToUpperInvariant(), dictionary, inputText, inputKey, pathKey,
-                        parsed.Kind, excludeJoint: false, inAlternatives,
-                        note: siteNote is null ? $"形态学编码 {parsed.MorphologyCode}" : $"{siteNote}（形态学编码 {parsed.MorphologyCode}）");
+                    var items = families
+                        .SelectMany(family => ExpandSiteFamily(
+                            family.Prefix, family.Note, morph, dictionary,
+                            inputText, inputKey, pathKey, parsed.Kind, inAlternatives))
+                        .ToList();
                     if (items.Count > 0)
                     {
-                        return MergeMorphologyDetailed(items, parsed.MorphologyCode, dictionary, inputText, inputKey, pathKey, tumor);
-                    }
-
-                    // 肿瘤表判定的部位前缀在字典里过不了常规门控（输入还写着术式/炎症等修饰词）时，
-                    // 取该部位前缀最泛码——索引链路已完成语义验证，部位词本身就是索引给的。
-                    var relaxed = dictionary.Prefix(site.ToUpperInvariant())
-                        .Where(row => !row.Code.StartsWith('M') && !row.Code.Contains('+', StringComparison.Ordinal))
-                        .OrderBy(row => row.Code.Length)
-                        .ThenBy(row => row.Code, StringComparer.Ordinal)
-                        .FirstOrDefault();
-                    if (relaxed is not null)
-                    {
-                        return MergeMorphologyDetailed(
-                            [new ExpandedItem(
-                                relaxed.CodeSystemCode, relaxed.Code, relaxed.Title,
-                                0.72m, parsed.Kind,
-                                IsIndexFallback: false,
-                                IsConditionalAddOn: false,
-                                Note: ((siteNote is null ? $"形态学编码 {parsed.MorphologyCode}" : siteNote)
-                                    + "；字典门控未命中，取部位前缀最泛码"),
-                                TitleSpecificity: TextMatch.CoverageOf(
-                                    TextMatch.NormalizeKey(relaxed.Title), inputKey).Ratio)],
-                            parsed.MorphologyCode, dictionary, inputText, inputKey, pathKey, tumor);
+                        // 无部位形态学码的 5 位详码（M80000/3 恶性肿瘤）与它查表得到的部位码同义不同写，
+                        // 不能再占交付席位；有部位信息的形态学码（M8460/0 浆液性乳头状囊腺瘤）仍作粒度补充附上。
+                        return IsSitelessMorphology(morph)
+                            ? items
+                            : MergeMorphologyDetailed(
+                                items, morph, dictionary, inputText, inputKey, pathKey, tumor);
                     }
                 }
 
@@ -537,6 +538,83 @@ public static class IndexCodeExpander
         _ = pathKey;
         _ = inputText;
         return Rank(items).Take(3).ToList();
+    }
+
+    /// <summary>部位码来源证据：肿瘤索引表的哪一列、哪条路径解出的这个部位。</summary>
+    private static string SiteNote(TumorSiteMatch match, string morphologyCode)
+        => $"形态学编码 {morphologyCode} 按动态码 {match.BehaviorDigit}「{match.ColumnName}」"
+            + $"在肿瘤索引查得部位: {match.DisplayPath}";
+
+    // 无部位语义的形态学码根：M8000 肿瘤、M8010 癌（上皮性肿瘤）——它们只说"是个肿瘤"，
+    // 补零成 5 位（M80000/3）也还是没有部位，编码口径上必须回肿瘤索引表拿"未特指部位"码或部位码。
+    private static readonly string[] SitelessMorphologyRoots = ["M8000", "M8010"];
+
+    /// <summary>形态学码（M8000/3、M80100/2）是否属于"只说肿瘤、不说部位"的泛码族。
+    /// 诊断侧的覆盖度记账也按这条判据（见 <c>IcdIndexDiagnosisResolver.TumorSiteAliasFaces</c>）：
+    /// 只有泛码链路的部位信息完全来自肿瘤表，特异形态码（M9160/0 骨内血管瘤）自带疾病身份，
+    /// 输入里的部位词不是它的证据。</summary>
+    public static bool IsSitelessMorphology(string? morphologyCode)
+    {
+        var slash = morphologyCode?.IndexOf('/') ?? -1;
+        if (morphologyCode is not { Length: >= 6 } || slash < 0)
+        {
+            return false;
+        }
+
+        // 索引写 4 位（M8000/3），字典详码是补零的 5 位（M80000/3）：两种写法都算泛码。
+        var root = morphologyCode[..slash];
+        return SitelessMorphologyRoots.Any(candidate =>
+            root.StartsWith(candidate, StringComparison.OrdinalIgnoreCase)
+            && (root.Length == candidate.Length
+                || (root.Length == candidate.Length + 1 && root[^1] == '0')));
+    }
+
+    /// <summary>
+    /// 一个肿瘤部位码族 → 候选：先按常规门控展开该前缀；字典门控全挡（输入还写着术式/化疗等修饰词）
+    /// 时取该前缀最泛码——部位词是索引链路或肿瘤表给的，语义已验证，形态学详码不是诊断。
+    /// 并列族逐族走同一条口径，否则第二族展不开会把整批部位候选一起丢掉（腹壁及腹腔转移癌 退回 M80100/6）。
+    /// </summary>
+    private static IReadOnlyList<ExpandedItem> ExpandSiteFamily(
+        string site,
+        string? siteNote,
+        string? morphologyCode,
+        IcdDictionarySnapshot dictionary,
+        string inputText,
+        string inputKey,
+        string pathKey,
+        IndexCodeFormatKind format,
+        bool inAlternatives)
+    {
+        var prefix = site.ToUpperInvariant();
+        var noteHead = siteNote is null
+            ? $"形态学编码 {morphologyCode}"
+            : $"{siteNote}（形态学编码 {morphologyCode}）";
+        var items = ExpandByPrefix(
+            prefix, dictionary, inputText, inputKey, pathKey, format,
+            excludeJoint: false, inAlternatives, note: noteHead);
+        if (items.Count > 0)
+        {
+            return items;
+        }
+
+        var relaxed = dictionary.Prefix(prefix)
+            .Where(row => !row.Code.StartsWith('M') && !row.Code.Contains('+', StringComparison.Ordinal))
+            .OrderBy(row => row.Code.Length)
+            .ThenBy(row => row.Code, StringComparer.Ordinal)
+            .FirstOrDefault();
+        return relaxed is null
+            ? []
+            :
+            [
+                new ExpandedItem(
+                    relaxed.CodeSystemCode, relaxed.Code, relaxed.Title,
+                    0.72m, format,
+                    IsIndexFallback: false,
+                    IsConditionalAddOn: false,
+                    Note: noteHead + "；字典门控未命中，取部位前缀最泛码",
+                    TitleSpecificity: TextMatch.CoverageOf(
+                        TextMatch.NormalizeKey(relaxed.Title), inputKey).Ratio),
+            ];
     }
 
     /// <summary>部位码展开与形态学详码候选合并（部位候选在前，形态学详码补充粒度选项）。</summary>

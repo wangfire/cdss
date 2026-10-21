@@ -25,13 +25,16 @@ public interface ITumorIndexSource
     void Invalidate();
 }
 
-/// <summary>部位查找产出：形态学码行为位对应的肿瘤表列值与命中路径。</summary>
+/// <summary>部位查找产出：形态学码行为位对应的肿瘤表列值与命中路径。
+/// AliasText 是把输入锚到该部位行上的别名词面（已归一化、必为输入的子串），
+/// 未特指兜底行没有部位词面，留空。</summary>
 public sealed record TumorSiteMatch(
     int NodeSeqNo,
     string Code,
     string DisplayPath,
     char BehaviorDigit,
-    string ColumnName);
+    string ColumnName,
+    string AliasText = "");
 
 /// <summary>诊断投影：输入命中的部位行与排序键（离线台账排查"查不到/双亲并列"用）。
 /// EmittedCode 是该行按所查行为位实际会发出的部位码，TiedWithBest 表示与最优行同名次（并列解出不同码就放弃查表）。</summary>
@@ -78,6 +81,9 @@ public sealed class TumorIndexSnapshot
 
         /// <summary>祖先核心词（不含根与本节点），父路径消歧用。</summary>
         public string[] PathWords { get; set; } = [];
+
+        /// <summary>所属主导词族（1 级行自身）。同族内的层级是特指程度，跨族不是（见 SameSiteRank）。</summary>
+        public int FamilySeqNo { get; set; }
     }
 
     // 行为位 → 列下标（ICD-O 动态编码；/9 恶性未特指原发继发，按原发处理）
@@ -124,7 +130,7 @@ public sealed class TumorIndexSnapshot
 
             var parsed = IcdIndexSnapshotBuilder.ParseNode(new IcdIndexRow(
                 row.SeqNo, row.IndexName, null, row.IndexLevel, row.ParentSeqNo, 0));
-            var coreTerm = TrimClassifierSuffix(parsed.CoreTerm);
+            var coreTerm = StripClassifierTokens(StripTableMarkers(parsed.CoreTerm));
             nodes[row.SeqNo] = new Node
             {
                 SeqNo = row.SeqNo,
@@ -132,7 +138,7 @@ public sealed class TumorIndexSnapshot
                 ParentSeqNo = row.ParentSeqNo,
                 Term = parsed.Term,
                 CoreTerm = coreTerm,
-                Aliases = WithTrimmedClassifierAliases(parsed.Aliases),
+                Aliases = WithCoreTermAlias(WithTrimmedClassifierAliases(WithMarkerStrippedAliases(parsed.Aliases)), coreTerm),
                 JumpKind = row.JumpKind,
                 JumpTarget = row.JumpTarget,
                 FullIndexName = row.FullIndexName,
@@ -145,12 +151,12 @@ public sealed class TumorIndexSnapshot
         }
 
         var root = nodes.Values.FirstOrDefault(node => node.Level == 0);
-        var snapshot = new TumorIndexSnapshot(nodes, root?.SeqNo ?? 0);
+        var rootSeqNo = root?.SeqNo ?? 0;
         foreach (var node in nodes.Values)
         {
             var chain = new List<string>();
             var parent = node.ParentSeqNo;
-            while (parent != 0 && nodes.TryGetValue(parent, out var ancestor) && ancestor.SeqNo != root?.SeqNo)
+            while (parent != 0 && nodes.TryGetValue(parent, out var ancestor) && ancestor.SeqNo != rootSeqNo)
             {
                 if (ancestor.CoreTerm.Length >= 1)
                 {
@@ -163,7 +169,18 @@ public sealed class TumorIndexSnapshot
             node.PathWords = [.. chain];
         }
 
-        return snapshot;
+        // 主导词族 = 1 级行本身（它自己的父行是表名行）。同族内的层级就是特指程度，
+        // 跨族才需要并列（见 SameRank）。按层级由浅入深赋值，父行必先于子行完成。
+        foreach (var node in nodes.Values.OrderBy(item => item.Level))
+        {
+            node.FamilySeqNo = node.Level <= 1
+                ? node.SeqNo
+                : nodes.TryGetValue(node.ParentSeqNo, out var parent) && parent.SeqNo != rootSeqNo
+                    ? parent.FamilySeqNo
+                    : node.SeqNo;
+        }
+
+        return new TumorIndexSnapshot(nodes, rootSeqNo);
     }
 
     /// <summary>
@@ -183,7 +200,7 @@ public sealed class TumorIndexSnapshot
             .Select(item => new TumorSiteCandidate(
                 item.Node.SeqNo, item.Node.ParentSeqNo, item.Node.Level, item.Node.FullIndexName,
                 item.Node.CoreTerm, item.Node.JumpKind, item.AliasScore, item.PathScore, item.AliasLength,
-                best is not null && SameRank(item, best), Emit(item.Node, column, digit)?.Code))
+                best is not null && SameSiteRank(item, best), Emit(item.Node, column, digit, item.AliasText)?.Code))
             .ToList();
     }
 
@@ -242,26 +259,36 @@ public sealed class TumorIndexSnapshot
 
     /// <summary>
     /// 形态学码（M8510/3）+ 输入文本 → 肿瘤表部位码。
-    /// 精度优先：并列最优行解出不同部位码、或列值沿父链仍取不到时返回 null，
-    /// 由调用方回退索引自带的"未特指部位"码（空推荐好过错推荐）。
+    /// 并列最优行解出不同部位码时不硬猜，但也不再一枪打死整张表：把并列的这几个部位码都交出去，
+    /// 由调用方按字典门控裁决（哪个码族里有与输入逐字相等的标题，谁上 Top1）。
     /// </summary>
     public TumorSiteMatch? TryResolveSiteCode(string morphologyCode, string inputText)
+        => ResolveSiteCodes(morphologyCode, inputText).FirstOrDefault();
+
+    /// <summary>
+    /// 形态学码 + 输入文本 → 肿瘤表部位码列表（按排序键名次，最多 maxCodes 个互不相同的码）。
+    /// 单码时列表长度为 1；并列解出不同码时按名次给出并列族，让字典门控去分辨
+    /// （颅底继发恶性肿瘤 的 颅◇=C79.5 与 颅(窝，任何)=C79.3 谁对，字典标题 颅底继发恶性肿瘤 挂在 C79.3 下）。
+    /// 列值沿父链仍取不到、或输入没有部位词时返回空列表——空推荐好过错推荐。
+    /// </summary>
+    public IReadOnlyList<TumorSiteMatch> ResolveSiteCodes(
+        string morphologyCode, string inputText, int maxCodes = 3)
     {
         if (ResolveBehaviorColumn(morphologyCode) is not (var column, var digit))
         {
-            return null;
+            return [];
         }
 
         var inputKey = TextMatch.StripUncertaintyPhrases(inputText);
         if (inputKey.Length < 2)
         {
-            return null;
+            return [];
         }
 
         var candidates = CollectCandidates(inputKey);
         if (candidates.Count == 0)
         {
-            return null;
+            return [];
         }
 
         var sorted = RankCandidates(candidates);
@@ -273,32 +300,68 @@ public sealed class TumorIndexSnapshot
         for (var from = 0; from < sorted.Count;)
         {
             var anchor = sorted[from];
-            var group = sorted.Skip(from).TakeWhile(item => SameRank(item, anchor)).ToList();
+            var group = sorted.Skip(from)
+                .TakeWhile(item => SameSiteRank(item, anchor))
+                .ToList();
             from += group.Count;
 
             var emitted = group
-                .Select(item => Emit(item.Node, column, digit))
+                .Select(item => Emit(item.Node, column, digit, item.AliasText))
                 .Where(match => match is not null)
                 .Select(match => match!)
                 .ToList();
             if (emitted.Count > 0)
             {
-                return emitted.All(match => string.Equals(match.Code, emitted[0].Code, StringComparison.OrdinalIgnoreCase))
-                    ? emitted[0]
-                    : null;
+                // 一致 → 一个码；不一致 → 把并列族按名次去重交给字典门控裁决，最多 maxCodes 个。
+                var distinct = new List<TumorSiteMatch>();
+                foreach (var match in emitted)
+                {
+                    if (distinct.All(item => !string.Equals(item.Code, match.Code, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        distinct.Add(match);
+                        if (distinct.Count >= maxCodes)
+                        {
+                            break;
+                        }
+                    }
+                }
+
+                return distinct;
             }
 
             if (from >= sorted.Count || !string.Equals(sorted[from].AliasText, anchor.AliasText, StringComparison.Ordinal))
             {
-                return null;
+                return [];
             }
         }
 
-        return null;
+        return [];
     }
 
-    /// <summary>命中行 → 部位码：先跟 见 指针，再沿父链取该行为位列的值。</summary>
-    private TumorSiteMatch? Emit(Node node, int column, char digit)
+    /// <summary>
+    /// 没有部位语义的形态学码（M8000/3 恶性肿瘤、M8010/2 原位癌，部位词一个都锚不上表时）→
+    /// 肿瘤表根本行该行为位列的"未特指部位"码（/3 C80、/2 D09.9、/0 D36.9、/1 D48.9）。
+    /// 这就是肿瘤索引表对"只写了肿瘤、没写部位"的病案给出的答案，比交付 M80000/3 更符合编码口径。
+    /// 不参与 <see cref="Emit"/> 的父链上溯（那条上溯明确止步于根行），只读根行自身的列值。
+    /// </summary>
+    public TumorSiteMatch? ResolveUnspecifiedSiteCode(string morphologyCode)
+    {
+        if (ResolveBehaviorColumn(morphologyCode) is not (var column, var digit))
+        {
+            return null;
+        }
+
+        if (!_nodes.TryGetValue(RootSeqNo, out var root) || root.Codes[column] is not { Length: > 0 } code)
+        {
+            return null;
+        }
+
+        return new TumorSiteMatch(root.SeqNo, code, root.FullIndexName, digit, ColumnNames[column]);
+    }
+
+    /// <summary>命中行 → 部位码：先跟 见 指针，再沿父链取该行为位列的值。
+    /// aliasText 是把输入锚住该行的别名词面，随码一起交出（覆盖度记账用，不参与选码）。</summary>
+    private TumorSiteMatch? Emit(Node node, int column, char digit, string aliasText)
     {
         var resolved = FollowPointer(node);
         if (resolved is null)
@@ -313,7 +376,8 @@ public sealed class TumorIndexSnapshot
         {
             if (current.Codes[column] is { Length: > 0 } code)
             {
-                return new TumorSiteMatch(current.SeqNo, code, current.FullIndexName, digit, ColumnNames[column]);
+                return new TumorSiteMatch(current.SeqNo, code, current.FullIndexName, digit,
+                    ColumnNames[column], aliasText);
             }
 
             current = current.ParentSeqNo != 0 && _nodes.TryGetValue(current.ParentSeqNo, out var parent)
@@ -391,8 +455,9 @@ public sealed class TumorIndexSnapshot
             .ThenByDescending(item => item.PathScore)
             .ThenBy(item => segments.Length == 1 ? item.Node.Level : -item.Node.Level)
             .First();
-        // 目标词在本表多处（如 窦 在鼻与副鼻窦）且父段无法区分 → 放弃
-        return matched.Count(item => SameRank(item, top)) == 1 ? top.Node : null;
+        // 目标词在本表多处（如 窦 在鼻与副鼻窦）且父段无法区分 → 放弃。
+        // 这里层级是歧义判据（见 SameRank 注释）：1 级 乳房 与 皮肤树下的 2 级 －－乳房 是不同器官，不能判成并列。
+        return matched.Count(item => SamePointerRank(item, top)) == 1 ? top.Node : null;
     }
 
     /// <summary>
@@ -437,6 +502,63 @@ public sealed class TumorIndexSnapshot
 
         return current;
     }
+
+    /// <summary>
+    /// ICD-O 肿瘤表沿用的分区标记：◇ 标骨与关节、# 标皮肤与软组织。
+    /// 它们既不算标点也不算空白，<see cref="TextMatch.NormalizeKey"/> 原样留在别名键里，
+    /// 别名就成了 骨◇ / 颅◇ / 骶骨◇，输入写 骨 / 颅 / 骶骨 永远锚不上表（全表 100 行带标记）。
+    /// </summary>
+    private const string TableMarkerCharacters = "◇◆○●▲△※#＃†‡";
+
+    private static string StripTableMarkers(string text)
+        => string.Concat(text.Where(ch => !TableMarkerCharacters.Contains(ch))).Trim();
+
+    private static IReadOnlyList<IcdIndexAlias> WithMarkerStrippedAliases(IReadOnlyList<IcdIndexAlias> aliases)
+    {
+        var result = new List<IcdIndexAlias>(aliases.Count);
+        foreach (var alias in aliases)
+        {
+            var key = StripTableMarkers(alias.Key);
+            if (key.Length == 0)
+            {
+                continue;
+            }
+
+            var matchKey = StripTableMarkers(alias.MatchKey);
+            result.Add(alias with { Key = key, MatchKey = matchKey.Length > 0 ? matchKey : key });
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 把"本行讲的部位词"补成一条满权重别名。ParseAliases 先按 [或，、] 切段、再剥成对括号，
+    /// 所以 "颅(窝，任何)" 的别名集合只有 颅窝/任何，主导词本身 颅 从未进过别名；
+    /// 颅底继发恶性肿瘤 因此一个部位候选都找不到（表里 C79.3 就挂在 颅(窝，任何) 行上）。
+    /// CoreTerm 是括号与分区标记都剥干净后的词面，正是编码员读到的主导词。
+    /// </summary>
+    private static IReadOnlyList<IcdIndexAlias> WithCoreTermAlias(
+        IReadOnlyList<IcdIndexAlias> aliases, string coreTerm)
+    {
+        var key = TextMatch.NormalizeKey(StripClassifierTokens(coreTerm));
+        if (key.Length == 0
+            || aliases.Any(alias => string.Equals(alias.MatchKey, key, StringComparison.Ordinal)))
+        {
+            return aliases;
+        }
+
+        return [.. aliases, new IcdIndexAlias(key, 1.0m, key)];
+    }
+
+    /// <summary>词面中间的 NEC/NOS 也是分类标记（关节 NEC (另见 肿瘤，骨)◇），整体剥掉；剥空则保留原词。</summary>
+    private static string StripClassifierTokens(string text)
+    {
+        var stripped = ClassifierTokenRegex.Replace(TrimClassifierSuffix(text), " ").Trim();
+        return stripped.Length == 0 ? text : stripped;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex ClassifierTokenRegex =
+        new(@"(?i)\b(NEC|NOS)\b", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     private static IReadOnlyList<IcdIndexAlias> WithTrimmedClassifierAliases(IReadOnlyList<IcdIndexAlias> aliases)
     {
@@ -524,11 +646,29 @@ public sealed class TumorIndexSnapshot
         public string AliasText { get; } = aliasText;
     }
 
-    /// <summary>同一排序键（匹配质量 / 直接行-指针行 / 父路径覆盖 / 词面长度 / 层级）= 并列，需要看解出的码是否一致。</summary>
-    private static bool SameRank(Candidate left, Candidate right)
+    /// <summary>排序键的公共前四键：匹配质量 / 直接行-指针行 / 父路径覆盖 / 词面长度。</summary>
+    private static bool SameMatchKeys(Candidate left, Candidate right)
         => left.AliasScore == right.AliasScore
             && (left.Node.JumpKind != 0) == (right.Node.JumpKind != 0)
             && left.PathScore == right.PathScore
-            && left.AliasLength == right.AliasLength
-            && left.Node.Level == right.Node.Level;
+            && left.AliasLength == right.AliasLength;
+
+    /// <summary>
+    /// 指针目标歧义判据（另见 肿瘤，乳房 这类目标词在表里多处）：层级必须参与。
+    /// 去掉它实测否决——乳腺/肌肉/滑膜 一族 6 行被 皮肤树下的 2 级 －－乳房 判成歧义，
+    /// 指针跟不动就回退成裸形态学码或泛码（CAP Top1 +5/−6、JZEY 肿瘤子集 Top1 −2 且"该改查肿瘤表"面 48→70）。
+    /// </summary>
+    private static bool SamePointerRank(Candidate left, Candidate right)
+        => SameMatchKeys(left, right) && left.Node.Level == right.Node.Level;
+
+    /// <summary>
+    /// 查表并列判据：同族（1 级主导词相同）时层级就是特指程度，口(1级 C06.9) 与 口－底(2级 C04.9)
+    /// 必须分层，判成并列会把 C06.9 一起交给字典门控（口底/硬腭/小肠/直乙交界 实测掉码）；
+    /// 跨族时层级只是表里谁挂得深，不是病案信息——会厌舌骨上良性肿瘤 的 骨◇－舌骨(2级 D16.4)
+    /// 与 会厌(1级 D14.1) 判成并列都交出去，精确标题 会厌舌骨上良性肿瘤 才会在 D14.1 族里赢。
+    /// </summary>
+    private static bool SameSiteRank(Candidate left, Candidate right)
+        => SameMatchKeys(left, right)
+            && (left.Node.Level == right.Node.Level
+                || left.Node.FamilySeqNo != right.Node.FamilySeqNo);
 }

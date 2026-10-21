@@ -501,6 +501,9 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         }
 
         var parsed = ParsedIndexCode.Parse(indexCode);
+        // 肿瘤表解部位码所依据的部位别名词面：索引链路词面（"瘤"）解释不了的病历部位信息，
+        // 在查表这一步被真实用过了，必须计入覆盖度，否则整条形态学链路会被 0.30 门槛打掉。
+        var tumorFaces = TumorSiteAliasFaces(parsed, tumor, inputText);
         var pathDisplay = string.Join(" → ", drill.Path.Select(node => node.Term));
         if (drill.Jumps.Count > 0)
         {
@@ -540,13 +543,13 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         // 30% 门槛仍按完整链路算：透明化不该让任何既有链路新掉进门控（打空硬线）。
         var evidencePath = drill.Path.Where(node => !IcdIndexMatcher.IsConnectorNode(node)).ToList();
         var evidenceOverlap = evidencePath.Count == drill.Path.Count
-            ? PathOverlapRatio(drill.Path, inputText)
-            : PathOverlapRatio(evidencePath, inputText);
+            ? PathOverlapRatio(drill.Path, inputText, tumorFaces)
+            : PathOverlapRatio(evidencePath, inputText, tumorFaces);
         var depthBoost = 1m + 0.05m * evidencePath.Count;
         // 链路字符重叠门控：主导词+下钻路径（取各节点与输入重叠最好的别名变体）
         // 必须解释输入 30% 以上字符，否则视为无关链路直接丢弃；重叠度并入评分做精排。
         // 跨部位误下钻（基底节/结核/牙源性）由主导词与子树限定词门控拦截，此处阈值只兜底。
-        var pathOverlap = PathOverlapRatio(drill.Path, inputText);
+        var pathOverlap = PathOverlapRatio(drill.Path, inputText, tumorFaces);
         if (pathOverlap < 0.30m)
         {
             return false;
@@ -612,7 +615,39 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
             && (child.CoreTerm.Contains("未特指部位", StringComparison.Ordinal)
                 || child.CoreTerm.Contains("部位未特指", StringComparison.Ordinal)));
 
-    private static decimal PathOverlapRatio(IReadOnlyList<IcdIndexNode> path, string inputText)
+    /// <summary>
+    /// 肿瘤表解部位码时真实用到的部位别名词面（只给"泛形态学码"链路：索引写 M8000/1，部位全靠查表）。
+    /// 口径与 <see cref="PathOverlapRatio"/> 一致——只计"输入里真写出来的字符"，
+    /// 所以只有查表解出了码的行所锚定的词面才算证据；表落空、走"未特指部位"兜底时返回空集，
+    /// 不给任何加成（免得让位轮交付的 C80/D36.9 这类无部位链路自己给自己抬覆盖度）。
+    /// 索引已自带部位码（M8332/3:C73）时不查表，证据本就由链路词面承担。
+    ///
+    /// 限定到 <see cref="IndexCodeExpander.IsSitelessMorphology"/>（M8000/M8010）是实测出来的：
+    /// 放开到特异形态码后，"血管瘤" 的 上肢/下肢/背部 这些部位词给 43920 纤维血管瘤 M9160/0
+    /// （骨内血管瘤，靠别名 血管瘤 沾住输入）刷满覆盖度，把索引明示"任何部位"的
+    /// 43920 血管瘤 M9120/0:D18.0 顶下 Top1——万条实测 9 条这类流失（右上肢血管瘤 D18.000X001→D16.100 等）。
+    /// 特异形态码本身就说清了疾病，部位词不是它的证据，不该拿这份加成。
+    /// </summary>
+    private static IReadOnlyList<string> TumorSiteAliasFaces(
+        ParsedIndexCode parsed, TumorIndexSnapshot? tumor, string inputText)
+    {
+        if (tumor is null
+            || parsed.Kind != IndexCodeFormatKind.Morphology
+            || parsed.SiteCode is { Length: > 0 }
+            || parsed.MorphologyCode is not { Length: > 0 } morphology
+            || !IndexCodeExpander.IsSitelessMorphology(morphology))
+        {
+            return [];
+        }
+
+        return tumor.ResolveSiteCodes(morphology, inputText)
+            .Where(match => match.AliasText.Length > 0)
+            .Select(match => match.AliasText)
+            .ToList();
+    }
+
+    private static decimal PathOverlapRatio(
+        IReadOnlyList<IcdIndexNode> path, string inputText, IReadOnlyList<string>? extraFaces = null)
     {
         var inputKey = TextMatch.StripIndexingFillers(inputText);
         if (inputKey.Length == 0)
@@ -646,6 +681,11 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
             {
                 covered.UnionWith(TextMatch.NormalizeKey(variant).Where(inputCharacters.Contains));
             }
+        }
+
+        foreach (var face in extraFaces ?? [])
+        {
+            covered.UnionWith(TextMatch.NormalizeKey(face).Where(inputCharacters.Contains));
         }
 
         return covered.Count / (decimal)inputCharacters.Count;

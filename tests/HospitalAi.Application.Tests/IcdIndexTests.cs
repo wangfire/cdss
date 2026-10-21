@@ -2095,4 +2095,278 @@ public sealed class IcdIndexTests
         Assert.Equal("I35.9", drill!.CodeNode.Code);
         Assert.DoesNotContain("二尖瓣疾病", string.Join(" → ", drill.Path.Select(node => node.Term)));
     }
+
+    private static TumorIndexRow TumorRoot() => new(
+        1, "肿瘤，肿瘤性", 0, 0, "肿瘤，肿瘤性", "C80", "C80", "D09.9", "D36.9", "D48.9", 0, null);
+
+    [Fact]
+    public void 肿瘤表_分区标记不挡住部位主导词锚定()
+    {
+        // ICD-O 肿瘤表的 骨/骶骨 行词面挂着分区标记 ◇（标骨与关节），它既不算标点也不算空白，
+        // NormalizeKey 原样留在别名键里 → 别名成了 骨◇ / 骶骨◇，输入写 骶骨 一个候选都找不到，
+        // 链路终点就只剩泛形态码 M8000/0 可交付（全表 100 行带标记）。
+        var snapshot = TumorIndexSnapshot.Build([
+            TumorRoot(),
+            new TumorIndexRow(277, "骨(骨膜)◇", 1, 1, "肿瘤，肿瘤性 骨(骨膜)◇",
+                "C41.0", "C79.5", null, "D16.9", "D48.0", 0, null),
+            new TumorIndexRow(288, "骶骨", 2, 277, "肿瘤，肿瘤性 骨(骨膜)◇ 骶骨",
+                "C41.4", "C79.5", null, "D16.8", "D48.0", 0, null),
+        ]);
+
+        var match = snapshot.TryResolveSiteCode("M8000/0", "骶骨良性肿瘤");
+
+        Assert.Equal("D16.8", match?.Code);
+        Assert.Equal("良性", match?.ColumnName);
+    }
+
+    [Fact]
+    public void 肿瘤表_括号注释被逗号切段后主导词本身仍进别名()
+    {
+        // ParseAliases 先按 [或，、] 切段、再剥成对括号，"颅(窝，任何)" 的别名只剩 颅窝/任何，
+        // 主导词 颅 从未进过别名集：颅底继发恶性肿瘤 锚不到挂着 C79.3 的这一行。
+        var snapshot = TumorIndexSnapshot.Build([
+            TumorRoot(),
+            new TumorIndexRow(731, "颅(窝，任何)", 1, 1, "肿瘤，肿瘤性 颅(窝，任何)",
+                "C71.9", "C79.3", null, "D33.2", "D43.2", 0, null),
+        ]);
+
+        Assert.Equal("C79.3", snapshot.TryResolveSiteCode("M8000/6", "颅窝继发恶性肿瘤")?.Code);
+        Assert.Equal("C79.3", snapshot.TryResolveSiteCode("M8000/6", "颅底继发恶性肿瘤")?.Code);
+    }
+
+    [Fact]
+    public void 肿瘤表_同一部位词多处并列时交出门诊字典门控裁决()
+    {
+        // 表里 颅 有两行：颅◇（骨与关节，C79.5）与 颅(窝，任何)（颅内，C79.3）。
+        // 病案写 颅底 分不出是哪一行，过去整张表被判"信息不足"直接放弃 → 交付只剩泛形态码 M80000/6；
+        // 现在把并列族都交出去，由字典展开的覆盖度决定 Top1（C79.3 族里有 颅底继发恶性肿瘤 这条精确标题）。
+        var snapshot = TumorIndexSnapshot.Build([
+            TumorRoot(),
+            new TumorIndexRow(730, "颅◇", 1, 1, "肿瘤，肿瘤性 颅◇",
+                "C41.0", "C79.5", null, "D16.4", "D48.0", 0, null),
+            new TumorIndexRow(731, "颅(窝，任何)", 1, 1, "肿瘤，肿瘤性 颅(窝，任何)",
+                "C71.9", "C79.3", null, "D33.2", "D43.2", 0, null),
+        ]);
+
+        var tied = snapshot.ResolveSiteCodes("M8000/6", "颅底继发恶性肿瘤");
+
+        Assert.Equal(["C79.3", "C79.5"], tied.Select(item => item.Code));
+    }
+
+    [Fact]
+    public void 肿瘤表_跨主导词族的深浅行判成并列交出门控()
+    {
+        // 会厌舌骨上：表里 舌骨 挂在 骨(骨膜)◇ 树下（骨癌 D16.4），会厌 自己是另一条主导词（D14.1）。
+        // 单字 骨 被 舌骨 吃掉 → 父路径覆盖率同样算 1，只剩层级分胜负，深层行独赢就交出骨癌。
+        // 跨族时层级不是特指程度：把两行判成并列都交出去，字典门控按精确标题 会厌舌骨上良性肿瘤 选 D14.1 族。
+        var snapshot = TumorIndexSnapshot.Build([
+            TumorRoot(),
+            new TumorIndexRow(277, "骨(骨膜)◇", 1, 1, "肿瘤，肿瘤性 骨(骨膜)◇",
+                "C41.0", "C79.5", null, "D16.9", "D48.0", 0, null),
+            new TumorIndexRow(335, "舌骨", 2, 277, "肿瘤，肿瘤性 骨(骨膜)◇ 舌骨",
+                "C41.0", "C79.5", null, "D16.4", "D48.0", 0, null),
+            new TumorIndexRow(433, "会厌", 1, 1, "肿瘤，肿瘤性 会厌",
+                "C32.1", "C78.3", "D02.0", "D14.1", "D38.0", 0, null),
+        ]);
+
+        Assert.Equal(
+            ["D16.4", "D14.1"],
+            snapshot.ResolveSiteCodes("M8000/0", "会厌舌骨上良性肿瘤").Select(item => item.Code));
+
+        // 骨 的 2 级行肿瘤表没给原位列，跨族并列正好让它不再独占最优组——按 /2 只剩 会厌 一个码。
+        Assert.Equal(
+            ["D02.0"],
+            snapshot.ResolveSiteCodes("M8010/2", "会厌舌骨上原位癌").Select(item => item.Code));
+    }
+
+    [Fact]
+    public void 肿瘤表_同族父子行按层级分层不并列()
+    {
+        // 口底 的 口(腔) 树：1 级 口 出 C06.9、2 级 －－底 出 C04.9，单字 口/底 同分同覆盖。
+        // 同一主导词族里"挂得深"就是病案写了亚部位，判成并列会把 C06.9 一起交给门控，
+        // 实测 口底鳞状细胞癌/硬腭/小肠/直乙交界 4 族因此丢掉已解出的部位码（JZEY 类目 Top1 −7）。
+        var snapshot = TumorIndexSnapshot.Build([
+            TumorRoot(),
+            new TumorIndexRow(585, "口(腔)", 1, 1, "肿瘤，肿瘤性 口(腔)",
+                "C06.9", "C79.8", "D00.0", "D10.0", "D37.0", 0, null),
+            new TumorIndexRow(586, "底", 2, 585, "肿瘤，肿瘤性 口(腔) 底",
+                "C04.9", "C79.8", "D00.6", "D10.1", "D37.4", 0, null),
+        ]);
+
+        Assert.Equal(
+            ["C04.9"],
+            snapshot.ResolveSiteCodes("M8070/3", "口底鳞状细胞癌").Select(item => item.Code));
+    }
+
+    [Fact]
+    public void 肿瘤表_见指针目标跨层级时仍按层级判唯一()
+    {
+        // 乳腺 - 见 肿瘤，乳房：目标词在表里两处（1 级器官行、皮肤树下的 2 级行）。
+        // 指针目标只按词面找，层级是唯一的分辨依据；把它并进 查表并列 那套判据（不看层级）
+        // 就判成歧义返回 null，乳腺良性肿瘤 只能退回裸形态码（万名实测 6 行掉码，已否决）。
+        var snapshot = TumorIndexSnapshot.Build([
+            TumorRoot(),
+            new TumorIndexRow(980, "乳腺 - 见 肿瘤，乳房", 1, 1, "肿瘤，肿瘤性 乳腺",
+                null, null, null, null, null, 1, "肿瘤，乳房"),
+            new TumorIndexRow(900, "乳房(结缔组织)(腺组织)(软组织)", 1, 1, "肿瘤，肿瘤性 乳房",
+                "C50.9", "C78.3", "D05.9", "D24", "D48.6", 0, null),
+            new TumorIndexRow(920, "皮肤(非黑变病)", 1, 1, "肿瘤，肿瘤性 皮肤(非黑变病)",
+                "C44.9", "C80.9", "D04.9", "D22.9", "D48.5", 0, null),
+            new TumorIndexRow(921, "乳房", 2, 920, "肿瘤，肿瘤性 皮肤(非黑变病) 乳房",
+                "C44.5", null, null, "D22.5", null, 0, null),
+        ]);
+
+        var match = snapshot.TryResolveSiteCode("M8000/0", "乳腺良性肿瘤");
+
+        Assert.Equal("D24", match?.Code);
+    }
+
+    [Fact]
+    public void 泛形态学码锚不到部位时改交付肿瘤表未特指部位码()
+    {
+        // 良性肿瘤：链路终点就是 M8000/0（"肿瘤，未特指"），肿瘤表里一个部位词都锚不上。
+        // 旧口径交付字典补零码 M80000/0——它和 M8000/0 是同一个"没有部位"的码，对编码员没有信息量；
+        // 肿瘤表根本行的 良性 列（D36.9 良性肿瘤，部位未特指）才是这张表对"只写了肿瘤"病案给的答案。
+        var parsed = ParsedIndexCode.Parse("M8000/0");
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("M80000/0", "良性肿瘤"),
+            Dict("D36.900", "良性肿瘤，部位未特指"),
+        ]);
+        var tumor = TumorIndexSnapshot.Build([TumorRoot()]);
+
+        var results = IndexCodeExpander.Expand(
+            parsed, dictionary, "良性肿瘤", TextMatch.NormalizeKey("良性肿瘤"), maxResults: 3, tumor: tumor);
+
+        Assert.Equal("D36.900", results[0].Code);
+        Assert.DoesNotContain(results, item => item.Code.StartsWith('M'));
+    }
+
+    [Fact]
+    public void 肿瘤表解出部位码后不再附带泛形态学详码()
+    {
+        // 泛形态学码（M8000/6 → M80000/6 转移性肿瘤）与它查表得到的部位码是同一句话的两种写法，
+        // 再占一个交付席位就是把"没有部位"的码推给编码员；带部位信息的 5 位详码才保留（见下一条）。
+        var parsed = ParsedIndexCode.Parse("M8000/6");
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("C79.300X031", "颅底继发恶性肿瘤"),
+            Dict("C79.500", "骨继发恶性肿瘤"),
+            Dict("M80000/6", "转移性肿瘤"),
+        ]);
+        var tumor = TumorIndexSnapshot.Build([
+            TumorRoot(),
+            new TumorIndexRow(731, "颅(窝，任何)", 1, 1, "肿瘤，肿瘤性 颅(窝，任何)",
+                "C71.9", "C79.3", null, "D33.2", "D43.2", 0, null),
+        ]);
+
+        var results = IndexCodeExpander.Expand(
+            parsed, dictionary, "颅底继发恶性肿瘤",
+            TextMatch.NormalizeKey("颅底继发恶性肿瘤"), maxResults: 3, tumor: tumor);
+
+        Assert.Equal("C79.300X031", results[0].Code);
+        Assert.DoesNotContain("M80000/6", results.Select(item => item.Code));
+    }
+
+    [Fact]
+    public void 带部位信息的形态学码在部位码之后仍作粒度补充()
+    {
+        // M8460/0 浆液性乳头状囊腺瘤（ICD-O 形态学段本身讲一种具体肿瘤），
+        // 肿瘤表解出 D27 之后它仍是更细一层的可选项，按形态学详码的老口径附在部位码后面。
+        var parsed = ParsedIndexCode.Parse("M8460/0");
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("D27.X00", "卵巢良性肿瘤"),
+            Dict("M84600/0", "卵巢浆液性乳头状囊腺瘤"),
+        ]);
+        var tumor = TumorIndexSnapshot.Build([
+            TumorRoot(),
+            new TumorIndexRow(900, "卵巢", 1, 1, "肿瘤，肿瘤性 卵巢",
+                "C56", "C79.6", "D39.1", "D27", "D39.1", 0, null),
+        ]);
+
+        var results = IndexCodeExpander.Expand(
+            parsed, dictionary, "左卵巢浆液性乳头状囊腺瘤",
+            TextMatch.NormalizeKey("卵巢浆液性乳头状囊腺瘤"), maxResults: 3, tumor: tumor);
+
+        Assert.Equal("D27.X00", results[0].Code);
+        Assert.Contains("M84600/0", results.Select(item => item.Code));
+    }
+
+    [Fact]
+    public void 肿瘤表部位词面计入链路覆盖度_形态学链不再被三十门槛打掉()
+    {
+        // 直肠乙状结肠交界处动态未定肿瘤：索引里带形态学码的链路只有单字主导词 瘤 → M8000/1，
+        // 14 字输入只解释 1 字（0.071）。部位信息由肿瘤索引表查得（直肠乙状结肠 6 字全中 → D37.5），
+        // 但旧口径的覆盖度只数索引链路词面，肿瘤表用掉的病历字符一分不记，
+        // 于是整条链路连同已展开的 D37.502 一起被门控丢弃，Top1 让给 直肠乙状结肠炎 K63.817。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(31805, "瘤(肿)(任何部位)", "M8000/1"),
+        ]);
+        var tumor = TumorIndexSnapshot.Build([
+            TumorRoot(),
+            new TumorIndexRow(1470, "直肠乙状结肠(结肠)(连接处)", 1, 1,
+                "肿瘤，肿瘤性 直肠乙状结肠(结肠)(连接处)",
+                "C19", "C79.3", "D01.8", "D12.7", "D37.5", 0, null),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("D37.502", "直肠乙状结肠交界处动态未定肿瘤"),
+            Dict("D37.500", "直肠动态未定或动态未知的肿瘤"),
+            Dict("K63.817", "直肠乙状结肠炎"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 12, maxResults: 6, diagnosisCodeSystem: "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "直肠乙状结肠交界处动态未定肿瘤", tumor: tumor);
+
+        Assert.Equal("D37.502", results[0].Code);
+        Assert.DoesNotContain("K63.817", results.Select(item => item.Code));
+    }
+
+    [Fact]
+    public void 肿瘤表锚不到部位时_未特指兜底不给自己抬覆盖度()
+    {
+        // 同一条 瘤 → M8000/1 链路，肿瘤表里没有任何部位行可锚（只有表名根行）：
+        // 查表落空后交付的是根行"部位未特指"码，它没有输入词面作证据，
+        // 覆盖度仍是 1/14，照旧掉在门槛下——不能让"查表失败"反过来变成加成。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(31805, "瘤(肿)(任何部位)", "M8000/1"),
+        ]);
+        var tumor = TumorIndexSnapshot.Build([TumorRoot()]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("D48.900", "动态未定或动态未知的肿瘤，部位未特指"),
+            Dict("D37.502", "直肠乙状结肠交界处动态未定肿瘤"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 12, maxResults: 6, diagnosisCodeSystem: "ICD-10");
+
+        Assert.Empty(resolver.Resolve(
+            snapshot, dictionary, "直肠乙状结肠交界处动态未定肿瘤", tumor: tumor));
+    }
+
+    [Fact]
+    public void 词面加成只给泛形态码链路_特异形态码不借部位词抬覆盖度()
+    {
+        // 万条实测的流失类：右上肢血管瘤 一族（JZEY 9 条 D18.000X001→D16.x/D36.7）。
+        // 索引 43920 血管瘤 → M9120/0:D18.0 明示"任何部位"，兄弟行 43930 纤维血管瘤 → M9160/0
+        //（骨内血管瘤）只靠别名 血管瘤 沾住输入。若把肿瘤表的部位词面也记给特异形态码，
+        // M9160/0 的覆盖度被 上肢 刷满，反而顶掉索引亲自给码的 D18.0。
+        // 泛码 M8000/M8010 没有形态学信息，部位词是它唯一的证据，才吃这份加成。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(43920, "血管瘤", "M9120/0:D18.0"),
+            LeadRow(43930, "纤维血管瘤", "M9160/0"),
+        ]);
+        var tumor = TumorIndexSnapshot.Build([
+            TumorRoot(),
+            new TumorIndexRow(277, "骨(骨膜)◇", 1, 1, "肿瘤，肿瘤性 骨(骨膜)◇",
+                "C41.0", "C79.5", null, "D16.9", "D48.0", 0, null),
+            new TumorIndexRow(336, "上肢", 2, 277, "肿瘤，肿瘤性 骨(骨膜)◇ 上肢",
+                "C41.0", "C79.5", null, "D16.1", "D48.0", 0, null),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("D18.000X001", "血管瘤"),
+            Dict("D16.100", "上肢短骨良性肿瘤"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 12, maxResults: 6, diagnosisCodeSystem: "ICD-10");
+
+        var results = resolver.Resolve(
+            snapshot, dictionary, "右上肢血管瘤", tumor: tumor);
+
+        Assert.Equal("D18.000X001", results[0].Code);
+    }
 }

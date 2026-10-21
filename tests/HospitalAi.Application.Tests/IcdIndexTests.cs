@@ -765,6 +765,51 @@ public sealed class IcdIndexTests
         Assert.Contains("见于", site.Term);
     }
 
+    [Fact]
+    public void 死指针_自指环纯指针行不得抢走本层选层权()
+    {
+        // 真实索引树 24766 囊肿：25123 "－小脑脑桥(角) - 见 囊肿，脑" 目标键头词按精确键
+        // 回落到本主导词自己（自指环），改道出发不了；它却靠输入里散落的 桥/角 单字挣
+        // 最高增益抢走选层——选层不回溯，囊肿 链路整条落空，只剩 蛛网膜炎 G03.904。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(24766, "囊肿(胶样)(粘液性)(潴留)(单纯性)"),
+            ChildRow(25096, 24766, "－网膜(小)", "K66.8"),
+            ChildRow(25123, 24766, "－小脑脑桥(角) - 见 囊肿，脑"),
+            ChildRow(25175, 24766, "－蛛网膜，脑(后天性)", "G93.0"),
+            LeadRow(49929, "蛛网膜炎(急性)(粘连的)(基底)(脑脊髓)(另见 脑膜炎)", "G03.9"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("K66.800", "其他和未特指的网膜疾患"),
+            Dict("G93.000X013", "桥小脑角蛛网膜囊肿"),
+            Dict("G03.904", "蛛网膜炎"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "桥小脑角蛛网膜囊肿");
+
+        Assert.Equal("G93.000X013", results[0].Code);
+        Assert.Contains("蛛网膜，脑", results[0].EvidencePath);
+    }
+
+    [Fact]
+    public void 死指针_目标主导词不存在的纯指针行同样排除()
+    {
+        // 目标 "融合，颅骨" 无精确键、拼接召回也不中 → 改道根本出发不了，这类无码无子行的
+        // 指针只配当本层竞选的陪跑：输入 颅骨内板缺损 让它满挣 4 增益抢走选层后整链落空，
+        // 有码兄弟 "－颅骨，先天性" 只挣 2 增益被埋。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(60010, "缺损"),
+            ChildRow(60011, 60010, "－颅骨内板 - 见 融合，颅骨"),
+            ChildRow(60012, 60010, "－颅骨，先天性", "Q75.8"),
+        ]);
+        var inputKey = TextMatch.NormalizeKey("颅骨内板缺损");
+        var leadHit = IcdIndexMatcher.RecallLeads(snapshot, inputKey, 8).First(item => item.Node.SeqNo == 60010);
+
+        var drill = IcdIndexMatcher.Drill(snapshot, leadHit, inputKey);
+
+        Assert.Equal("Q75.8", drill!.CodeNode.Code);
+    }
+
     /// <summary>
     /// 真实链：30786 切开术 → 30787 "－剖宫产(另见 分娩，剖宫产) O82.9"；
     /// 推荐主导词 9515 分娩 → 9846 "－剖宫产(为) O82.9" → 9847 "－－瘢痕" → 9850 "－－－子宫 O34.2"。

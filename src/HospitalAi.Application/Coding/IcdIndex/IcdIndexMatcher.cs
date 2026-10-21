@@ -316,6 +316,7 @@ public static class IcdIndexMatcher
             string bestChildKey = string.Empty;
             int bestGain = 0;
             var bestRatio = 0m;
+            var bestSegment = 0;
             IcdIndexNode[] bestConnectors = [];
             // 路径当前已在输入中占住的片段，用于判定子节点是否带来"新内容"。
             var pathPositions = TextMatch.CoveredTextPositions(pathKey, inputKey);
@@ -331,9 +332,26 @@ public static class IcdIndexMatcher
                     continue;
                 }
 
+                // 纯指针行（无码、无子行）只有当改道真能出发时才准参加本层竞选：
+                // 目标解析失败（索引死指针）或解析回已访问节点（自指环——"小脑脑桥(角) - 见 囊肿，脑"
+                // 的目标键头词按精确键回落到本主导词自己）时它无任何产出，却常靠输入里散落的
+                // 单字残段（桥/角）拿最高词面增益抢走选层权——选层不回溯，整条链路随之落空
+                // （桥小脑角蛛网膜囊肿 的 囊肿→蛛网膜，脑(后天性) G93.0 链路因此全灭）。
+                // "见情况" 行走末位兜底通道（IsGenericConditionTarget），不在此列。
+                if (child.JumpKind is IndexJumpKind.See or IndexJumpKind.SeeAlso
+                    && !IsGenericConditionTarget(child.JumpTarget)
+                    && child.Code is null
+                    && child.Children.Count == 0
+                    && (ResolveJumpLead(snapshot, child.JumpTarget ?? string.Empty) is not { } jumpableLead
+                        || visited.Contains(jumpableLead.SeqNo)))
+                {
+                    continue;
+                }
+
                 var childBestGain = 0;
                 string? childBestKey = null;
                 var childBestRatio = 0m;
+                var childBestSegment = 0;
                 foreach (var alias in child.Aliases)
                 {
                     // 子节点必须为链路带来输入的"新内容"（≥2 连续片段，且不是路径已占过的字）：
@@ -368,11 +386,14 @@ public static class IcdIndexMatcher
                     if (gain >= 1
                         && (childBestKey is null
                             || combinedCover.Ratio > childBestRatio
-                            || (combinedCover.Ratio == childBestRatio && gain > childBestGain)))
+                            || (combinedCover.Ratio == childBestRatio && gain > childBestGain)
+                            || (combinedCover.Ratio == childBestRatio && gain == childBestGain
+                                && combinedCover.MaxSegment > childBestSegment)))
                     {
                         childBestGain = gain;
                         childBestKey = combined;
                         childBestRatio = combinedCover.Ratio;
+                        childBestSegment = combinedCover.MaxSegment;
                     }
                 }
 
@@ -410,12 +431,17 @@ public static class IcdIndexMatcher
                 // 同增益兄弟节点取"整条命中路径被输入覆盖比例"更高者：
                 // "闭塞→动脉"(闭塞动脉 全在输入) 与 "闭塞→冠状(动脉)"(冠状 不在输入) 增益都是 2，
                 // 按序号后来者胜会把链路带到冠状动脉 I21.9；覆盖比例才反映输入真正写出的部位。
+                // 同增益同比例再取最长连续段大者：散落单字（桥/角）凑的覆盖是弱证据，
+                // 不应压过输入里连续写出的词（蛛网膜），否则选层不回溯会带偏整条链路。
                 if (childBestKey is not null
                     && (childBestGain > bestGain
-                        || (childBestGain == bestGain && childBestRatio > bestRatio)))
+                        || (childBestGain == bestGain && childBestRatio > bestRatio)
+                        || (childBestGain == bestGain && childBestRatio == bestRatio
+                            && childBestSegment > bestSegment)))
                 {
                     bestGain = childBestGain;
                     bestRatio = childBestRatio;
+                    bestSegment = childBestSegment;
                     bestChild = child;
                     bestChildKey = childBestKey;
                     bestConnectors = connectors;

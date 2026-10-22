@@ -260,12 +260,42 @@ public static class IcdIndexMatcher
             }
         }
 
-        return hits
+        var ranked = hits
             .OrderByDescending(hit => hit.CoveredChars)
             .ThenByDescending(hit => hit.CoverRatio * hit.Alias.Weight)
-            .Take(topK)
             .ToList();
+        var taken = ranked.Take(topK).ToList();
+
+        // 形态学入口保底席位（M18 的席位版）。肿瘤形态学主导词 瘤(M8000/1)/癌(M8010/3) 是
+        // tumor_index 解部位码的唯一入口，但召回第一排序键是覆盖字数，1 个字的它永远排在
+        // 所有 2~3 字疾病主导词之后：肾盂输尿管连接处恶性肿瘤 的 瘤 排第 13 名，在 12 席之外，
+        // 于是整条肿瘤链路根本没被调用，交付唯一过 0.30 门槛的 输尿管积水 N13.400（覆盖 0.333）。
+        // 占掉第 12 席的是 49644 肿瘤(形成)(另见 肿瘤)——自身无码、下钻也走不出码的死指针行：
+        // 9b2b85c 让它退出下钻选层，但没让它退出召回席位。
+        // 三条收窄（都是避免"变相放宽全局席位"，24 席实测在真实病历上流失 8 条）：
+        // ① 只在席位内一条形态学链路都没有时补位（有就不动，避免与既有形态学行抢席）；
+        // ② 只补泛形态码主导词（IsSitelessMorphology，与 M18、resolver 覆盖度记账同一判据），
+        //    特异形态码（M9530/0 脑(脊)膜瘤）是病名不是入口，不配保底；
+        // ③ 只补"主导词就是输入结尾核心词"的（与单字主导词、泛术式 手术、M18 同一尾重心判据），
+        //    动脉瘤/淋巴瘤 那类 瘤 在词内部的输入不启用。
+        // 补位是替换末位席位而不是追加，席位总数不变（改道平权纪律：不借保底之名加权）。
+        if (ranked.Count > topK
+            && !taken.Any(hit => IsMorphologyLead(hit.Node))
+            && ranked.Skip(topK).FirstOrDefault(IsMorphologyEntryHit(inputKey)) is { } rescue)
+        {
+            taken[^1] = rescue;
+        }
+
+        return taken;
     }
+
+    /// <summary>
+    /// 可作肿瘤表入口的候选：泛形态码主导词，且命中的别名键就是输入的结尾核心词。
+    /// </summary>
+    private static Func<LeadWordHit, bool> IsMorphologyEntryHit(string inputKey)
+        => hit => IndexCodeExpander.IsSitelessMorphology(hit.Node.Code)
+            && hit.Alias.Key.Length > 0
+            && inputKey.EndsWith(hit.Alias.Key, StringComparison.Ordinal);
 
     /// <param name="jumpTrace">
     /// 证据链首跳标注（失效主导词 "X -见 Y" 的改道：调用方自己构造命中时链路里没有这一步，

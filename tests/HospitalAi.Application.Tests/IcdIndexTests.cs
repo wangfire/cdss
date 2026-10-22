@@ -2518,4 +2518,94 @@ public sealed class IcdIndexTests
 
         Assert.Equal("M8670/0:D27", drill!.CodeNode.Code);
     }
+
+    /// <summary>
+    /// 真实索引行：36072 输尿管积水(另见 肾积水) N13.4、36082 输尿管炎 N28.8、
+    /// 49644 肿瘤(形成)(另见 肿瘤)（自身无码、下钻也走不出码的死指针行）、
+    /// 22386 瘤(M8000/1) 及子行 22426 －恶性(M8000/3)。
+    /// </summary>
+    private static IcdIndexSnapshot MorphologyEntrySeatRows() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(36072, "输尿管积水(另见 肾积水)", "N13.4"),
+        LeadRow(36082, "输尿管炎", "N28.8"),
+        LeadRow(49644, "肿瘤(形成)(另见 肿瘤)"),
+        LeadRow(22386, "瘤(M8000/1) - 另见 肿瘤，动态未定", "M8000/1"),
+        ChildRow(22426, 22386, "－恶性(M8000/3) - 另见 肿瘤，恶性", "M8000/3"),
+    ]);
+
+    [Fact]
+    public void 形态学入口被挤出席位时_保底席位替换末位并交付肿瘤表部位码()
+    {
+        // 肾盂输尿管连接处恶性肿瘤 实测：召回按覆盖字数排序，单字 瘤 排第 13 名，在 12 席之外，
+        // 肿瘤表入口根本没被调用，交付唯一过 0.30 门槛的 输尿管积水 N13.400。
+        // 夹具用 3 席复现同一结构：席位内 3 条链路（积水/炎 各 3 字、死指针 肿瘤(形成) 2 字），
+        // 瘤 1 字排最后 → 保底席位把它换进来，换掉末位的无码死指针行。
+        var snapshot = MorphologyEntrySeatRows();
+        var inputKey = TextMatch.NormalizeKey("肾盂输尿管连接处恶性肿瘤");
+
+        var leads = IcdIndexMatcher.RecallLeads(snapshot, inputKey, 3);
+
+        Assert.Contains(22386, leads.Select(item => item.Node.SeqNo));
+        Assert.DoesNotContain(49644, leads.Select(item => item.Node.SeqNo));
+        // 保底是替换末位席位，不是追加席位（不得借保底之名放宽全局名额）。
+        Assert.Equal(3, leads.Count);
+
+        var tumor = TumorIndexSnapshot.Build([
+            TumorRoot(),
+            new TumorIndexRow(348, "输尿管", 1, 1, "肿瘤，肿瘤性 输尿管",
+                "C66", "C79.3", null, "D30.3", "D41.3", 0, null),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("C66.X00", "输尿管恶性肿瘤"),
+            Dict("N13.400", "输尿管积水"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 3, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+
+        var results = resolver.Resolve(
+            snapshot, dictionary, "肾盂输尿管连接处恶性肿瘤", tumor: tumor);
+
+        Assert.Equal("C66.X00", results[0].Code);
+    }
+
+    [Fact]
+    public void 席位内已有形态学链路时_保底席位不抢席()
+    {
+        // 补位的前提是"席位内一条形态学链路都没有"。4 席时 瘤 本来就在席内，
+        // 末位的死指针行不该被换掉（换了也只是换掉一条疾病链路，没有任何收益）。
+        var snapshot = MorphologyEntrySeatRows();
+
+        var leads = IcdIndexMatcher.RecallLeads(
+            snapshot, TextMatch.NormalizeKey("肾盂输尿管连接处恶性肿瘤"), 4);
+
+        Assert.Contains(22386, leads.Select(item => item.Node.SeqNo));
+        Assert.Contains(49644, leads.Select(item => item.Node.SeqNo));
+    }
+
+    [Fact]
+    public void 特异形态码主导词不配保底席位()
+    {
+        // 只有泛形态码（M8000/M8010）是肿瘤表解部位码的入口，特异形态码自己就是病名，
+        // 排在席位外说明它确实竞争不过，不该被抬进来（与 M18、覆盖度记账同一判据）。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(36072, "输尿管积水(另见 肾积水)", "N13.4"),
+            LeadRow(36082, "输尿管炎", "N28.8"),
+            LeadRow(36081, "输尿管脱垂", "N28.8"),
+            LeadRow(44003, "痣(M9530/0)", "M9530/0"),
+        ]);
+
+        var leads = IcdIndexMatcher.RecallLeads(snapshot, TextMatch.NormalizeKey("右输尿管痣"), 3);
+
+        Assert.DoesNotContain(44003, leads.Select(item => item.Node.SeqNo));
+    }
+
+    [Fact]
+    public void 形态学主导词不在输入结尾时_不触发保底席位()
+    {
+        // 尾重心判据：动脉瘤/淋巴瘤 那类 瘤 写在病案词内部的输入不启用（M18 同一收窄），
+        // 否则会把肿瘤表部位码注进血管病案。
+        var snapshot = MorphologyEntrySeatRows();
+
+        var leads = IcdIndexMatcher.RecallLeads(snapshot, TextMatch.NormalizeKey("输尿管积水伴瘤形成"), 3);
+
+        Assert.DoesNotContain(22386, leads.Select(item => item.Node.SeqNo));
+    }
 }

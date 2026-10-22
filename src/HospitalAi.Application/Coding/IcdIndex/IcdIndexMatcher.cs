@@ -309,6 +309,21 @@ public static class IcdIndexMatcher
         var current = lead;
         IcdIndexNode? pendingJump = null;
         IcdIndexNode? pendingSeeAlsoJump = null;
+        // 泛形态学主导词行（M8000 肿瘤 / M8010 癌）自带的 M####/d 是肿瘤表解部位码的唯一入口：
+        // 下钻若停在"头段词面根本没写进输入、只靠部位尾段或括号注解沾上"的带码子行，交付码就从
+        // 形态学码换成别病种的疾病码，肿瘤链路整条失效——22386 瘤(M8000/1) 的 126 个子行里
+        // 脑室动态未定肿瘤 只沾到 －梅毒性，脑 的 脑，换成 A52.1† G94.8* 后覆盖度 2/8=0.25
+        // 掉进 0.30 门槛，索引通道返回空；而 tumor_index 用 /1 + 室 本来就解得出 D43.0
+        //（字典 D43.002 脑室动态未定肿瘤）。
+        // 判据两条都是实测收窄出来的：
+        // ① 只保泛码——特异形态码（M9530/0 脑(脊)膜瘤）自己就是病名，下钻是索引给的细分，
+        //    一并保护会让 右侧桥小脑角脑膜瘤 丢掉期望码 D32.900X002；泛码链路的部位信息
+        //    完全来自肿瘤表，与 resolver 的覆盖度记账用同一条 IsSitelessMorphology 判据。
+        // ② 只在主导词就是输入的结尾核心词时启用（与单字主导词、泛术式 手术 同一尾重心判据）：
+        //    动脉瘤/淋巴瘤 的 瘤 写在病案词内部，放开会把 C70.9 蛛网膜恶性肿瘤注进血管病案。
+        var protectMorphologyLead = IndexCodeExpander.IsSitelessMorphology(lead.Code)
+            && initialPathKey.Length > 0
+            && inputKey.EndsWith(initialPathKey, StringComparison.Ordinal);
 
         while (true)
         {
@@ -358,6 +373,19 @@ public static class IcdIndexMatcher
                     // 只有虚字符（"原因不明致命性" 的 "性"）或重复字
                     // （先兆→流产→"伴有随后性流产" 的 "流产"）可沾的分支不得进入。
                     if (!AliasAddsInputContent(alias.MatchKey, inputKey, pathPositions))
+                    {
+                        continue;
+                    }
+
+                    // 泛形态学主导词行不得被"只靠部位尾段/括号注解沾上"的带码子行顶掉：
+                    // 这类子行的头段词面（梅毒性、内分泌多发性）根本没写进输入，本层选它
+                    // 就把 M####/d 换成别病种的疾病码，肿瘤表再也拿不到形态学码。
+                    // 子行自身带码且不是形态学码才拦——指针行（另见/见）与
+                    // 22660 "－脂细胞，卵巢 M8670/0:D27" 这类同族形态学子行照常下钻。
+                    if (protectMorphologyLead
+                        && alias.Weight < 1.0m
+                        && child.Code is { Length: > 0 } childCode
+                        && !MorphologyCodeRegex.IsMatch(childCode))
                     {
                         continue;
                     }

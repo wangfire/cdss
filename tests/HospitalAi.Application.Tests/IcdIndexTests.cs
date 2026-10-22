@@ -2463,4 +2463,59 @@ public sealed class IcdIndexTests
 
         Assert.Equal("D18.000X001", results[0].Code);
     }
+
+    /// <summary>
+    /// 真实索引行：22386 "瘤(M8000/1) - 另见 肿瘤，动态未定"（126 个子行）与
+    /// 22514 "－梅毒性，脑 A52.1† G94.8*"、22660 "－脂细胞，卵巢 M8670/0:D27"；
+    /// 肿瘤表 1193 "－室"（恶性 C71.5 / 动态未定 D43.0）。
+    /// </summary>
+    private static IcdIndexSnapshot MorphologyLeadRows() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(22386, "瘤(M8000/1) - 另见 肿瘤，动态未定", "M8000/1"),
+        ChildRow(22514, 22386, "－梅毒性，脑", "A52.1† G94.8*"),
+        ChildRow(22660, 22386, "－脂细胞，卵巢", "M8670/0:D27"),
+    ]);
+
+    [Fact]
+    public void 形态学主导词_沾部位尾段的带码子行不得顶掉本行形态学码()
+    {
+        // 脑室动态未定肿瘤 只沾到 22514 的 0.85 部位尾段 脑（头段 梅毒性 根本没写进输入），
+        // 旧口径下钻停在子行就把交付码从 M8000/1 换成梅毒疾病码：肿瘤表拿不到形态学码
+        // 就解不出部位，链路覆盖度 2/8=0.25 掉进 0.30 门槛 → 整条索引通道 0 推荐。
+        // 主导词行的 M8000/1 留在链路上时，肿瘤表用 /1 + 室 直接解出 D43.0（字典 D43.002）。
+        var snapshot = MorphologyLeadRows();
+        var tumor = TumorIndexSnapshot.Build([
+            TumorRoot(),
+            new TumorIndexRow(1193, "室", 1, 1, "肿瘤，肿瘤性 室",
+                "C71.5", "C79.3", null, "D33.0", "D43.0", 0, null),
+            new TumorIndexRow(769, "脑 NEC", 1, 1, "肿瘤，肿瘤性 脑 NEC",
+                "C71.9", "C79.3", null, "D33.2", "D43.2", 0, null),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("D43.002", "脑室动态未定肿瘤"),
+            Dict("D43.003", "脑室肿瘤"),
+            Dict("A52.100", "脑膜血管梅毒"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 12, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "脑室动态未定肿瘤", tumor: tumor);
+
+        Assert.Equal("D43.002", results[0].Code);
+        Assert.DoesNotContain("A52.100", results.Select(item => item.Code));
+    }
+
+    [Fact]
+    public void 形态学主导词保护不住同族形态学子行的下钻()
+    {
+        // 保护只砍"把 M####/d 换成别病种疾病码"的子行：子行自己就是形态学码时
+        // 下钻仍在肿瘤链路上（－脂细胞，卵巢 M8670/0:D27 靠 0.85 尾段 卵巢 命中），
+        // 一刀切按别名权重拦会把索引明给的细分形态码也一起打掉。
+        var snapshot = MorphologyLeadRows();
+        var inputKey = TextMatch.NormalizeKey("卵巢瘤");
+        var leadHit = IcdIndexMatcher.RecallLeads(snapshot, inputKey, 12)
+            .First(item => item.Node.SeqNo == 22386);
+
+        var drill = IcdIndexMatcher.Drill(snapshot, leadHit, inputKey);
+
+        Assert.Equal("M8670/0:D27", drill!.CodeNode.Code);
+    }
 }

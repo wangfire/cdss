@@ -25,8 +25,19 @@ public sealed class V22PipelineOptions
     /// <summary>诊断侧 ICD 索引两段式链路开关；关闭时诊断输入不召回（不回退字典直匹配）。</summary>
     public bool IcdIndexEnabled { get; set; } = true;
 
-    /// <summary>主导词召回保留条数（每条输入独立下钻）。</summary>
-    public int LeadWordTopK { get; set; } = 8;
+    /// <summary>
+    /// 主导词召回保留条数（每条输入独立下钻）。万名离线双语料实测：8 席时真有产出的链路常排在
+    /// 第 9~12 名（别名键 3 字的行按覆盖字数压过 2 字真主导词，如 瘢痕 之于 视网膜瘢痕），
+    /// 12 席可吃到绝大部分（ICD10CAP Top1 +74/−1、JZEY +19/−3、两侧 becameEmpty 均为 0），
+    /// 再往放宽只换来跨章借道（24 席 JZEY 流失翻到 8 条）。
+    /// </summary>
+    public int LeadWordTopK { get; set; } = 12;
+
+    /// <summary>
+    /// 手术侧 CM3 主导词召回保留条数。单独成项、维持 8：手术通道的 D_CM3 万名台账（Top1 41.64%）
+    /// 与 288 条部位词头门控都是按 8 席验收的，与诊断侧共用一个值等于顺手改动一条已验收通道。
+    /// </summary>
+    public int ProcedureLeadWordTopK { get; set; } = 8;
 
     /// <summary>索引展开后诊断字典的编码体系标识。</summary>
     public string IndexDiagnosisCodeSystem { get; set; } = "ICD-10";

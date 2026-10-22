@@ -186,7 +186,11 @@ if (leadsIn is not null && leadsOut is not null)
 if (batchIn is not null && batchOut is not null)
 {
     // 批量台账固定用生产口径 maxResults=3，便于改动前后逐名 Top1 对比。
-    RunBatch(snapshot, dictionary, synonyms, new IcdIndexDiagnosisResolver(8, 3, codeSystem), batchIn, batchOut, tumor);
+    // ICD_INDEX_DIAG_LEADK 只放宽诊断工具的召回席位，用于实测「名额」这一档杠杆的上限，不改生产口径。
+    var batchLeadK = int.TryParse(Environment.GetEnvironmentVariable("ICD_INDEX_DIAG_LEADK"), out var parsedLeadK)
+        ? parsedLeadK
+        : 8;
+    RunBatch(snapshot, dictionary, synonyms, new IcdIndexDiagnosisResolver(batchLeadK, 3, codeSystem), batchIn, batchOut, tumor);
     return 0;
 }
 
@@ -714,7 +718,11 @@ static void RunLeadEnumeration(
     TumorIndexSnapshot? tumor = null)
 {
     const int enumerateTopK = 100;
-    const int productionTopK = 8;
+    // 生产席位随 V22PipelineOptions.LeadWordTopK 放宽到 12；台账里的 生产名额内 标记必须跟着改口径，
+    // 否则人工判噪还在按 8 席看。可用 ICD_INDEX_DIAG_LEADK 临时对照别的席位。
+    var productionTopK = int.TryParse(Environment.GetEnvironmentVariable("ICD_INDEX_DIAG_LEADK"), out var parsedLeadK)
+        ? parsedLeadK
+        : 12;
 
     var sb = new StringBuilder();
     sb.AppendLine(string.Join('\t',

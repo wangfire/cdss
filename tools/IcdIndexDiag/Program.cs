@@ -163,7 +163,13 @@ if (tumorSiteMorph is not null)
 }
 // ICD_INDEX_DIAG_TOP 可放宽产出条数上限，用于查看被 Top-3 挤掉的候选及其分值。
 var diagTop = int.TryParse(Environment.GetEnvironmentVariable("ICD_INDEX_DIAG_TOP"), out var parsedTop) ? parsedTop : 3;
-var resolver = new IcdIndexDiagnosisResolver(8, diagTop, codeSystem);
+// 单输入诊断原先把召回席位写死成 8，生产已是 12，所以「第 9~12 名主导词」在诊断输出里根本看不见
+// （肾盂输尿管连接处恶性肿瘤 的 瘤 就排在第 13 名，用席位杠杆实测时读不到真相）。
+// 这里跟 ICD_INDEX_DIAG_LEADK 对齐，未设时仍是 8，保持既有台账可复算。
+var diagLeadK = int.TryParse(Environment.GetEnvironmentVariable("ICD_INDEX_DIAG_LEADK"), out var parsedDiagLeadK)
+    ? parsedDiagLeadK
+    : 8;
+var resolver = new IcdIndexDiagnosisResolver(diagLeadK, diagTop, codeSystem);
 
 if (blankIn is not null && blankOut is not null)
 {
@@ -221,7 +227,7 @@ if (exportIn is not null && exportOut is not null)
 foreach (var input in inputs)
 {
     Console.WriteLine($"===== {input} =====");
-    Diagnose(snapshot, dictionary, input, codeSystem);
+    Diagnose(snapshot, dictionary, input, codeSystem, diagLeadK);
     var results = resolver.Resolve(snapshot, dictionary, input, null, synonyms, tumor: tumor);
     Console.WriteLine($"-- resolver 产出 {results.Count} 条");
     foreach (var item in results)
@@ -285,7 +291,62 @@ static TumorIndexSnapshot? BuildTumor(string conn)
             reader.IsDBNull(11) || reader.GetString(11).Length == 0 ? null : reader.GetString(11)));
     }
 
-    return rows.Count == 0 ? null : TumorIndexSnapshot.Build(rows);
+    return rows.Count == 0 ? null : TumorIndexSnapshot.Build(ApplyTumorDraftRows(rows));
+}
+
+/// <summary>
+/// 肿瘤表（tumor_index）知识库侧草稿改动的离线注入通道：TUMOR_DRAFT_ROWS=&lt;TSV&gt;，
+/// 列序同导出查询（seq_no / index_name / index_level / parent_seq_no / full_index_name /
+/// 五个行为位码列 / jump_kind / jump_target），空列=无码，`-` 也当空。
+/// 同 seq_no 视为改行（等价于 UPDATE index_name），新 seq_no 视为插行；只在诊断工具里生效、不写库，
+/// 两面复算都不净负才谈入库。
+/// </summary>
+static List<TumorIndexRow> ApplyTumorDraftRows(List<TumorIndexRow> rows)
+{
+    var path = Environment.GetEnvironmentVariable("TUMOR_DRAFT_ROWS");
+    if (string.IsNullOrEmpty(path) || !File.Exists(path))
+    {
+        return rows;
+    }
+
+    static string? Code(string f) => f.Length == 0 || f == "-" ? null : f;
+
+    var bySeq = rows.Select((row, i) => (row, i)).ToDictionary(x => x.row.SeqNo, x => x.i);
+    var replaced = 0;
+    var inserted = 0;
+    foreach (var line in File.ReadAllLines(path))
+    {
+        if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#'))
+        {
+            continue;
+        }
+
+        var f = line.Split('\t').Select(field => field.Trim()).ToArray();
+        if (f.Length < 5)
+        {
+            continue;
+        }
+
+        var draft = new TumorIndexRow(
+            int.Parse(f[0]), f[1], int.Parse(f[2]), int.Parse(f[3]), f[4],
+            Code(f.Length > 5 ? f[5] : ""), Code(f.Length > 6 ? f[6] : ""), Code(f.Length > 7 ? f[7] : ""),
+            Code(f.Length > 8 ? f[8] : ""), Code(f.Length > 9 ? f[9] : ""),
+            f.Length > 10 && f[10].Length > 0 ? int.Parse(f[10]) : 0,
+            Code(f.Length > 11 ? f[11] : ""));
+        if (bySeq.TryGetValue(draft.SeqNo, out var index))
+        {
+            rows[index] = draft;
+            replaced++;
+        }
+        else
+        {
+            rows.Add(draft);
+            inserted++;
+        }
+    }
+
+    Console.Error.WriteLine($"-- 肿瘤表草稿注入：改 {replaced} 行 / 插 {inserted} 行（{path}）");
+    return [.. rows.OrderBy(row => row.SeqNo)];
 }
 
 // 术语同义词快照（与生产同源：icd_term_synonym 表，仅取启用行）。
@@ -950,14 +1011,15 @@ static IcdDictionarySnapshot BuildDictionary(string conn, string hospital, strin
     return new IcdDictionarySnapshot(rows);
 }
 
-static void Diagnose(IcdIndexSnapshot snapshot, IcdDictionarySnapshot dictionary, string input, string codeSystem)
+static void Diagnose(
+    IcdIndexSnapshot snapshot, IcdDictionarySnapshot dictionary, string input, string codeSystem, int leadTopK)
 {
     var inputKey = TextMatch.NormalizeKey(input);
     var inputQualifiers = TextMatch.ExtractQualifiers(inputKey);
     Console.WriteLine($"-- key={inputKey} qualifiers=[{string.Join(",", inputQualifiers)}]");
 
     // 召回完全走生产口径（IcdIndexMatcher.RecallLeads），本工具只负责展开链路。
-    foreach (var hit in IcdIndexMatcher.RecallLeads(snapshot, inputKey, 8))
+    foreach (var hit in IcdIndexMatcher.RecallLeads(snapshot, inputKey, leadTopK))
     {
         var lead = hit.Node;
         Console.WriteLine($"-- 召回 lead={lead.SeqNo}:{lead.Term} alias={hit.Alias.Key} cover={hit.CoverRatio} chars={hit.CoveredChars}");

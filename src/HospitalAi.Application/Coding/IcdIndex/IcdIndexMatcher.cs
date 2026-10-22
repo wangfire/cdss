@@ -26,7 +26,8 @@ public sealed record DrillResult(
 /// <summary>
 /// 主导词召回 + 逐级修饰词下钻。
 /// 召回门控：别名被输入完整/高覆盖命中（TextMatch.MatchesInput），且词条部位限定词须在输入中声明；
-/// 单字主导词只有在它是输入结尾的核心词时才参与召回（见 IsTailCoreWord）；
+/// 单字主导词只有在它是输入结尾的核心词时才参与召回（见 IsTailCoreWord），
+/// 属性尾段复合别名剥出的单字 core 例外：逐字出现在输入里即可（见 IsAttributeTailOnlyAnchor）；
 /// "A病或B" 式的 或 尾段若在别处另有自己的主导词行，不得独立锚定本行（见 IcdIndexSnapshotBuilder.Build）；
 /// 输入写成 "手术后X" 时 手术 只是状态前缀的一部分，不锚定 手术 这类以 术 收尾的主导词（见 IsGenericSurgeryAliasOutsideTail）；
 /// 下钻门控：子节点（任一变体别名）对输入"新增长连续段 ≥2"才进入（同样受部位限定词约束），同层取增益最大者；
@@ -197,6 +198,40 @@ public static class IcdIndexMatcher
         => aliasKey == GenericSurgeryAlias && !inputKey.EndsWith(GenericSurgeryAlias, StringComparison.Ordinal);
 
     /// <summary>
+    /// 括号复合别名只在属性尾段上命中时不能当主导词锚点。索引把 "裂(先天性)" 写成一行时，
+    /// ParseAliases 会生成 裂先天性 与 裂 两个键；输入 先天性大脑囊肿 与 裂先天性 的最长公共段
+    /// 只有 先天性（3/4=0.75、最长段 3），按覆盖字数排序它会压过真正的结尾核心词 囊肿（2 字），
+    /// 把整族 先天性 属性行塞满 12 席，Q04.6 链路根本进不了下钻。
+    /// 这里剥掉属性尾段，对核心词复用单字/多字别名的原有锚定口径；
+    /// 单字 core 除结尾重心外，逐字出现在输入里即可锚定（先天性鳃裂瘘管 → 裂先天性，
+    /// 裂 在 鳃裂 里而不在结尾）。输入逐字含住整个复合键时一律放行。
+    /// 只关召回：别名集合、权重、MatchKey、下钻与链路覆盖度一律不动。
+    /// </summary>
+    private static bool IsAttributeTailOnlyAnchor(IcdIndexNode lead, IcdIndexAlias alias, string inputKey)
+    {
+        if (!IcdIndexSnapshotBuilder.TrySplitGenericAttributeTail(alias.Key, out var core))
+        {
+            return false;
+        }
+
+        if (inputKey.Contains(alias.Key, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (core.Length < 2)
+        {
+            return !IsMorphologyLead(lead)
+                && !IsTailCoreWord(core, inputKey)
+                && !(inputKey.Contains(core, StringComparison.Ordinal) && !IsGenericConditionLeadKey(core));
+        }
+
+        return GenericModifierKeys.Contains(core)
+            || IsGenericSurgeryAliasOutsideTail(core, inputKey)
+            || !TextMatch.MatchesInput(core, inputKey, out _);
+    }
+
+    /// <summary>
     /// 索引惯例里的泛化主导词族（情况 = 病，疾病 一族）。它们不携带"这行说的是哪个病"，
     /// 召回层与失效主导词改道层都要用它拦住，只有末位兜底通道允许进入。
     /// </summary>
@@ -235,7 +270,8 @@ public static class IcdIndexMatcher
                 // 心/汗/红 这类单字行只在收尾时锚定，出现在中部（心肌梗死）照旧拦住。
                 if (!alias.RecallAnchor || GenericModifierKeys.Contains(alias.Key)
                     || IsGenericSurgeryAliasOutsideTail(alias.Key, inputKey)
-                    || (alias.Key.Length < 2 && !IsMorphologyLead(lead) && !IsTailCoreWord(alias.Key, inputKey)))
+                    || (alias.Key.Length < 2 && !IsMorphologyLead(lead) && !IsTailCoreWord(alias.Key, inputKey))
+                    || IsAttributeTailOnlyAnchor(lead, alias, inputKey))
                 {
                     continue;
                 }

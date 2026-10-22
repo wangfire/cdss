@@ -147,6 +147,26 @@ public static class IcdIndexSnapshotBuilder
     private static readonly HashSet<string> GenericAttributeTailKeys =
         new(StringComparer.Ordinal) { "先天性", "遗传性", "病理性", "异常的" };
 
+    /// <summary>
+    /// 从 "核心词+属性尾段" 的复合别名键里剥出核心词（裂先天性 → 裂）。
+    /// 裸属性键（先天性）不在此口径，仍由 RecallAnchor 的整键门控处理。
+    /// </summary>
+    internal static bool TrySplitGenericAttributeTail(string key, out string core)
+    {
+        foreach (var attribute in GenericAttributeTailKeys)
+        {
+            if (key.Length > attribute.Length
+                && key.EndsWith(attribute, StringComparison.Ordinal))
+            {
+                core = key[..^attribute.Length];
+                return true;
+            }
+        }
+
+        core = string.Empty;
+        return false;
+    }
+
     public static IcdIndexSnapshot Build(IReadOnlyList<IcdIndexRow> rows)
     {
         var nodes = new Dictionary<int, IcdIndexNode>();

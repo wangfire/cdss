@@ -528,6 +528,56 @@ public sealed class IcdIndexTests
         Assert.DoesNotContain(recommendations, r => r.Code.StartsWith("D71", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// 真实索引形态：0 级行 "裂(先天性)" 的括号属性生成 裂先天性 复合别名，
+    /// 输入 先天性大脑囊肿 里只有 先天性 命中、裂 根本不在输入中；正确的结尾核心词是 囊肿。
+    /// </summary>
+    private static IcdIndexSnapshot AttributeTailCompositeSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(47001, "裂(先天性)"),
+        ChildRow(47002, 47001, "－鳃(囊肿)(永存)", "Q18.2"),
+        LeadRow(47010, "囊肿(胶样)(粘液性)(潴留)(单纯性)"),
+        ChildRow(47011, 47010, "－旁突体"),
+        ChildRow(47012, 47011, "－－脑"),
+        ChildRow(47013, 47012, "－－－先天性", "Q04.6"),
+    ]);
+
+    [Fact]
+    public void 属性尾段复合别名_核心词不在输入时不锚定()
+    {
+        var hits = IcdIndexMatcher.RecallLeads(
+            AttributeTailCompositeSnapshot(), TextMatch.NormalizeKey("先天性大脑囊肿"), topK: 8);
+
+        Assert.DoesNotContain(hits, hit => hit.Node.SeqNo == 47001);
+        Assert.Contains(hits, hit => hit.Node.SeqNo == 47010);
+    }
+
+    [Fact]
+    public void 属性尾段复合别名_核心词是结尾时仍锚定()
+    {
+        var hits = IcdIndexMatcher.RecallLeads(
+            AttributeTailCompositeSnapshot(), TextMatch.NormalizeKey("先天性腭裂"), topK: 8);
+
+        Assert.Contains(hits, hit => hit.Node.SeqNo == 47001);
+    }
+
+    [Fact]
+    public void 属性尾段复合别名_输入逐字含住时放行()
+    {
+        var hits = IcdIndexMatcher.RecallLeads(
+            AttributeTailCompositeSnapshot(), TextMatch.NormalizeKey("鳃裂先天性"), topK: 8);
+
+        Assert.Contains(hits, hit => hit.Node.SeqNo == 47001);
+    }
+
+    [Fact]
+    public void 属性尾段复合别名_单字核心出现在输入中部时锚定()
+    {
+        var hits = IcdIndexMatcher.RecallLeads(
+            AttributeTailCompositeSnapshot(), TextMatch.NormalizeKey("先天性鳃裂瘘管"), topK: 8);
+
+        Assert.Contains(hits, hit => hit.Node.SeqNo == 47001);
+    }
+
     [Fact]
     public void 同族括号变体_限定词未被满足时被剔除()
     {

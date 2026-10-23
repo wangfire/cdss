@@ -475,6 +475,60 @@ public sealed class Cm3IndexTests
         Assert.Empty(results);
     }
 
+    /// <summary>超声 子树真实切片（seq 1888-1917）：治疗性 下 头/颈/头和颈血管 同为 00.01，周围血管 00.03。</summary>
+    private static Cm3IndexSnapshot UltrasoundSnapshot() => Cm3IndexSnapshotBuilder.Build([
+        Row(1888, 0, 0, "超声"),
+        Row(1890, 1, 1888, "―疗法 93.35", "93.35"),
+        Row(1895, 1, 1888, "―心脏"),
+        Row(1896, 2, 1895, "――非侵入的 88.72", "88.72"),
+        Row(1900, 1, 1888, "―血管内（IVUS） 00.29", "00.29"),
+        Row(1907, 2, 1900, "――周围血管 00.23", "00.23"),
+        Row(1911, 1, 1888, "―治疗性"),
+        Row(1912, 2, 1911, "――颈 00.01", "00.01"),
+        Row(1913, 2, 1911, "――其他治疗性超声 00.09", "00.09"),
+        Row(1914, 2, 1911, "――头 00.01", "00.01"),
+        Row(1915, 2, 1911, "――头和颈血管 00.01", "00.01"),
+        Row(1916, 2, 1911, "――心脏 00.02", "00.02"),
+        Row(1917, 2, 1911, "――周围血管 00.03", "00.03"),
+    ]);
+
+    private static IcdDictionarySnapshot UltrasoundDictionary() => new([
+        Dict("00.0100", "头和颈部血管治疗性超声"),
+        Dict("00.0101", "头部血管治疗性超声"),
+        Dict("00.0102", "颈部血管治疗性超声"),
+        Dict("00.0200", "心脏治疗性超声"),
+        Dict("00.0300", "周围血管治疗性超声"),
+        Dict("00.0900", "其他治疗性超声"),
+        Dict("93.3500", "超声疗法"),
+    ]);
+
+    [Theory]
+    [InlineData("头和颈部血管治疗性超声", "00.0100", "头和颈血管")]
+    [InlineData("头部血管治疗性超声", "00.0101", "头")]
+    [InlineData("颈部血管治疗性超声", "00.0102", "颈")]
+    public void 部位兄弟行不串用_病历写哪个部位走哪个兄弟行(string input, string expected, string pathNode)
+    {
+        // 索引 治疗性 下把 头/颈/头和颈血管 并列成三行（同为 00.01）。病历只写 头 或 颈 时，
+        // 「本行部位词输入必须全写」把 头和颈血管 整行剔除；此时 周围血管 00.03 靠只沾上义词 血管
+        // 的两个字增益，会压过逐字写出的 头/颈（一个字）。部位冲突门控把「本行另写了输入没写的
+        // 周围」的兄弟行剔掉，三个部位各走各的兄弟行。
+        var results = Resolver().Resolve(UltrasoundSnapshot(), UltrasoundDictionary(), input);
+
+        Assert.Equal(expected, results[0].Code);
+        Assert.Contains($"→ {pathNode} | 索引编码: 00.01", results[0].EvidencePath);
+        Assert.DoesNotContain(results, item => item.Code == "00.0300");
+    }
+
+    [Theory]
+    [InlineData("周围血管治疗性超声", "00.0300")]
+    [InlineData("心脏治疗性超声", "00.0200")]
+    public void 单部位兄弟行照旧各取各码(string input, string expected)
+    {
+        var results = Resolver().Resolve(UltrasoundSnapshot(), UltrasoundDictionary(), input);
+
+        Assert.Equal(expected, results[0].Code);
+    }
+
     /// <summary>只比编码与回退标志：两条链路的分数会随路径长度浮动，断言等价的输入面收敛到同一批编码即可。</summary>
     private sealed class RecommendationComparer : IEqualityComparer<ProcedureIndexRecommendation>
     {

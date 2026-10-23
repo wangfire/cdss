@@ -61,6 +61,75 @@ public static class Cm3ProcedureIndexMatcher
     private const int MaxConnectorLookThrough = 2;
 
     /// <summary>
+    /// 下钻子行的部位冲突：输入逐字写出的**单字**部位词（头/颈/手/骨…）本行没写，
+    /// 且本行另写了输入没有的部位词，才判冲突——本行让位给写了输入部位词的兄弟行。
+    /// 这一刀治的是「只沾上义词就赢下钻」：超声→治疗性 下 周围血管 00.03 与 头 00.01 同场，
+    /// 输入 头部血管治疗性超声 没写 周围，却靠 血管 二字（与 头和颈血管 共有的中心词）
+    /// 在覆盖字数上压过逐字写出的 头/颈（1 字）而取到错类目；门控后 头/颈/头和颈血管 各取各码。
+    /// 不能放宽成「本行有输入没写的部位词就剔」：同部位的别名写法（肛周组织 之于 肛门周围、
+    /// 晶状体 之于 白内障）与括号里的并列检查方式（陷凹镜/子宫镜/腹腔镜 之于 宫腔镜）
+    /// 会把正确链路整行打空，病历面实测换掉 4 条正确 Top1。
+    /// 取词前必须抹掉术式通用词 手术：否则 其他牙矫形手术 的「手」会冒充输入部位词，
+    /// 把唯一链路 手术→牙齿矫形的 24.8 判成冲突（D_CM3 面实测硬线 1 条）。
+    /// 两类豁免（两面复算实测）：入路词写的是"从哪进去"不是"在哪个部位做"，
+    /// 蝶窦/蝶骨 这类同义异写不判冲突，否则 垂体 经蝶骨入路 一族 4 条丢正确码；
+    /// 288 表按标题首二字节出来的截断词（骨关 之于 软骨关节）落在输入已写出的双字部位词上
+    /// 是切词残渣，不算本行另写的部位，否则 骨软骨移植 一族 6 条丢 81.47。
+    /// 单字通用词（骨/椎）不足以解释双字部位词，所以只认双字以上的重叠词。
+    /// </summary>
+    private static bool SiteConflicts(string aliasKey, string inputKey)
+    {
+        var siteInputKey = inputKey.Replace("手术", string.Empty);
+        var missingInputSite = TextMatch.BodyQualifiers.Any(word =>
+            word.Length == 1
+            && siteInputKey.Contains(word, StringComparison.Ordinal)
+            && !aliasKey.Contains(word, StringComparison.Ordinal));
+        if (!missingInputSite
+            || aliasKey.Contains("入路", StringComparison.Ordinal)
+            || aliasKey.Contains("途径", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var aliasSites = SiteWords(aliasKey);
+        return aliasSites.Any(site => !inputKey.Contains(site, StringComparison.Ordinal)
+            && !OverlapsWrittenSite(site, aliasKey, aliasSites, inputKey));
+    }
+
+    /// <summary>截断词与输入已写出的双字部位词在本行词面上重叠时，视为切词残渣。</summary>
+    private static bool OverlapsWrittenSite(
+        string site,
+        string aliasKey,
+        HashSet<string> aliasSites,
+        string inputKey)
+    {
+        var start = aliasKey.IndexOf(site, StringComparison.Ordinal);
+        return aliasSites.Any(other =>
+            other.Length >= 2
+            && !string.Equals(other, site, StringComparison.Ordinal)
+            && inputKey.Contains(other, StringComparison.Ordinal)
+            && aliasKey.IndexOf(other, StringComparison.Ordinal) is var otherStart
+            && otherStart >= 0
+            && otherStart < start + site.Length
+            && start < otherStart + other.Length);
+    }
+
+    /// <summary>部位词集合 = 双字部位表（cm3 标题词头抽出的 288 条）∪ 单字部位表（诊断侧通用词表）。</summary>
+    private static HashSet<string> SiteWords(string key)
+    {
+        var sites = Cm3SiteTerms.Extract(key);
+        foreach (var word in TextMatch.BodyQualifiers)
+        {
+            if (key.Contains(word, StringComparison.Ordinal))
+            {
+                sites.Add(word);
+            }
+        }
+
+        return sites;
+    }
+
+    /// <summary>
     /// 纯连接行：无编码、无指针、核心词整词就是连接词。
     /// public 供链路打分使用：折叠掉的连接行不是输入真写出的证据层，
     /// 既不挣链路深度加成也不挣覆盖度（纪律 3：改道平权，不加权）。
@@ -220,7 +289,8 @@ public static class Cm3ProcedureIndexMatcher
                 var childBestRatio = 0m;
                 foreach (var alias in child.Aliases)
                 {
-                    if (!AliasAddsInputContent(alias.MatchKey, inputKey, pathPositions))
+                    if (SiteConflicts(alias.MatchKey, inputKey)
+                        || !AliasAddsInputContent(alias.MatchKey, inputKey, pathPositions))
                     {
                         continue;
                     }

@@ -2658,4 +2658,64 @@ public sealed class IcdIndexTests
 
         Assert.DoesNotContain(22386, leads.Select(item => item.Node.SeqNo));
     }
+
+    /// <summary>
+    /// 真实索引行：主导词 结核(病)，结核性(18793) → －肺(空洞性)(纤维变性)(浸润性)(结节性)(18843) 下的
+    /// 三条分支——中性行 不伴有提及细菌学或组织学证实(18844, A16.2)、极性行 细菌学和组织学检查为阴性
+    /// (18853, A16.0)、阳性分支 确定的(18847，本身无码，A15.0 写在它的子行上)。
+    /// 字典侧 A16.003/A15.003 的标题就是带 (+)/(-) 标记的形态。
+    /// </summary>
+    private static IcdIndexSnapshot PoleMarkerSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(18793, "结核(病)，结核性(干酪样)(变性)(坏疽)(坏死)"),
+        ChildRow(18843, 18793, "－肺(空洞性)(纤维变性)(浸润性)(结节性)", "A16.2"),
+        ChildRow(18844, 18843, "－－不伴有提及细菌学或组织学证实", "A16.2", level: 2),
+        ChildRow(18853, 18843, "－－细菌学和组织学检查为阴性", "A16.0", level: 2),
+        ChildRow(18847, 18843, "－－确定的", level: 2),
+        ChildRow(18849, 18847, "－－－被显微镜下痰检查，伴有或不伴有痰培养", "A15.0", level: 3),
+    ]);
+
+    private static IcdDictionarySnapshot PoleMarkerDictionary() => new([
+        Dict("A16.003", "结核性肺纤维变性,痰镜检(-)"),
+        Dict("A16.203", "结核性肺纤维变性"),
+        Dict("A15.003", "结核性肺纤维变性,痰镜检(+)"),
+    ]);
+
+    [Theory]
+    [InlineData("结核性肺纤维变性,痰镜检(-)")]
+    [InlineData("结核性肺纤维变性,痰镜检（－）")]
+    [InlineData("结核性肺纤维变性,痰镜检 ( - ) ")]
+    public void 阴性标记改写成中文词后_索引写明的阴性行可达(string inputText)
+    {
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 12, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+
+        // 符号形态在 NormalizeKey 之后半角连字符整个消失、全角 dash 也留不下词面，
+        // 索引那一行「细菌学和组织学检查为阴性」一个字都锚不住，输入只能落回中性行 A16.2。
+        var results = resolver.Resolve(PoleMarkerSnapshot(), PoleMarkerDictionary(), inputText);
+
+        Assert.Equal("A16.003", results.First().Code);
+        Assert.Contains(results, item => item.EvidencePath.Contains("阴性", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void 极性标记只补变体_原文既有推荐一条不丢()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 12, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+
+        // 阳性分支在索引里写的是 确定的→被显微镜下痰检查，符号改写成 阳性 走不到那一行；
+        // 这一路是追加不是替换，所以既有的中性推荐必须原样保留（becameEmpty 硬线的机制保证）。
+        var results = resolver.Resolve(PoleMarkerSnapshot(), PoleMarkerDictionary(), "结核性肺纤维变性,痰镜检(+)");
+
+        Assert.Contains("A16.203", results.Select(item => item.Code));
+    }
+
+    [Fact]
+    public void 括号里不是极性符号时_不产生阴阳性变体()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 12, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+
+        // 索引与字典标题里 (a)(脊)(症) 这类括号限定词很多，改写只认 +/-，其余形态不得当成极性。
+        var results = resolver.Resolve(PoleMarkerSnapshot(), PoleMarkerDictionary(), "结核性肺纤维变性,痰镜检(x)");
+
+        Assert.DoesNotContain(results, item => item.EvidencePath.Contains("阴性", StringComparison.Ordinal));
+    }
 }

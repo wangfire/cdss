@@ -104,6 +104,15 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         texts.AddRange(TumorDynamicFormVariants(inputText)
             .Where(text => text.Length > 0 && !texts.Contains(text)));
 
+        // 检验结果极性标记 (+)/(-) 改写成 阳性/阴性：结核 A15/A16 一族整族靠这个符号分阴阳，
+        // 而 NormalizeKey 把半角连字符按标点剥掉、把 '+' 当数学符号留下——"(-)" 在词面上整个消失
+        // （等于没说），"(+)" 只剩一个孤零零的 '+'。索引写明的极性行（结核 → 肺 →
+        // 细菌学和组织学检查为阴性 A16.0）一个字都锚不住，输入只能落在 不伴有提及细菌学或
+        // 组织学证实 A16.2 这类"没提证实"的中性行上（CAP 万名 38 条带标记的输入只有 6 条 Top1 命中，
+        // 且全是词面自带 细菌学、不靠符号的那批）。
+        texts.AddRange(TestPoleMarkerVariants(inputText)
+            .Where(text => text.Length > 0 && !texts.Contains(text)));
+
         var ranked = new List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)>();
         // 另见-1 提示候选：只在常规链路的名额没占满时补位，不参与 Top1 竞争。
         var hints = new List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)>();
@@ -404,6 +413,81 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         }
 
         return [inputText.Replace(SecondaryTumorStem, SecondaryTumorLead, StringComparison.Ordinal)];
+    }
+
+    private const string PositivePoleWord = "阳性";
+
+    private const string NegativePoleWord = "阴性";
+
+    /// <summary>
+    /// 检验结果极性标记 (+)/(-) 补一路中文词变体。病历与字典都写成 "痰镜检(+)"、"病理(-)"，
+    /// 索引里管这件事的行写的是「细菌学和组织学检查为阴性 A16.0」——符号在 NormalizeKey 之后
+    /// 要么消失（连字符按标点剥掉）要么剩一个孤零零的 '+'，与 阴/阳 二字一字不沾，整条极性分支
+    /// 锚不住。补的是变体不是替换，原文照跑，所以这一路不可能让输入失去既有推荐。
+    /// 半角/全角括号与 + ＋ - － − 的混写都认；括号里是别的字（(a)(脊)(症)）原样保留。
+    /// </summary>
+    private static IReadOnlyList<string> TestPoleMarkerVariants(string inputText)
+    {
+        var builder = new System.Text.StringBuilder(inputText.Length + 4);
+        var rewritten = false;
+        for (var position = 0; position < inputText.Length; position++)
+        {
+            var consumed = TryReadPoleMarker(inputText, position, out var word);
+            if (consumed == 0)
+            {
+                builder.Append(inputText[position]);
+                continue;
+            }
+
+            builder.Append(word);
+            rewritten = true;
+            position += consumed - 1;
+        }
+
+        return rewritten ? [builder.ToString()] : [];
+    }
+
+    /// <summary>从 start 起读一个 "(+)" 形态的极性标记，返回吃掉的长度（0 = 不是标记）。</summary>
+    private static int TryReadPoleMarker(string text, int start, out string word)
+    {
+        word = string.Empty;
+        if (text[start] is not ('(' or '（'))
+        {
+            return 0;
+        }
+
+        var cursor = start + 1;
+        SkipSpaces(text, ref cursor);
+        word = cursor >= text.Length
+            ? string.Empty
+            : text[cursor] switch
+            {
+                '+' or '＋' => PositivePoleWord,
+                '-' or '－' or '−' => NegativePoleWord,
+                _ => string.Empty,
+            };
+        if (word.Length == 0)
+        {
+            return 0;
+        }
+
+        cursor++;
+        SkipSpaces(text, ref cursor);
+        if (cursor >= text.Length || text[cursor] is not (')' or '）'))
+        {
+            word = string.Empty;
+            return 0;
+        }
+
+        return cursor - start + 1;
+    }
+
+    private static void SkipSpaces(string text, ref int cursor)
+    {
+        while (cursor < text.Length && char.IsWhiteSpace(text[cursor]))
+        {
+            cursor++;
+        }
     }
 
     /// <summary>

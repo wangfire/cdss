@@ -104,6 +104,15 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         texts.AddRange(TumorDynamicFormVariants(inputText)
             .Where(text => text.Length > 0 && !texts.Contains(text)));
 
+        // 检验结果极性标记 (+)/(-) 改写成 阳性/阴性：结核 A15/A16 一族整族靠这个符号分阴阳，
+        // 而 NormalizeKey 把半角连字符按标点剥掉、把 '+' 当数学符号留下——"(-)" 在词面上整个消失
+        // （等于没说），"(+)" 只剩一个孤零零的 '+'。索引写明的极性行（结核 → 肺 →
+        // 细菌学和组织学检查为阴性 A16.0）一个字都锚不住，输入只能落在 不伴有提及细菌学或
+        // 组织学证实 A16.2 这类"没提证实"的中性行上（CAP 万名 38 条带标记的输入只有 6 条 Top1 命中，
+        // 且全是词面自带 细菌学、不靠符号的那批）。
+        texts.AddRange(TestPoleMarkerVariants(inputText)
+            .Where(text => text.Length > 0 && !texts.Contains(text)));
+
         var ranked = new List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)>();
         // 另见-1 提示候选：只在常规链路的名额没占满时补位，不参与 Top1 竞争。
         var hints = new List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)>();
@@ -342,7 +351,7 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
     /// 原发性干燥综合征伴间质性肺病 的 M35.000（正确码）挤出了 Top3。
     /// </summary>
     private static bool IsGenericConditionWord(string key)
-        => GenericConditionFamily.Contains(key) || key is "病" or "疾病";
+        => IcdIndexMatcher.IsGenericConditionLeadKey(key);
 
     private const string PostoperativeSuffix = "术后";
 
@@ -404,6 +413,81 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         }
 
         return [inputText.Replace(SecondaryTumorStem, SecondaryTumorLead, StringComparison.Ordinal)];
+    }
+
+    private const string PositivePoleWord = "阳性";
+
+    private const string NegativePoleWord = "阴性";
+
+    /// <summary>
+    /// 检验结果极性标记 (+)/(-) 补一路中文词变体。病历与字典都写成 "痰镜检(+)"、"病理(-)"，
+    /// 索引里管这件事的行写的是「细菌学和组织学检查为阴性 A16.0」——符号在 NormalizeKey 之后
+    /// 要么消失（连字符按标点剥掉）要么剩一个孤零零的 '+'，与 阴/阳 二字一字不沾，整条极性分支
+    /// 锚不住。补的是变体不是替换，原文照跑，所以这一路不可能让输入失去既有推荐。
+    /// 半角/全角括号与 + ＋ - － − 的混写都认；括号里是别的字（(a)(脊)(症)）原样保留。
+    /// </summary>
+    private static IReadOnlyList<string> TestPoleMarkerVariants(string inputText)
+    {
+        var builder = new System.Text.StringBuilder(inputText.Length + 4);
+        var rewritten = false;
+        for (var position = 0; position < inputText.Length; position++)
+        {
+            var consumed = TryReadPoleMarker(inputText, position, out var word);
+            if (consumed == 0)
+            {
+                builder.Append(inputText[position]);
+                continue;
+            }
+
+            builder.Append(word);
+            rewritten = true;
+            position += consumed - 1;
+        }
+
+        return rewritten ? [builder.ToString()] : [];
+    }
+
+    /// <summary>从 start 起读一个 "(+)" 形态的极性标记，返回吃掉的长度（0 = 不是标记）。</summary>
+    private static int TryReadPoleMarker(string text, int start, out string word)
+    {
+        word = string.Empty;
+        if (text[start] is not ('(' or '（'))
+        {
+            return 0;
+        }
+
+        var cursor = start + 1;
+        SkipSpaces(text, ref cursor);
+        word = cursor >= text.Length
+            ? string.Empty
+            : text[cursor] switch
+            {
+                '+' or '＋' => PositivePoleWord,
+                '-' or '－' or '−' => NegativePoleWord,
+                _ => string.Empty,
+            };
+        if (word.Length == 0)
+        {
+            return 0;
+        }
+
+        cursor++;
+        SkipSpaces(text, ref cursor);
+        if (cursor >= text.Length || text[cursor] is not (')' or '）'))
+        {
+            word = string.Empty;
+            return 0;
+        }
+
+        return cursor - start + 1;
+    }
+
+    private static void SkipSpaces(string text, ref int cursor)
+    {
+        while (cursor < text.Length && char.IsWhiteSpace(text[cursor]))
+        {
+            cursor++;
+        }
     }
 
     /// <summary>
@@ -501,6 +585,9 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         }
 
         var parsed = ParsedIndexCode.Parse(indexCode);
+        // 肿瘤表解部位码所依据的部位别名词面：索引链路词面（"瘤"）解释不了的病历部位信息，
+        // 在查表这一步被真实用过了，必须计入覆盖度，否则整条形态学链路会被 0.30 门槛打掉。
+        var tumorFaces = TumorSiteAliasFaces(parsed, tumor, inputText);
         var pathDisplay = string.Join(" → ", drill.Path.Select(node => node.Term));
         if (drill.Jumps.Count > 0)
         {
@@ -540,13 +627,13 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         // 30% 门槛仍按完整链路算：透明化不该让任何既有链路新掉进门控（打空硬线）。
         var evidencePath = drill.Path.Where(node => !IcdIndexMatcher.IsConnectorNode(node)).ToList();
         var evidenceOverlap = evidencePath.Count == drill.Path.Count
-            ? PathOverlapRatio(drill.Path, inputText)
-            : PathOverlapRatio(evidencePath, inputText);
+            ? PathOverlapRatio(drill.Path, inputText, tumorFaces)
+            : PathOverlapRatio(evidencePath, inputText, tumorFaces);
         var depthBoost = 1m + 0.05m * evidencePath.Count;
         // 链路字符重叠门控：主导词+下钻路径（取各节点与输入重叠最好的别名变体）
         // 必须解释输入 30% 以上字符，否则视为无关链路直接丢弃；重叠度并入评分做精排。
         // 跨部位误下钻（基底节/结核/牙源性）由主导词与子树限定词门控拦截，此处阈值只兜底。
-        var pathOverlap = PathOverlapRatio(drill.Path, inputText);
+        var pathOverlap = PathOverlapRatio(drill.Path, inputText, tumorFaces);
         if (pathOverlap < 0.30m)
         {
             return false;
@@ -612,7 +699,39 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
             && (child.CoreTerm.Contains("未特指部位", StringComparison.Ordinal)
                 || child.CoreTerm.Contains("部位未特指", StringComparison.Ordinal)));
 
-    private static decimal PathOverlapRatio(IReadOnlyList<IcdIndexNode> path, string inputText)
+    /// <summary>
+    /// 肿瘤表解部位码时真实用到的部位别名词面（只给"泛形态学码"链路：索引写 M8000/1，部位全靠查表）。
+    /// 口径与 <see cref="PathOverlapRatio"/> 一致——只计"输入里真写出来的字符"，
+    /// 所以只有查表解出了码的行所锚定的词面才算证据；表落空、走"未特指部位"兜底时返回空集，
+    /// 不给任何加成（免得让位轮交付的 C80/D36.9 这类无部位链路自己给自己抬覆盖度）。
+    /// 索引已自带部位码（M8332/3:C73）时不查表，证据本就由链路词面承担。
+    ///
+    /// 限定到 <see cref="IndexCodeExpander.IsSitelessMorphology"/>（M8000/M8010）是实测出来的：
+    /// 放开到特异形态码后，"血管瘤" 的 上肢/下肢/背部 这些部位词给 43920 纤维血管瘤 M9160/0
+    /// （骨内血管瘤，靠别名 血管瘤 沾住输入）刷满覆盖度，把索引明示"任何部位"的
+    /// 43920 血管瘤 M9120/0:D18.0 顶下 Top1——万条实测 9 条这类流失（右上肢血管瘤 D18.000X001→D16.100 等）。
+    /// 特异形态码本身就说清了疾病，部位词不是它的证据，不该拿这份加成。
+    /// </summary>
+    private static IReadOnlyList<string> TumorSiteAliasFaces(
+        ParsedIndexCode parsed, TumorIndexSnapshot? tumor, string inputText)
+    {
+        if (tumor is null
+            || parsed.Kind != IndexCodeFormatKind.Morphology
+            || parsed.SiteCode is { Length: > 0 }
+            || parsed.MorphologyCode is not { Length: > 0 } morphology
+            || !IndexCodeExpander.IsSitelessMorphology(morphology))
+        {
+            return [];
+        }
+
+        return tumor.ResolveSiteCodes(morphology, inputText)
+            .Where(match => match.AliasText.Length > 0)
+            .Select(match => match.AliasText)
+            .ToList();
+    }
+
+    private static decimal PathOverlapRatio(
+        IReadOnlyList<IcdIndexNode> path, string inputText, IReadOnlyList<string>? extraFaces = null)
     {
         var inputKey = TextMatch.StripIndexingFillers(inputText);
         if (inputKey.Length == 0)
@@ -646,6 +765,11 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
             {
                 covered.UnionWith(TextMatch.NormalizeKey(variant).Where(inputCharacters.Contains));
             }
+        }
+
+        foreach (var face in extraFaces ?? [])
+        {
+            covered.UnionWith(TextMatch.NormalizeKey(face).Where(inputCharacters.Contains));
         }
 
         return covered.Count / (decimal)inputCharacters.Count;

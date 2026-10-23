@@ -26,7 +26,10 @@ public sealed record DrillResult(
 /// <summary>
 /// 主导词召回 + 逐级修饰词下钻。
 /// 召回门控：别名被输入完整/高覆盖命中（TextMatch.MatchesInput），且词条部位限定词须在输入中声明；
+/// 单字主导词只有在它是输入结尾的核心词时才参与召回（见 IsTailCoreWord），
+/// 属性尾段复合别名剥出的单字 core 例外：逐字出现在输入里即可（见 IsAttributeTailOnlyAnchor）；
 /// "A病或B" 式的 或 尾段若在别处另有自己的主导词行，不得独立锚定本行（见 IcdIndexSnapshotBuilder.Build）；
+/// 输入写成 "手术后X" 时 手术 只是状态前缀的一部分，不锚定 手术 这类以 术 收尾的主导词（见 IsGenericSurgeryAliasOutsideTail）；
 /// 下钻门控：子节点（任一变体别名）对输入"新增长连续段 ≥2"才进入（同样受部位限定词约束），同层取增益最大者；
 /// 命中链上无码节点回退最近有码祖先，最终回退主导词码；"见"子节点改道与本树下钻并列，取输入覆盖更多者，
 /// 但本地只能靠祖先兜底取码时改道结果无条件优先（索引惯例里"见 X"即命令转换主导词）；
@@ -159,6 +162,82 @@ public static class IcdIndexMatcher
     private static bool IsMorphologyLead(IcdIndexNode lead)
         => lead.Code is { Length: > 0 } code && MorphologyCodeRegex.IsMatch(code);
 
+    /// <summary>
+    /// 单字主导词的尾重心门控。中文诊断名是"修饰语 + 核心名词"结构，编码员取的主导词
+    /// 就是末尾那个核心名词（手术后尿道会阴瘘 → 瘘、内痔 → 痔、马蹄肾 → 肾）。
+    /// 索引里 60 条 0 级单字主导词（瘘 194 子行/189 带码、痛 86、疹 9、痔、龋、疮、肾、
+    /// 心、双、无、大、性…）原先整族召不回：按覆盖字数排序，1 个字永远排在任何 2 字词之后，
+    /// 且 <code>alias.Key.Length &lt; 2</code> 直接拦住——万条实测 肛瘘、内痔 这类输入
+    /// 一个主导词都召不到，整条索引通道返回空。
+    /// 全量放开会让 心/性/大/无 沾住一切含该字的输入（跨部位误锚），所以只认结尾位置：
+    /// 单字必须是本条病历写到的最后一个词，出现在中部（心肌梗死）仍按原口径拦住。
+    /// 泛词 病 即使收尾也不放行（万条实测的唯一流失来源）：按编码员查典顺序它只能在
+    /// 所有真主导词落空后末位兜底，放行会让 高血压病 的 病，疾病→高血压 抢在常规链路前面。
+    /// </summary>
+    private static bool IsTailCoreWord(string aliasKey, string inputKey)
+        => aliasKey.Length == 1
+            && !IsGenericConditionLeadKey(aliasKey)
+            && inputKey.Length > 1
+            && inputKey.EndsWith(aliasKey, StringComparison.Ordinal);
+
+    /// <summary>泛术式主导词：词面是"手术"这一件事的统称，不带任何病种信息。</summary>
+    private const string GenericSurgeryAlias = "手术";
+
+    /// <summary>
+    /// 泛术式主导词 手术 的尾重心门控（与 <see cref="IsTailCoreWord"/> 同一判据，管的是两字词）。
+    /// "手术后尿道会阴瘘" 里 手术 只是 手术后 这个状态前缀的一部分：索引紧接着就写了
+    /// 35946 手术的 -见情况 与 35947 手术后的 -见情况 两行（编码员口径：见情况不是主导词），
+    /// 管术后状态的正牌主导词是 50034 状态 → －手术后 NEC 与 35948 手术后状态 NEC；
+    /// 而 0 级行 35943 手术(R69) 只有 2 条 分娩 子行，锚住即以祖先兜底展开成 R69.X00，
+    /// 且按覆盖字数排序它永远排在真正的结尾核心词 瘘 之前（工作簿因此读成"主导词=手术"）。
+    /// 万条实测噪声面：JZEY 1361 条 手术/术后 词面输入里 470 条候选含 R69.X00、CAP 189 条里 27 条，
+    /// 双语料 0 条以 R69 为真值；同义词等价类把 术后 写成 手术后 是它扩散到 470 条的通道。
+    /// 只在 手术 就是输入结尾核心词时放行（与单字主导词同一让位判据）。
+    /// </summary>
+    private static bool IsGenericSurgeryAliasOutsideTail(string aliasKey, string inputKey)
+        => aliasKey == GenericSurgeryAlias && !inputKey.EndsWith(GenericSurgeryAlias, StringComparison.Ordinal);
+
+    /// <summary>
+    /// 括号复合别名只在属性尾段上命中时不能当主导词锚点。索引把 "裂(先天性)" 写成一行时，
+    /// ParseAliases 会生成 裂先天性 与 裂 两个键；输入 先天性大脑囊肿 与 裂先天性 的最长公共段
+    /// 只有 先天性（3/4=0.75、最长段 3），按覆盖字数排序它会压过真正的结尾核心词 囊肿（2 字），
+    /// 把整族 先天性 属性行塞满 12 席，Q04.6 链路根本进不了下钻。
+    /// 这里剥掉属性尾段，对核心词复用单字/多字别名的原有锚定口径；
+    /// 单字 core 除结尾重心外，逐字出现在输入里即可锚定（先天性鳃裂瘘管 → 裂先天性，
+    /// 裂 在 鳃裂 里而不在结尾）。输入逐字含住整个复合键时一律放行。
+    /// 只关召回：别名集合、权重、MatchKey、下钻与链路覆盖度一律不动。
+    /// </summary>
+    private static bool IsAttributeTailOnlyAnchor(IcdIndexNode lead, IcdIndexAlias alias, string inputKey)
+    {
+        if (!IcdIndexSnapshotBuilder.TrySplitGenericAttributeTail(alias.Key, out var core))
+        {
+            return false;
+        }
+
+        if (inputKey.Contains(alias.Key, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (core.Length < 2)
+        {
+            return !IsMorphologyLead(lead)
+                && !IsTailCoreWord(core, inputKey)
+                && !(inputKey.Contains(core, StringComparison.Ordinal) && !IsGenericConditionLeadKey(core));
+        }
+
+        return GenericModifierKeys.Contains(core)
+            || IsGenericSurgeryAliasOutsideTail(core, inputKey)
+            || !TextMatch.MatchesInput(core, inputKey, out _);
+    }
+
+    /// <summary>
+    /// 索引惯例里的泛化主导词族（情况 = 病，疾病 一族）。它们不携带"这行说的是哪个病"，
+    /// 召回层与失效主导词改道层都要用它拦住，只有末位兜底通道允许进入。
+    /// </summary>
+    public static bool IsGenericConditionLeadKey(string aliasKey)
+        => aliasKey is "病" or "疾病" or "情况" or "疾患" or "综合征";
+
     public static IReadOnlyList<LeadWordHit> RecallLeads(
         IcdIndexSnapshot snapshot,
         string inputKey,
@@ -184,12 +263,15 @@ public static class IcdIndexMatcher
             {
                 // 单字别名（"肾"）只作下钻目标，不足以定位主导词；
                 // RecallAnchor=false 的 或 尾段同理（它继承头段限定词，不是本行的主导词）。
-                // 例外：本行编码是 ICD-O 形态学码（M####/d）的单字主导词——索引里肿瘤形态
+                // 例外一：本行编码是 ICD-O 形态学码（M####/d）的单字主导词——索引里肿瘤形态
                 // 树的主导词按惯例就是一个字（143 癌 M8010/3），拦住它整棵形态学树就召不回，
-                // "甲状腺C细胞癌" 只能被 甲状腺X 疾病行借走。其余 59 条单字行（心/汗/红…）
-                // 照旧拦住，避免跨部位误召回。
+                // "甲状腺C细胞癌" 只能被 甲状腺X 疾病行借走。
+                // 例外二：单字正是本条病历的结尾核心词（见 IsTailCoreWord）。
+                // 心/汗/红 这类单字行只在收尾时锚定，出现在中部（心肌梗死）照旧拦住。
                 if (!alias.RecallAnchor || GenericModifierKeys.Contains(alias.Key)
-                    || (alias.Key.Length < 2 && !IsMorphologyLead(lead)))
+                    || IsGenericSurgeryAliasOutsideTail(alias.Key, inputKey)
+                    || (alias.Key.Length < 2 && !IsMorphologyLead(lead) && !IsTailCoreWord(alias.Key, inputKey))
+                    || IsAttributeTailOnlyAnchor(lead, alias, inputKey))
                 {
                     continue;
                 }
@@ -214,12 +296,42 @@ public static class IcdIndexMatcher
             }
         }
 
-        return hits
+        var ranked = hits
             .OrderByDescending(hit => hit.CoveredChars)
             .ThenByDescending(hit => hit.CoverRatio * hit.Alias.Weight)
-            .Take(topK)
             .ToList();
+        var taken = ranked.Take(topK).ToList();
+
+        // 形态学入口保底席位（M18 的席位版）。肿瘤形态学主导词 瘤(M8000/1)/癌(M8010/3) 是
+        // tumor_index 解部位码的唯一入口，但召回第一排序键是覆盖字数，1 个字的它永远排在
+        // 所有 2~3 字疾病主导词之后：肾盂输尿管连接处恶性肿瘤 的 瘤 排第 13 名，在 12 席之外，
+        // 于是整条肿瘤链路根本没被调用，交付唯一过 0.30 门槛的 输尿管积水 N13.400（覆盖 0.333）。
+        // 占掉第 12 席的是 49644 肿瘤(形成)(另见 肿瘤)——自身无码、下钻也走不出码的死指针行：
+        // 9b2b85c 让它退出下钻选层，但没让它退出召回席位。
+        // 三条收窄（都是避免"变相放宽全局席位"，24 席实测在真实病历上流失 8 条）：
+        // ① 只在席位内一条形态学链路都没有时补位（有就不动，避免与既有形态学行抢席）；
+        // ② 只补泛形态码主导词（IsSitelessMorphology，与 M18、resolver 覆盖度记账同一判据），
+        //    特异形态码（M9530/0 脑(脊)膜瘤）是病名不是入口，不配保底；
+        // ③ 只补"主导词就是输入结尾核心词"的（与单字主导词、泛术式 手术、M18 同一尾重心判据），
+        //    动脉瘤/淋巴瘤 那类 瘤 在词内部的输入不启用。
+        // 补位是替换末位席位而不是追加，席位总数不变（改道平权纪律：不借保底之名加权）。
+        if (ranked.Count > topK
+            && !taken.Any(hit => IsMorphologyLead(hit.Node))
+            && ranked.Skip(topK).FirstOrDefault(IsMorphologyEntryHit(inputKey)) is { } rescue)
+        {
+            taken[^1] = rescue;
+        }
+
+        return taken;
     }
+
+    /// <summary>
+    /// 可作肿瘤表入口的候选：泛形态码主导词，且命中的别名键就是输入的结尾核心词。
+    /// </summary>
+    private static Func<LeadWordHit, bool> IsMorphologyEntryHit(string inputKey)
+        => hit => IndexCodeExpander.IsSitelessMorphology(hit.Node.Code)
+            && hit.Alias.Key.Length > 0
+            && inputKey.EndsWith(hit.Alias.Key, StringComparison.Ordinal);
 
     /// <param name="jumpTrace">
     /// 证据链首跳标注（失效主导词 "X -见 Y" 的改道：调用方自己构造命中时链路里没有这一步，
@@ -263,6 +375,21 @@ public static class IcdIndexMatcher
         var current = lead;
         IcdIndexNode? pendingJump = null;
         IcdIndexNode? pendingSeeAlsoJump = null;
+        // 泛形态学主导词行（M8000 肿瘤 / M8010 癌）自带的 M####/d 是肿瘤表解部位码的唯一入口：
+        // 下钻若停在"头段词面根本没写进输入、只靠部位尾段或括号注解沾上"的带码子行，交付码就从
+        // 形态学码换成别病种的疾病码，肿瘤链路整条失效——22386 瘤(M8000/1) 的 126 个子行里
+        // 脑室动态未定肿瘤 只沾到 －梅毒性，脑 的 脑，换成 A52.1† G94.8* 后覆盖度 2/8=0.25
+        // 掉进 0.30 门槛，索引通道返回空；而 tumor_index 用 /1 + 室 本来就解得出 D43.0
+        //（字典 D43.002 脑室动态未定肿瘤）。
+        // 判据两条都是实测收窄出来的：
+        // ① 只保泛码——特异形态码（M9530/0 脑(脊)膜瘤）自己就是病名，下钻是索引给的细分，
+        //    一并保护会让 右侧桥小脑角脑膜瘤 丢掉期望码 D32.900X002；泛码链路的部位信息
+        //    完全来自肿瘤表，与 resolver 的覆盖度记账用同一条 IsSitelessMorphology 判据。
+        // ② 只在主导词就是输入的结尾核心词时启用（与单字主导词、泛术式 手术 同一尾重心判据）：
+        //    动脉瘤/淋巴瘤 的 瘤 写在病案词内部，放开会把 C70.9 蛛网膜恶性肿瘤注进血管病案。
+        var protectMorphologyLead = IndexCodeExpander.IsSitelessMorphology(lead.Code)
+            && initialPathKey.Length > 0
+            && inputKey.EndsWith(initialPathKey, StringComparison.Ordinal);
 
         while (true)
         {
@@ -270,6 +397,7 @@ public static class IcdIndexMatcher
             string bestChildKey = string.Empty;
             int bestGain = 0;
             var bestRatio = 0m;
+            var bestSegment = 0;
             IcdIndexNode[] bestConnectors = [];
             // 路径当前已在输入中占住的片段，用于判定子节点是否带来"新内容"。
             var pathPositions = TextMatch.CoveredTextPositions(pathKey, inputKey);
@@ -285,15 +413,45 @@ public static class IcdIndexMatcher
                     continue;
                 }
 
+                // 纯指针行（无码、无子行）只有当改道真能出发时才准参加本层竞选：
+                // 目标解析失败（索引死指针）或解析回已访问节点（自指环——"小脑脑桥(角) - 见 囊肿，脑"
+                // 的目标键头词按精确键回落到本主导词自己）时它无任何产出，却常靠输入里散落的
+                // 单字残段（桥/角）拿最高词面增益抢走选层权——选层不回溯，整条链路随之落空
+                // （桥小脑角蛛网膜囊肿 的 囊肿→蛛网膜，脑(后天性) G93.0 链路因此全灭）。
+                // "见情况" 行走末位兜底通道（IsGenericConditionTarget），不在此列。
+                if (child.JumpKind is IndexJumpKind.See or IndexJumpKind.SeeAlso
+                    && !IsGenericConditionTarget(child.JumpTarget)
+                    && child.Code is null
+                    && child.Children.Count == 0
+                    && (ResolveJumpLead(snapshot, child.JumpTarget ?? string.Empty) is not { } jumpableLead
+                        || visited.Contains(jumpableLead.SeqNo)))
+                {
+                    continue;
+                }
+
                 var childBestGain = 0;
                 string? childBestKey = null;
                 var childBestRatio = 0m;
+                var childBestSegment = 0;
                 foreach (var alias in child.Aliases)
                 {
                     // 子节点必须为链路带来输入的"新内容"（≥2 连续片段，且不是路径已占过的字）：
                     // 只有虚字符（"原因不明致命性" 的 "性"）或重复字
                     // （先兆→流产→"伴有随后性流产" 的 "流产"）可沾的分支不得进入。
                     if (!AliasAddsInputContent(alias.MatchKey, inputKey, pathPositions))
+                    {
+                        continue;
+                    }
+
+                    // 泛形态学主导词行不得被"只靠部位尾段/括号注解沾上"的带码子行顶掉：
+                    // 这类子行的头段词面（梅毒性、内分泌多发性）根本没写进输入，本层选它
+                    // 就把 M####/d 换成别病种的疾病码，肿瘤表再也拿不到形态学码。
+                    // 子行自身带码且不是形态学码才拦——指针行（另见/见）与
+                    // 22660 "－脂细胞，卵巢 M8670/0:D27" 这类同族形态学子行照常下钻。
+                    if (protectMorphologyLead
+                        && alias.Weight < 1.0m
+                        && child.Code is { Length: > 0 } childCode
+                        && !MorphologyCodeRegex.IsMatch(childCode))
                     {
                         continue;
                     }
@@ -322,11 +480,14 @@ public static class IcdIndexMatcher
                     if (gain >= 1
                         && (childBestKey is null
                             || combinedCover.Ratio > childBestRatio
-                            || (combinedCover.Ratio == childBestRatio && gain > childBestGain)))
+                            || (combinedCover.Ratio == childBestRatio && gain > childBestGain)
+                            || (combinedCover.Ratio == childBestRatio && gain == childBestGain
+                                && combinedCover.MaxSegment > childBestSegment)))
                     {
                         childBestGain = gain;
                         childBestKey = combined;
                         childBestRatio = combinedCover.Ratio;
+                        childBestSegment = combinedCover.MaxSegment;
                     }
                 }
 
@@ -364,12 +525,17 @@ public static class IcdIndexMatcher
                 // 同增益兄弟节点取"整条命中路径被输入覆盖比例"更高者：
                 // "闭塞→动脉"(闭塞动脉 全在输入) 与 "闭塞→冠状(动脉)"(冠状 不在输入) 增益都是 2，
                 // 按序号后来者胜会把链路带到冠状动脉 I21.9；覆盖比例才反映输入真正写出的部位。
+                // 同增益同比例再取最长连续段大者：散落单字（桥/角）凑的覆盖是弱证据，
+                // 不应压过输入里连续写出的词（蛛网膜），否则选层不回溯会带偏整条链路。
                 if (childBestKey is not null
                     && (childBestGain > bestGain
-                        || (childBestGain == bestGain && childBestRatio > bestRatio)))
+                        || (childBestGain == bestGain && childBestRatio > bestRatio)
+                        || (childBestGain == bestGain && childBestRatio == bestRatio
+                            && childBestSegment > bestSegment)))
                 {
                     bestGain = childBestGain;
                     bestRatio = childBestRatio;
+                    bestSegment = childBestSegment;
                     bestChild = child;
                     bestChildKey = childBestKey;
                     bestConnectors = connectors;

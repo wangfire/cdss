@@ -1,4 +1,5 @@
 using System.Text;
+using HospitalAi.Application.Coding.Cm3Index;
 using HospitalAi.Application.Coding.IcdIndex;
 using HospitalAi.Application.Coding.Matching;
 using Microsoft.Data.SqlClient;
@@ -13,6 +14,7 @@ var codeSystem = "ICD-10";
 if (args.Length == 0)
 {
     Console.Error.WriteLine("用法: IcdIndexDiag <诊断文本> [...] [--tree <seq_no>] [--terms <输出文件>] [--blank <输入名文件> <输出判定文件>] [--leadstats <输入名文件> <产出台账文件>] [--leads <输入名文件> <全主导词台账文件>] [--batch <输入名文件> <Top1台账文件>] [--export <输入名文件> <推荐与链路明细文件>]");
+    Console.Error.WriteLine("     手术通道: IcdIndexDiag --procedure <手术名> [...] [--ptree <seq_no>] [--pbatch <输入名文件> <台账文件>] [--pblank <输入名文件> <归因文件>]");
     return 1;
 }
 
@@ -29,10 +31,39 @@ var exportOut = (string?)null;
 var leadsIn = (string?)null;
 var leadsOut = (string?)null;
 var tumorSiteMorph = (string?)null;
+var tumorLedgerIn = (string?)null;
+var tumorLedgerOut = (string?)null;
+var procedureMode = false;
+var cm3TreeSeq = -1;
+var cm3BatchIn = (string?)null;
+var cm3BatchOut = (string?)null;
+var cm3BlankIn = (string?)null;
+var cm3BlankOut = (string?)null;
 var inputs = new List<string>();
 for (var i = 0; i < args.Length; i++)
 {
-    if (args[i] == "--tree" && i + 1 < args.Length)
+    if (args[i] == "--procedure")
+    {
+        procedureMode = true;
+    }
+    else if (args[i] == "--ptree" && i + 1 < args.Length)
+    {
+        procedureMode = true;
+        cm3TreeSeq = int.Parse(args[++i]);
+    }
+    else if (args[i] == "--pbatch" && i + 2 < args.Length)
+    {
+        procedureMode = true;
+        cm3BatchIn = args[++i];
+        cm3BatchOut = args[++i];
+    }
+    else if (args[i] == "--pblank" && i + 2 < args.Length)
+    {
+        procedureMode = true;
+        cm3BlankIn = args[++i];
+        cm3BlankOut = args[++i];
+    }
+    else if (args[i] == "--tree" && i + 1 < args.Length)
     {
         treeSeq = int.Parse(args[++i]);
     }
@@ -69,6 +100,11 @@ for (var i = 0; i < args.Length; i++)
     {
         tumorSiteMorph = args[++i];
     }
+    else if (args[i] == "--tumorledger" && i + 2 < args.Length)
+    {
+        tumorLedgerIn = args[++i];
+        tumorLedgerOut = args[++i];
+    }
     else
     {
         inputs.Add(args[i]);
@@ -79,6 +115,12 @@ if (termsOut is not null)
 {
     DumpTerms(conn, termsOut);
     return 0;
+}
+
+// 手术通道单独一套 face：索引库（cm3_index）与展开字典（ICD-9-CM-3）都与诊断侧不同构，不混用快照。
+if (procedureMode)
+{
+    return RunCm3Modes(conn, hospital, cm3TreeSeq, cm3BatchIn, cm3BatchOut, cm3BlankIn, cm3BlankOut, inputs);
 }
 
 var snapshot = BuildSnapshot(conn);
@@ -121,7 +163,13 @@ if (tumorSiteMorph is not null)
 }
 // ICD_INDEX_DIAG_TOP 可放宽产出条数上限，用于查看被 Top-3 挤掉的候选及其分值。
 var diagTop = int.TryParse(Environment.GetEnvironmentVariable("ICD_INDEX_DIAG_TOP"), out var parsedTop) ? parsedTop : 3;
-var resolver = new IcdIndexDiagnosisResolver(8, diagTop, codeSystem);
+// 单输入诊断原先把召回席位写死成 8，生产已是 12，所以「第 9~12 名主导词」在诊断输出里根本看不见
+// （肾盂输尿管连接处恶性肿瘤 的 瘤 就排在第 13 名，用席位杠杆实测时读不到真相）。
+// 这里跟 ICD_INDEX_DIAG_LEADK 对齐，未设时仍是 8，保持既有台账可复算。
+var diagLeadK = int.TryParse(Environment.GetEnvironmentVariable("ICD_INDEX_DIAG_LEADK"), out var parsedDiagLeadK)
+    ? parsedDiagLeadK
+    : 8;
+var resolver = new IcdIndexDiagnosisResolver(diagLeadK, diagTop, codeSystem);
 
 if (blankIn is not null && blankOut is not null)
 {
@@ -144,7 +192,29 @@ if (leadsIn is not null && leadsOut is not null)
 if (batchIn is not null && batchOut is not null)
 {
     // 批量台账固定用生产口径 maxResults=3，便于改动前后逐名 Top1 对比。
-    RunBatch(snapshot, dictionary, synonyms, new IcdIndexDiagnosisResolver(8, 3, codeSystem), batchIn, batchOut, tumor);
+    // ICD_INDEX_DIAG_LEADK 只放宽诊断工具的召回席位，用于实测「名额」这一档杠杆的上限，不改生产口径。
+    var batchLeadK = int.TryParse(Environment.GetEnvironmentVariable("ICD_INDEX_DIAG_LEADK"), out var parsedLeadK)
+        ? parsedLeadK
+        : 8;
+    RunBatch(snapshot, dictionary, synonyms, new IcdIndexDiagnosisResolver(batchLeadK, 3, codeSystem), batchIn, batchOut, tumor);
+    return 0;
+}
+
+// 肿瘤专项台账：逐名同时带出「生产链路交付了什么」与「肿瘤表按各行为位能解出什么部位码」，
+// 用于回答 M8000/3 这类泛形态码该不该丢、丢了以后部位码在表里到底有没有。
+if (tumorLedgerIn is not null && tumorLedgerOut is not null)
+{
+    if (tumor is null)
+    {
+        Console.Error.WriteLine("tumor_index 表为空。");
+        return 1;
+    }
+
+    var ledgerLeadK = int.TryParse(Environment.GetEnvironmentVariable("ICD_INDEX_DIAG_LEADK"), out var parsedLedgerK)
+        ? parsedLedgerK
+        : 8;
+    RunTumorLedger(snapshot, dictionary, synonyms, tumor,
+        new IcdIndexDiagnosisResolver(ledgerLeadK, 3, codeSystem), tumorLedgerIn, tumorLedgerOut);
     return 0;
 }
 
@@ -157,7 +227,7 @@ if (exportIn is not null && exportOut is not null)
 foreach (var input in inputs)
 {
     Console.WriteLine($"===== {input} =====");
-    Diagnose(snapshot, dictionary, input, codeSystem);
+    Diagnose(snapshot, dictionary, input, codeSystem, diagLeadK);
     var results = resolver.Resolve(snapshot, dictionary, input, null, synonyms, tumor: tumor);
     Console.WriteLine($"-- resolver 产出 {results.Count} 条");
     foreach (var item in results)
@@ -221,7 +291,62 @@ static TumorIndexSnapshot? BuildTumor(string conn)
             reader.IsDBNull(11) || reader.GetString(11).Length == 0 ? null : reader.GetString(11)));
     }
 
-    return rows.Count == 0 ? null : TumorIndexSnapshot.Build(rows);
+    return rows.Count == 0 ? null : TumorIndexSnapshot.Build(ApplyTumorDraftRows(rows));
+}
+
+/// <summary>
+/// 肿瘤表（tumor_index）知识库侧草稿改动的离线注入通道：TUMOR_DRAFT_ROWS=&lt;TSV&gt;，
+/// 列序同导出查询（seq_no / index_name / index_level / parent_seq_no / full_index_name /
+/// 五个行为位码列 / jump_kind / jump_target），空列=无码，`-` 也当空。
+/// 同 seq_no 视为改行（等价于 UPDATE index_name），新 seq_no 视为插行；只在诊断工具里生效、不写库，
+/// 两面复算都不净负才谈入库。
+/// </summary>
+static List<TumorIndexRow> ApplyTumorDraftRows(List<TumorIndexRow> rows)
+{
+    var path = Environment.GetEnvironmentVariable("TUMOR_DRAFT_ROWS");
+    if (string.IsNullOrEmpty(path) || !File.Exists(path))
+    {
+        return rows;
+    }
+
+    static string? Code(string f) => f.Length == 0 || f == "-" ? null : f;
+
+    var bySeq = rows.Select((row, i) => (row, i)).ToDictionary(x => x.row.SeqNo, x => x.i);
+    var replaced = 0;
+    var inserted = 0;
+    foreach (var line in File.ReadAllLines(path))
+    {
+        if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#'))
+        {
+            continue;
+        }
+
+        var f = line.Split('\t').Select(field => field.Trim()).ToArray();
+        if (f.Length < 5)
+        {
+            continue;
+        }
+
+        var draft = new TumorIndexRow(
+            int.Parse(f[0]), f[1], int.Parse(f[2]), int.Parse(f[3]), f[4],
+            Code(f.Length > 5 ? f[5] : ""), Code(f.Length > 6 ? f[6] : ""), Code(f.Length > 7 ? f[7] : ""),
+            Code(f.Length > 8 ? f[8] : ""), Code(f.Length > 9 ? f[9] : ""),
+            f.Length > 10 && f[10].Length > 0 ? int.Parse(f[10]) : 0,
+            Code(f.Length > 11 ? f[11] : ""));
+        if (bySeq.TryGetValue(draft.SeqNo, out var index))
+        {
+            rows[index] = draft;
+            replaced++;
+        }
+        else
+        {
+            rows.Add(draft);
+            inserted++;
+        }
+    }
+
+    Console.Error.WriteLine($"-- 肿瘤表草稿注入：改 {replaced} 行 / 插 {inserted} 行（{path}）");
+    return [.. rows.OrderBy(row => row.SeqNo)];
 }
 
 // 术语同义词快照（与生产同源：icd_term_synonym 表，仅取启用行）。
@@ -376,6 +501,58 @@ static void RunBatch(
     File.WriteAllText(outFile, sb.ToString(), new UTF8Encoding(false));
     Console.WriteLine("wrote " + outFile);
 }
+
+/// <summary>
+/// 肿瘤专项台账：逐名同时带出「链路实际交付了什么」与「肿瘤索引表按该行为位能解出什么部位码」，
+/// 用于判定 M8000/3 这类泛形态码是「表里没部位」还是「部位词锚不上表」，两者修法不同。
+/// 输出：名称 \t 交付编码 \t 交付标题 \t Top1证据 \t 交付形态码数 \t 行为位 \t 肿瘤表部位码 \t 肿瘤表候选Top5
+/// </summary>
+static void RunTumorLedger(
+    IcdIndexSnapshot snapshot,
+    IcdDictionarySnapshot dictionary,
+    IcdTermSynonymSnapshot synonyms,
+    TumorIndexSnapshot tumor,
+    IcdIndexDiagnosisResolver resolver,
+    string inFile,
+    string outFile)
+{
+    var sb = new StringBuilder();
+    sb.AppendLine(string.Join('\t',
+        "名称", "交付编码", "交付标题", "Top1证据", "交付形态码数", "行为位", "肿瘤表部位码", "肿瘤表候选Top5"));
+    foreach (var name in File.ReadLines(inFile).Select(line => line.Trim()).Where(line => line.Length > 0))
+    {
+        var results = resolver.Resolve(snapshot, dictionary, name, null, synonyms, tumor: tumor);
+        var morphological = results.Where(item => System.Text.RegularExpressions.Regex
+            .IsMatch(item.Code.ToUpperInvariant(), @"^M\d{4,5}/\d")).ToList();
+        var digit = BehaviorDigitOfInput(name);
+        var site = tumor.TryResolveSiteCode($"M8000/{digit}", name);
+        var candidates = string.Join(" ‖ ", tumor
+            .DescribeCandidates(name, $"M8000/{digit}", 5)
+            .Select(item => $"{item.FullIndexName}[级{item.Level} 别名{item.AliasScore}/{item.AliasLength}字 父路{item.PathScore}"
+                + $" 出码{item.EmittedCode ?? "-"}{(item.TiedWithBest ? " 并列" : "")}]"));
+
+        sb.Append(Sanitize(name))
+            .Append('\t').Append(Sanitize(string.Join("|", results.Select(item => item.Code))))
+            .Append('\t').Append(Sanitize(string.Join("|", results.Select(item => item.Title))))
+            .Append('\t').Append(Sanitize(results.Count > 0 ? results[0].EvidencePath : string.Empty))
+            .Append('\t').Append(morphological.Count)
+            .Append('\t').Append(digit)
+            .Append('\t').Append(site?.Code ?? "-")
+            .Append('\t').Append(Sanitize(candidates))
+            .AppendLine();
+    }
+
+    File.WriteAllText(outFile, sb.ToString(), new UTF8Encoding(false));
+    Console.WriteLine("wrote " + outFile);
+}
+
+/// <summary>输入词面 → 动态码行为位（肿瘤表列）：写 继发/转移 走 /6，良性 /0，原位 /2，动态未定 /1，其余按原发 /3。</summary>
+static string BehaviorDigitOfInput(string name)
+    => name.Contains("继发", StringComparison.Ordinal) || name.Contains("转移", StringComparison.Ordinal) ? "6"
+        : name.Contains("良性", StringComparison.Ordinal) ? "0"
+        : name.Contains("原位", StringComparison.Ordinal) ? "2"
+        : name.Contains("动态未定", StringComparison.Ordinal) || name.Contains("交界", StringComparison.Ordinal) ? "1"
+        : "3";
 
 /// <summary>
 /// 对照导出的明细台账（本地复算，不写库）：每个诊断名先按生产口径（maxResults=3）取推荐，
@@ -602,7 +779,11 @@ static void RunLeadEnumeration(
     TumorIndexSnapshot? tumor = null)
 {
     const int enumerateTopK = 100;
-    const int productionTopK = 8;
+    // 生产席位随 V22PipelineOptions.LeadWordTopK 放宽到 12；台账里的 生产名额内 标记必须跟着改口径，
+    // 否则人工判噪还在按 8 席看。可用 ICD_INDEX_DIAG_LEADK 临时对照别的席位。
+    var productionTopK = int.TryParse(Environment.GetEnvironmentVariable("ICD_INDEX_DIAG_LEADK"), out var parsedLeadK)
+        ? parsedLeadK
+        : 12;
 
     var sb = new StringBuilder();
     sb.AppendLine(string.Join('\t',
@@ -830,14 +1011,15 @@ static IcdDictionarySnapshot BuildDictionary(string conn, string hospital, strin
     return new IcdDictionarySnapshot(rows);
 }
 
-static void Diagnose(IcdIndexSnapshot snapshot, IcdDictionarySnapshot dictionary, string input, string codeSystem)
+static void Diagnose(
+    IcdIndexSnapshot snapshot, IcdDictionarySnapshot dictionary, string input, string codeSystem, int leadTopK)
 {
     var inputKey = TextMatch.NormalizeKey(input);
     var inputQualifiers = TextMatch.ExtractQualifiers(inputKey);
     Console.WriteLine($"-- key={inputKey} qualifiers=[{string.Join(",", inputQualifiers)}]");
 
     // 召回完全走生产口径（IcdIndexMatcher.RecallLeads），本工具只负责展开链路。
-    foreach (var hit in IcdIndexMatcher.RecallLeads(snapshot, inputKey, 8))
+    foreach (var hit in IcdIndexMatcher.RecallLeads(snapshot, inputKey, leadTopK))
     {
         var lead = hit.Node;
         Console.WriteLine($"-- 召回 lead={lead.SeqNo}:{lead.Term} alias={hit.Alias.Key} cover={hit.CoverRatio} chars={hit.CoveredChars}");
@@ -999,5 +1181,398 @@ static void Walk(IcdIndexNode node, int depth, StringBuilder sb)
     foreach (var child in node.Children)
     {
         Walk(child, depth + 1, sb);
+    }
+}
+
+// ===== 手术通道（cm3_index 两段式链路）=====
+// 判据全部走生产代码（Cm3ProcedureIndexMatcher / Cm3IndexCodeExpander / Cm3ProcedureIndexResolver），
+// 本工具只负责把每一层的中间量打出来；口径与在线不一致时以在线为准。
+
+static int RunCm3Modes(
+    string conn,
+    string hospital,
+    int treeSeq,
+    string? batchIn,
+    string? batchOut,
+    string? blankIn,
+    string? blankOut,
+    List<string> inputs)
+{
+    var snapshot = BuildCm3Snapshot(conn);
+    Console.Error.WriteLine(
+        $"-- cm3_index：{snapshot.TotalNodes} 行 / 0 级 {snapshot.Level0Rows} 条 / 有效主导词 {snapshot.Leads.Count} 条 / " +
+        $"死路主导词 {snapshot.DeadEndLeads} 条 / 状态列与词面不一致 {snapshot.LeadStatusDisagreements} 条 / " +
+        $"失效主导词改道键 {snapshot.Redirects.Count} 个");
+
+    if (treeSeq > 0)
+    {
+        DumpCm3Tree(snapshot, treeSeq);
+        return 0;
+    }
+
+    var dictionary = BuildDictionary(conn, hospital, Cm3CodeSystem.DictionaryCodeSystem);
+    Console.Error.WriteLine(
+        $"-- 展开字典：{Cm3CodeSystem.DictionaryCodeSystem} 共 {dictionary.Count} 行"
+        + (dictionary.Count == 0
+            ? "（该医院下没有手术字典，用 ICD_INDEX_DIAG_HOSPITAL 指定拥有 ICD-9-CM-3 的医院）"
+            : string.Empty));
+    var synonyms = BuildSynonyms(conn);
+
+    if (batchIn is not null && batchOut is not null)
+    {
+        RunProcedureBatch(snapshot, dictionary, synonyms, batchIn, batchOut);
+        return 0;
+    }
+
+    if (blankIn is not null && blankOut is not null)
+    {
+        RunProcedureBlank(snapshot, dictionary, synonyms, blankIn, blankOut);
+        return 0;
+    }
+
+    if (inputs.Count == 0)
+    {
+        Console.Error.WriteLine(
+            "用法: --procedure <手术名> [...] / --ptree <seq_no> / --pbatch <名文件> <台账文件> / --pblank <名文件> <归因文件>");
+        return 1;
+    }
+
+    var diagTop = int.TryParse(Environment.GetEnvironmentVariable("ICD_INDEX_DIAG_TOP"), out var parsedTop)
+        ? parsedTop
+        : 3;
+    var resolver = new Cm3ProcedureIndexResolver(8, diagTop);
+    foreach (var input in inputs)
+    {
+        Console.WriteLine($"===== {input} =====");
+        DiagnoseProcedure(snapshot, dictionary, input);
+        var results = resolver.Resolve(snapshot, dictionary, input, synonyms);
+        Console.WriteLine($"-- resolver 产出 {results.Count} 条");
+        foreach (var item in results)
+        {
+            Console.WriteLine(
+                $"   {item.Code} {item.Title} score={item.Score} fb={item.IsIndexFallback} "
+                + $"depth={item.WholeTitleDepth} fam={item.FamilyRank} | {item.EvidencePath}");
+        }
+    }
+
+    return 0;
+}
+
+static List<Cm3IndexRow> BuildCm3Rows(string conn)
+{
+    using var sql = new SqlConnection(conn);
+    sql.Open();
+    using var cmd = new SqlCommand(
+        "SELECT seq_no, index_name, index_code, index_level, parent_seq_no, lead_word_status FROM cm3_index ORDER BY seq_no", sql);
+    using var reader = cmd.ExecuteReader();
+    var rows = new List<Cm3IndexRow>();
+    while (reader.Read())
+    {
+        rows.Add(new Cm3IndexRow(
+            reader.GetInt32(0),
+            reader.GetString(1),
+            reader.IsDBNull(2) ? null : reader.GetString(2),
+            reader.GetInt32(3),
+            reader.GetInt32(4),
+            reader.GetInt32(5)));
+    }
+
+    AppendCm3DraftRows(rows);
+
+    return rows;
+}
+
+/// <summary>
+/// 知识库侧候选行的离线注入通道：CM3_DRAFT_ROWS=&lt;TSV&gt;，列序 seq_no / index_name / index_code / index_level / parent_seq_no / lead_word_status。
+/// 只在诊断工具里生效，不写库；两面复算都不净负才谈入库。
+/// </summary>
+static void AppendCm3DraftRows(List<Cm3IndexRow> rows)
+{
+    var path = Environment.GetEnvironmentVariable("CM3_DRAFT_ROWS");
+    if (string.IsNullOrEmpty(path) || !File.Exists(path))
+    {
+        return;
+    }
+
+    var added = 0;
+    foreach (var line in File.ReadAllLines(path))
+    {
+        if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#'))
+        {
+            continue;
+        }
+
+        var f = line.Split('\t');
+        if (f.Length < 5)
+        {
+            continue;
+        }
+
+        rows.Add(new Cm3IndexRow(
+            int.Parse(f[0]),
+            f[1],
+            f[2].Length > 0 ? f[2] : null,
+            int.Parse(f[3]),
+            int.Parse(f[4]),
+            f.Length > 5 ? int.Parse(f[5]) : 0));
+        added++;
+    }
+
+    Console.Error.WriteLine($"-- 草稿行注入 {added} 条（{path}）");
+}
+
+static Cm3IndexSnapshot BuildCm3Snapshot(string conn) => Cm3IndexSnapshotBuilder.Build(BuildCm3Rows(conn));
+
+static void DiagnoseProcedure(Cm3IndexSnapshot snapshot, IcdDictionarySnapshot dictionary, string input)
+{
+    var inputKey = TextMatch.NormalizeKey(input);
+    Console.WriteLine($"-- key={inputKey} 部位限定词=[{string.Join(",", Cm3SiteQualifiers.Extract(inputKey))}]");
+
+    var hits = Cm3ProcedureIndexMatcher.RecallLeads(snapshot, inputKey, 8);
+    if (hits.Count == 0
+        && Cm3ProcedureIndexMatcher.ResolveRedirect(snapshot, inputKey) is { } redirect)
+    {
+        Console.WriteLine($"-- 失效主导词改道：{inputKey} → {redirect}");
+        hits = Cm3ProcedureIndexMatcher.RecallLeads(snapshot, TextMatch.NormalizeKey(redirect), 8);
+    }
+
+    if (hits.Count == 0)
+    {
+        Console.WriteLine("-- 无主导词召回（索引通道返回空，手术输入仍由字典/向量通道服务）");
+        return;
+    }
+
+    foreach (var hit in hits)
+    {
+        var lead = hit.Node;
+        Console.WriteLine(
+            $"-- 召回 lead={lead.SeqNo}:{lead.Term} alias={hit.Alias.Key}(w{hit.Alias.Weight}) "
+            + $"cover={hit.CoverRatio} chars={hit.CoveredChars} 本行码={lead.Code ?? "-"} 子节点={lead.Children.Count}");
+        var drill = Cm3ProcedureIndexMatcher.Drill(snapshot, hit, inputKey);
+        if (drill is null)
+        {
+            Console.WriteLine("   drill=null（链路无编码）");
+            continue;
+        }
+
+        var overlap = Cm3ProcedureIndexResolver.PathOverlapRatio(drill.Path, input);
+        Console.WriteLine(
+            $"   path={string.Join(" → ", drill.Path.Select(node => node.Term))} "
+            + $"code={drill.CodeNode.Code} 祖先兜底={(drill.CodeFromAncestorFallback ? 1 : 0)} "
+            + $"pathKey={drill.PathKey} overlap={overlap}");
+        if (drill.Jumps.Count > 0)
+        {
+            Console.WriteLine($"   跳转={string.Join("; ", drill.Jumps)}");
+        }
+
+        if (overlap < Cm3ProcedureIndexResolver.MinPathOverlap)
+        {
+            Console.WriteLine($"   链路重叠低于 {Cm3ProcedureIndexResolver.MinPathOverlap} → 生产口径丢弃");
+            continue;
+        }
+
+        var expanded = Cm3IndexCodeExpander.Expand(drill.CodeNode.Code, dictionary, input, drill.PathKey, 3);
+        if (expanded.Count == 0)
+        {
+            Console.WriteLine($"   字典展不开：前缀 {drill.CodeNode.Code} 零命中");
+            continue;
+        }
+
+        foreach (var item in expanded)
+        {
+            Console.WriteLine(
+                $"     {item.Code} {item.Title} score={item.Score} fb={item.IsIndexFallback} "
+                + $"depth={item.WholeTitleDepth} fam={item.FamilyRank} {item.Note ?? string.Empty}");
+        }
+    }
+}
+
+/// <summary>批量台账（列序与诊断侧 --batch 一致，可直接套逐名对比脚本）。</summary>
+static void RunProcedureBatch(
+    Cm3IndexSnapshot snapshot,
+    IcdDictionarySnapshot dictionary,
+    IcdTermSynonymSnapshot synonyms,
+    string inFile,
+    string outFile)
+{
+    var names = File.ReadLines(inFile).Select(line => line.Trim()).Where(line => line.Length > 0).ToList();
+    var resolver = new Cm3ProcedureIndexResolver(8, 3);
+    var sb = new StringBuilder();
+    var produced = 0;
+    var fallback = 0;
+    foreach (var name in names)
+    {
+        var results = resolver.Resolve(snapshot, dictionary, name, synonyms);
+        sb.Append(Sanitize(name)).Append('\t').Append(results.Count);
+        if (results.Count == 0)
+        {
+            sb.AppendLine();
+            continue;
+        }
+
+        produced++;
+        var top = results[0];
+        fallback += top.IsIndexFallback ? 1 : 0;
+        sb.Append('\t').Append(top.Code).Append('\t').Append(top.IsIndexFallback ? 1 : 0)
+            .Append('\t').Append(Sanitize(string.Join("|", results.Select(item => item.Code))))
+            .Append('\t').Append(Sanitize(top.EvidencePath))
+            .AppendLine();
+    }
+
+    File.WriteAllText(outFile, sb.ToString(), new UTF8Encoding(false));
+    Console.WriteLine($"wrote {outFile} names={names.Count} 有推荐={produced} Top1索引码回退={fallback}");
+}
+
+/// <summary>空推荐归因：按生产判据依次落到 无主导词召回 / 链路无编码 / 链路重叠门控 / 字典前缀零命中。</summary>
+static void RunProcedureBlank(
+    Cm3IndexSnapshot snapshot,
+    IcdDictionarySnapshot dictionary,
+    IcdTermSynonymSnapshot synonyms,
+    string inFile,
+    string outFile)
+{
+    var names = File.ReadLines(inFile).Select(line => line.Trim()).Where(line => line.Length > 0).ToList();
+    var resolver = new Cm3ProcedureIndexResolver(8, 3);
+    var buckets = new Dictionary<string, int>(StringComparer.Ordinal);
+    var sb = new StringBuilder();
+    var empty = 0;
+    foreach (var name in names)
+    {
+        if (resolver.Resolve(snapshot, dictionary, name, synonyms).Count > 0)
+        {
+            continue;
+        }
+
+        empty++;
+        var stage = ClassifyEmptyProcedure(snapshot, dictionary, name);
+        buckets[stage] = buckets.GetValueOrDefault(stage) + 1;
+        sb.Append(Sanitize(name)).Append('\t').Append(stage).AppendLine();
+    }
+
+    File.WriteAllText(outFile, sb.ToString(), new UTF8Encoding(false));
+    Console.WriteLine(
+        $"wrote {outFile} names={names.Count} 空推荐={empty} 归因="
+        + string.Join(" ", buckets.OrderBy(item => item.Key).Select(item => $"{item.Key}:{item.Value}")));
+}
+
+static string ClassifyEmptyProcedure(
+    Cm3IndexSnapshot snapshot,
+    IcdDictionarySnapshot dictionary,
+    string name)
+{
+    var inputKey = TextMatch.NormalizeKey(name);
+    var hits = Cm3ProcedureIndexMatcher.RecallLeads(snapshot, inputKey, 8);
+    if (hits.Count == 0)
+    {
+        var redirect = Cm3ProcedureIndexMatcher.ResolveRedirect(snapshot, inputKey);
+        if (redirect is not null)
+        {
+            hits = Cm3ProcedureIndexMatcher.RecallLeads(snapshot, TextMatch.NormalizeKey(redirect), 8);
+        }
+
+        if (hits.Count == 0)
+        {
+            // 见-1 的 0 级形态：输入含住失效主导词也能改道，逐条查表。
+            hits =
+            [
+                .. snapshot.Redirects
+                    .Where(pair => pair.Key.Length >= 2 && inputKey.Contains(pair.Key, StringComparison.Ordinal))
+                    .Select(pair => Cm3ProcedureIndexMatcher.ResolveJumpLead(snapshot, pair.Value))
+                    .OfType<Cm3IndexNode>()
+                    .Select(node => new Cm3LeadWordHit(node, node.Aliases[0], 0m, 0)),
+            ];
+        }
+
+        if (hits.Count == 0)
+        {
+            return "无主导词召回";
+        }
+    }
+
+    var drills = hits
+        .Select(hit => Cm3ProcedureIndexMatcher.Drill(snapshot, hit, inputKey))
+        .OfType<Cm3DrillResult>()
+        .ToList();
+    if (drills.Count == 0)
+    {
+        return "下钻无终点/链路无编码";
+    }
+
+    if (drills.All(drill => Cm3ProcedureIndexResolver.PathOverlapRatio(drill.Path, name)
+        < Cm3ProcedureIndexResolver.MinPathOverlap))
+    {
+        return "链路重叠门控";
+    }
+
+    return drills.All(drill => Cm3IndexCodeExpander.Expand(
+        drill.CodeNode.Code, dictionary, name, drill.PathKey, 3).Count == 0)
+        ? "字典前缀零命中"
+        : "同族名额被挤占";
+}
+
+static void DumpCm3Tree(Cm3IndexSnapshot snapshot, int seq)
+{
+    var node = FindCm3(snapshot, seq);
+    if (node is null)
+    {
+        Console.WriteLine("未找到 seq_no " + seq + "（0 级 见 指针行不进主导词树，用 --pblank 查归因）");
+        return;
+    }
+
+    var sb = new StringBuilder();
+    WalkCm3(node, 0, sb);
+    Console.Write(sb);
+}
+
+static Cm3IndexNode? FindCm3(Cm3IndexSnapshot snapshot, int seq)
+{
+    foreach (var lead in snapshot.Leads)
+    {
+        var found = FindCm3In(lead, seq);
+        if (found is not null)
+        {
+            return found;
+        }
+    }
+
+    return null;
+}
+
+static Cm3IndexNode? FindCm3In(Cm3IndexNode node, int seq)
+{
+    if (node.SeqNo == seq)
+    {
+        return node;
+    }
+
+    foreach (var child in node.Children)
+    {
+        var found = FindCm3In(child, seq);
+        if (found is not null)
+        {
+            return found;
+        }
+    }
+
+    return null;
+}
+
+static void WalkCm3(Cm3IndexNode node, int depth, StringBuilder sb)
+{
+    sb.Append(new string(' ', depth * 2))
+        .Append(node.SeqNo)
+        .Append(' ')
+        .Append(node.Term)
+        .Append(" | code=").Append(node.Code ?? "-")
+        .Append(node.AddOnCode is { Length: > 0 } addOn ? "[+" + addOn + "]" : string.Empty)
+        .Append(" | 连接行=").Append(Cm3ProcedureIndexMatcher.IsConnectorNode(node) ? 1 : 0)
+        .Append(" | aliases=").Append(string.Join(",", node.Aliases.Select(a =>
+            $"{a.Key}(w{a.Weight}{(a.RecallAnchor ? string.Empty : "·非锚")})")))
+        .Append(" | qual=").Append(string.Join(",", node.Qualifiers))
+        .Append(" | jump=").Append(node.JumpKind).Append('(').Append(node.JumpTarget ?? "-").Append(')')
+        .AppendLine();
+    foreach (var child in node.Children)
+    {
+        WalkCm3(child, depth + 1, sb);
     }
 }

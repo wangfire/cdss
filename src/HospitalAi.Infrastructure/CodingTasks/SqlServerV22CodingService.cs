@@ -620,8 +620,7 @@ public sealed class SqlServerV22CodingService(
             .AsNoTracking()
             .Where(item => item.HospitalId == requestContext.HospitalId
                 && item.CodingTaskId == task.Id
-                && requestedIds.Contains(input.Id)
-                && item.DiagnosisInputId.HasValue
+                && item.DiagnosisInputId == input.Id
                 && (item.PipelineVersion == PipelineVersions.Lite || item.PipelineVersion == PipelineVersions.Full)
                 && item.LifecycleStatus == ActiveLifecycleStatus)
             .OrderByDescending(item => item.CreatedAt)

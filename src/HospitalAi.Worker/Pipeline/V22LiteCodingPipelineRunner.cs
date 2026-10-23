@@ -1,4 +1,5 @@
 using HospitalAi.Application.Abstractions;
+using HospitalAi.Application.Coding.Cm3Index;
 using HospitalAi.Application.Coding.Evidence;
 using HospitalAi.Application.Coding.IcdIndex;
 using HospitalAi.Application.Coding.Matching;
@@ -21,7 +22,8 @@ namespace HospitalAi.Worker.Pipeline;
 
 /// <summary>
 /// 召回合并后的候选：保留各通道原始分与融合分，缺失通道为 null。
-/// RecallChannel：DICTIONARY=Exact/BM25 字典直匹配（手术通道）；ICD_INDEX=索引两段式链路。
+/// RecallChannel：DICTIONARY=Exact/BM25 字典直匹配（手术通道）；ICD_INDEX=诊断索引两段式；
+/// CM3_INDEX=手术索引两段式（索引侧字段与 ICD_INDEX 同一套语义，直接复用）。
 /// </summary>
 internal sealed record MergedCandidate(
     string CodeSystem,
@@ -91,6 +93,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
     private readonly IJsonSchemaValidator _schemaValidator;
     private readonly IIcdIndexSource _indexSource;
     private readonly ITumorIndexSource _tumorIndexSource;
+    private readonly ICm3IndexSource _cm3IndexSource;
     private readonly IIcdDictionarySource _dictionarySource;
     private readonly IIcdTermSynonymSource _termSynonymSource;
     private readonly IOptions<V22PipelineOptions> _options;
@@ -107,6 +110,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         IJsonSchemaValidator schemaValidator,
         IIcdIndexSource indexSource,
         ITumorIndexSource tumorIndexSource,
+        ICm3IndexSource cm3IndexSource,
         IIcdDictionarySource dictionarySource,
         IIcdTermSynonymSource termSynonymSource,
         IOptions<V22PipelineOptions> options,
@@ -122,6 +126,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         _schemaValidator = schemaValidator;
         _indexSource = indexSource;
         _tumorIndexSource = tumorIndexSource;
+        _cm3IndexSource = cm3IndexSource;
         _dictionarySource = dictionarySource;
         _termSynonymSource = termSynonymSource;
         _options = options;
@@ -134,6 +139,14 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
     {
         return ExecuteAsync(message, diagnosisInputIds: null, cancellationToken);
     }
+
+    /// <summary>
+    /// 手术输入判据（SourceType 含 PROCEDURE：文档解析的手术条目与首页手术录入）。
+    /// 诊断索引与 CM3 索引按互补的两半边筛输入，这个口径在本文件用了 6 处，
+    /// 留成 6 份字面量比较迟早分叉。
+    /// </summary>
+    private static bool IsProcedureInput(CodingDiagnosisInputRecord input)
+        => input.SourceType.Contains("PROCEDURE", StringComparison.Ordinal);
 
     /// <summary>
     /// Lite 阶段承接 V2.2 家族的 Lite 与 Full：语义召回与重排由模型网关是否启用来决定，
@@ -374,11 +387,9 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
             return;
         }
 
-        // 通道分流（ICD 索引改造）：诊断输入走索引两段式链路，不再字典直匹配召回（决策 2）；
-        // 手术输入维持 Exact/BM25 字典通道（暂无 ICD-9 索引数据，索引库后续提供）。
-        var procedureInputs = selectedInputs
-            .Where(input => input.SourceType.Contains("PROCEDURE", StringComparison.Ordinal))
-            .ToList();
+        // 通道分流：诊断输入走 ICD 索引两段式，手术输入走 CM3 索引两段式（Step 6.7）。
+        // 两条索引链路都失败时，手术侧仍退回今天的 Exact/BM25 字典通道，诊断侧不回退（决策 2）。
+        var procedureInputs = selectedInputs.Where(IsProcedureInput).ToList();
 
         // Step 5：Exact Retrieval（仅手术通道）。
         var exactResults = new Dictionary<Guid, IReadOnlyList<CodingKnowledgeHit>>();
@@ -435,7 +446,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         var indexStartedAt = DateTimeOffset.UtcNow;
         var indexResults = new Dictionary<Guid, IReadOnlyList<DiagnosisIndexRecommendation>>();
         var indexAttempted = settings.IcdIndexEnabled
-            && selectedInputs.Any(input => !input.SourceType.Contains("PROCEDURE", StringComparison.Ordinal));
+            && selectedInputs.Any(input => !IsProcedureInput(input));
         var indexSucceeded = false;
         if (indexAttempted)
         {
@@ -459,7 +470,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     settings.LeadWordTopK, settings.MaxCandidatesPerInput, settings.IndexDiagnosisCodeSystem);
                 foreach (var input in selectedInputs)
                 {
-                    if (input.SourceType.Contains("PROCEDURE", StringComparison.Ordinal))
+                    if (IsProcedureInput(input))
                     {
                         continue;
                     }
@@ -490,8 +501,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         // 索引命中时仅补充候选池，排序仍让位于索引整标题贴合（IndexTitleDepth）。
         var vectorSucceeded = false;
         var vectorResults = new Dictionary<Guid, IReadOnlyList<VectorSearchHit>>();
-        var diagnosisInputCount = selectedInputs.Count(item =>
-            !item.SourceType.Contains("PROCEDURE", StringComparison.Ordinal));
+        var diagnosisInputCount = selectedInputs.Count(item => !IsProcedureInput(item));
         if (diagnosisInputCount > 0)
         {
             if (settings.VectorEnabled && _vectorSearch.IsAvailable)
@@ -500,7 +510,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                 {
                     foreach (var input in selectedInputs)
                     {
-                        if (input.SourceType.Contains("PROCEDURE", StringComparison.Ordinal))
+                        if (IsProcedureInput(input))
                         {
                             continue;
                         }
@@ -532,6 +542,44 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
             {
                 // 显式降级：向量通道缺失不得伪装成"语义无相关"。
                 degradedFlags.Add("DEGRADED.NO_VECTOR");
+            }
+        }
+
+        // Step 6.7：手术侧 CM3 索引两段式（主导词召回 → 子树内修饰词下钻 → 索引码前缀展开）。
+        // 与诊断侧同一套机制，词面判据按 cm3_index 实测形态另建（指针只有 ―见/―另见/―见亚目 三种）。
+        // 与诊断侧不同的降级口径：字典通道本来就服务手术输入，所以这里失败等于回到今天的行为，
+        // 属纯增量、不构成回归；诊断侧的"索引失败即不召回"不能照搬到这边。
+        var cm3StartedAt = DateTimeOffset.UtcNow;
+        var cm3Results = new Dictionary<Guid, IReadOnlyList<ProcedureIndexRecommendation>>();
+        var cm3Attempted = settings.Cm3IndexEnabled && procedureInputs.Count > 0;
+        var cm3Succeeded = false;
+        if (cm3Attempted)
+        {
+            try
+            {
+                var cm3Snapshot = _cm3IndexSource.GetSnapshot(cancellationToken);
+                var procedureDictionary = _dictionarySource.GetDictionary(
+                    task.HospitalId, settings.IndexProcedureCodeSystem, cancellationToken);
+                var cm3Synonyms = _termSynonymSource.GetSnapshot(cancellationToken);
+                var cm3Resolver = new Cm3ProcedureIndexResolver(
+                    settings.ProcedureLeadWordTopK, settings.MaxCandidatesPerInput);
+                foreach (var input in procedureInputs)
+                {
+                    var inputName = input.NormalizedText ?? input.OriginalText;
+                    cm3Results[input.Id] = cm3Resolver.Resolve(
+                        cm3Snapshot, procedureDictionary, inputName, cm3Synonyms, cancellationToken);
+                }
+
+                cm3Succeeded = true;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                cm3Results.Clear();
+                degradedFlags.Add("DEGRADED.NO_CM3_INDEX");
+                _logger.LogWarning(
+                    ex,
+                    "CM3 索引快照加载失败，本次运行手术输入退回字典通道。TaskId={TaskId}",
+                    task.Id);
             }
         }
 
@@ -570,7 +618,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
             var inputName = input.NormalizedText ?? input.OriginalText;
             // 类型隔离：手术输入只收 ICD-9 手术码、诊断输入只收 ICD-10 诊断码，
             // 否则 "腰椎间盘突出" 的诊断页会出现 "17.92650 腰椎间盘突出推拿治疗" 这类手术码。
-            var procedureInput = input.SourceType.Contains("PROCEDURE", StringComparison.Ordinal);
+            var procedureInput = IsProcedureInput(input);
             List<MergedCandidate> merged;
             if (!procedureInput)
             {
@@ -611,7 +659,24 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
             }
             else
             {
-                merged = MergeHits(exactResults[input.Id], bm25Results.GetValueOrDefault(input.Id) ?? [])
+                // CM3 索引候选在前：两段式链路已完成主导词/修饰词语义门控，不再叠加字典连续覆盖门槛
+                // （口径同诊断通道）。平权入池、不加权——最终次序仍由 IndexTitleDepth 与七维分裁决。
+                var cm3Candidates = (cm3Results.GetValueOrDefault(input.Id) ?? [])
+                    .Select(item => new MergedCandidate(
+                        item.CodeSystemCode,
+                        item.Code.Length > 64 ? item.Code[..64] : item.Code,
+                        item.Title.Length > 300 ? item.Title[..300] : item.Title,
+                        ExactScore: item.Score,
+                        Bm25Score: null,
+                        FusedScore: item.Score,
+                        RecallChannel: "CM3_INDEX",
+                        IndexEvidencePath: item.EvidencePath,
+                        IsIndexFallback: item.IsIndexFallback,
+                        IndexNote: item.Note,
+                        IndexTitleDepth: item.WholeTitleDepth,
+                        FamilyRank: item.FamilyRank))
+                    .ToList();
+                var dictionaryCandidates = MergeHits(exactResults[input.Id], bm25Results.GetValueOrDefault(input.Id) ?? [])
                     .Where(candidate => IsProcedureCodeSystem(candidate.CodeSystem))
                     // ICD 星号复合码（"2型糖尿病性肩关节周围炎 E11.600X015+M14.2*"）要求病历中有糖尿病主诊断；
                     // 输入未提糖尿病时这类候选即医生眼中的"糖尿病污染"，连精确分一并剔除。
@@ -631,7 +696,10 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     // MaxSegment≥3 剔除 "甲周炎"↔"肩周炎"（仅共享 周炎=2/3）；
                     // 但输入被多段完整覆盖（比例=1）时放行，否则 "子宫肌瘤"↔"子宫腺肌瘤"
                     // 这类 "子宫+肌瘤" 两段拼接的标准标题会被误杀。
-                    merged = merged
+                    // 只闸字典通道：CM3 索引链路已经按主导词+修饰词做过语义门控，
+                    // 再套一层连续覆盖会把 "腹腔镜下胆囊切除术 → 51.2300 腹腔镜胆囊切除术"
+                    // 这类入路词换序的正常标题挡在门外。
+                    dictionaryCandidates = dictionaryCandidates
                         .Where(candidate => candidate.ExactScore is not null
                             || TextMatch.TitleCoversInput(candidate.Title, inputName))
                         .Select(candidate => (candidate, Contiguous:
@@ -646,6 +714,10 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                         .Select(item => item.candidate)
                         .ToList();
                 }
+
+                merged = [.. cm3Candidates, .. dictionaryCandidates
+                    .Where(candidate => !cm3Candidates.Any(item =>
+                        string.Equals(item.Code, candidate.Code, StringComparison.OrdinalIgnoreCase)))];
             }
 
             var evidenceForInput = evidences
@@ -1018,7 +1090,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
 
                 // 索引链路溯源证据：主导词→修饰词命中路径与索引编码写入推荐证据，
                 // 使医生能核对 "为什么推荐这个码"（字典通道无此链路）。
-                if (item.Candidate.RecallChannel == "ICD_INDEX"
+                if (item.Candidate.RecallChannel is "ICD_INDEX" or "CM3_INDEX"
                     && item.Candidate.IndexEvidencePath is { Length: > 0 } indexPath)
                 {
                     recommendationEvidences.Add(new RecommendationEvidenceRecord
@@ -1029,7 +1101,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                         DocumentSectionId = null,
                         PipelineRunId = runId,
                         EvidenceLevel = null,
-                        SourceType = "ICD_INDEX",
+                        SourceType = item.Candidate.RecallChannel,
                         SourceText = indexPath + (item.Candidate.IndexNote is { } note ? $"；{note}" : string.Empty),
                         MatchText = matchedTitle,
                         Score = item.Candidate.FusedScore,
@@ -1080,6 +1152,14 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                 indexSucceeded ? "SUCCESS" : "DEGRADED",
                 indexSucceeded ? null : "DEGRADED.NO_ICD_INDEX",
                 indexStartedAt);
+        }
+        if (cm3Attempted)
+        {
+            recorder.Record(
+                "CM3_INDEX_RETRIEVAL",
+                cm3Succeeded ? "SUCCESS" : "DEGRADED",
+                cm3Succeeded ? null : "DEGRADED.NO_CM3_INDEX",
+                cm3StartedAt);
         }
         recorder.Record(
             "VECTOR_RETRIEVAL",

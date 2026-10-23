@@ -1,4 +1,5 @@
 using HospitalAi.Application.Abstractions;
+using HospitalAi.Application.Coding.Cm3Index;
 using HospitalAi.Application.Coding.IcdIndex;
 using HospitalAi.Application.Coding.Matching;
 using HospitalAi.Application.Coding.Preprocessing;
@@ -103,6 +104,7 @@ public sealed class V22TestDatabase : IAsyncDisposable
             new SimpleJsonSchemaValidator(),
             new ContextIcdIndexSource(context),
             new ContextTumorIndexSource(context),
+            new ContextCm3IndexSource(context),
             new ContextIcdDictionarySource(context),
             new ContextIcdTermSynonymSource(context),
             Options.Create(options ?? new V22PipelineOptions()),
@@ -135,6 +137,23 @@ public sealed class V22TestDatabase : IAsyncDisposable
                     item.SeqNo, item.IndexName, item.IndexLevel, item.ParentSeqNo, item.FullIndexName,
                     item.CodeMalignantPrimary, item.CodeMalignantSecondary, item.CodeInSitu,
                     item.CodeBenign, item.CodeUncertain, item.JumpKind, item.JumpTarget))
+                .ToList());
+
+        public void Invalidate()
+        {
+        }
+    }
+
+    /// <summary>手术操作索引表读测试库（用例不播种时快照为空，CM3 链路自然不产出）。</summary>
+    private sealed class ContextCm3IndexSource(HospitalAiDbContext context) : ICm3IndexSource
+    {
+        public Cm3IndexSnapshot GetSnapshot(CancellationToken cancellationToken = default) =>
+            Cm3IndexSnapshotBuilder.Build(context.Cm3Indexes
+                .AsNoTracking()
+                .OrderBy(item => item.SeqNo)
+                .Select(item => new Cm3IndexRow(
+                    item.SeqNo, item.IndexName, item.IndexCode,
+                    item.IndexLevel, item.ParentSeqNo, item.LeadWordStatus))
                 .ToList());
 
         public void Invalidate()
@@ -227,6 +246,7 @@ public sealed class V22TestDatabase : IAsyncDisposable
             new SimpleJsonSchemaValidator(),
             new ContextIcdIndexSource(context),
             new ContextTumorIndexSource(context),
+            new ContextCm3IndexSource(context),
             new ContextIcdDictionarySource(context),
             new ContextIcdTermSynonymSource(context),
             Options.Create(new V22PipelineOptions()),

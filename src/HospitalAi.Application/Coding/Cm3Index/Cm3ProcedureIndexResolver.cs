@@ -91,6 +91,24 @@ public sealed class Cm3ProcedureIndexResolver(int leadWordTopK, int maxResults)
             }
         }
 
+        // 回退码不占 Top1：IsIndexFallback 是"索引码在字典里没有门控命中"的泛码，
+        // 两面真值实测 0/1555 命中，摆在首位只会把"空"换成错码。有非回退候选时把
+        // 排名最高的那个提到首位；整列都是回退码时返回空，否则回退码仍会占 Top1。
+        if (results.Count > 0 && results[0].IsIndexFallback)
+        {
+            var promoted = results.FindIndex(item => !item.IsIndexFallback);
+            if (promoted < 0)
+            {
+                results.Clear();
+            }
+            else
+            {
+                var item = results[promoted];
+                results.RemoveAt(promoted);
+                results.Insert(0, item);
+            }
+        }
+
         return results;
     }
 

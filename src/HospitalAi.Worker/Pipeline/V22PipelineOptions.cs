@@ -34,10 +34,12 @@ public sealed class V22PipelineOptions
     public int LeadWordTopK { get; set; } = 12;
 
     /// <summary>
-    /// 手术侧 CM3 主导词召回保留条数。单独成项、维持 8：手术通道的 D_CM3 万名台账（Top1 41.64%）
-    /// 与 288 条部位词头门控都是按 8 席验收的，与诊断侧共用一个值等于顺手改动一条已验收通道。
+    /// 手术侧 CM3 主导词召回保留条数。单独成项，8→20 经两面 A/B 验收：
+    /// D_CM3 13740 名 Top1 +138/−0（43.03%→44.04%）、族命中 +139；病历 2371 名 Top1 +23/−0、
+    /// 族命中 +23，两面硬线（新打空且原命中）均为 0。新增召回里回退码占比高，
+    /// 由解析器的"回退码不占首位"口径收口（含整列回退时返回空），不靠席位收回。
     /// </summary>
-    public int ProcedureLeadWordTopK { get; set; } = 8;
+    public int ProcedureLeadWordTopK { get; set; } = 20;
 
     /// <summary>索引展开后诊断字典的编码体系标识。</summary>
     public string IndexDiagnosisCodeSystem { get; set; } = "ICD-10";

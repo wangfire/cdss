@@ -320,6 +320,18 @@ public sealed class Cm3IndexTests
     }
 
     [Fact]
+    public void 整列都是回退码时不在首位出码_宁可空不推未验证码()
+    {
+        // 37.17 在字典里一行都没有（E 类知识库缺口），展开只能回退索引编码本身；
+        // 这类回退码两面真值 0/1555 命中，摆在首位只会把"空"换成错码。
+        var snapshot = Cm3IndexSnapshotBuilder.Build([
+            Row(5001, 0, 0, "主动脉与冠状动脉吻合术 37.17"),
+        ]);
+
+        Assert.Empty(Resolver().Resolve(snapshot, ProcedureDictionary(), "主动脉与冠状动脉吻合术"));
+    }
+
+    [Fact]
     public void 非法码形不展开()
     {
         Assert.Empty(Cm3IndexCodeExpander.Expand(null, ProcedureDictionary(), "胆囊肠吻合术", "吻合术"));
@@ -330,29 +342,47 @@ public sealed class Cm3IndexTests
     [Fact]
     public void 见亚目行按本行亚目码展开()
     {
+        const string input = "AESOP?可视性自动定位内镜系统";
         var snapshot = Cm3IndexSnapshotBuilder.Build([
             Row(11, 0, 0, "AESOP?可视性自动定位内镜系统―见亚目17.4", "17.4"),
         ]);
+        var inputKey = TextMatch.NormalizeKey(input);
+        var hit = Assert.Single(Cm3ProcedureIndexMatcher.RecallLeads(snapshot, inputKey, 8));
+        var drill = Assert.IsType<Cm3DrillResult>(
+            Cm3ProcedureIndexMatcher.Drill(snapshot, hit, inputKey));
 
-        var results = Resolver().Resolve(
-            snapshot, ProcedureDictionary(), "AESOP?可视性自动定位内镜系统");
+        // 见亚目行的目标亚目码就在本行 index_code 上，取码节点必须落在 17.4。
+        Assert.Equal("17.4", drill.CodeNode.Code);
 
-        Assert.NotEmpty(results);
-        Assert.All(results, item => Assert.StartsWith("17.4", item.Code, StringComparison.Ordinal));
+        // 17.4 在本字典切片里只有 17.4x 细码、词面与输入全不相交，展开只能回退泛码；
+        // 回退码没有门控证据，新口径不让它占首（整列都是回退码时宁可返回空也不推未验证码）。
+        Assert.Empty(Resolver().Resolve(snapshot, ProcedureDictionary(), input));
     }
 
     [Fact]
     public void 主附双码的附加码只进证据说明不出码()
     {
+        const string input = "女阴切除术伴腹股沟淋巴结清扫";
         var snapshot = Cm3IndexSnapshotBuilder.Build([
             Row(110, 0, 0, "Bassett 手术（女阴切除术伴腹股沟淋巴结清扫）71.5[40.3]"),
         ]);
+        var inputKey = TextMatch.NormalizeKey(input);
+        var hit = Assert.Single(Cm3ProcedureIndexMatcher.RecallLeads(snapshot, inputKey, 8));
+        var drill = Assert.IsType<Cm3DrillResult>(
+            Cm3ProcedureIndexMatcher.Drill(snapshot, hit, inputKey));
 
-        var results = Resolver().Resolve(snapshot, ProcedureDictionary(), "女阴切除术伴腹股沟淋巴结清扫");
+        Assert.Equal("71.5", drill.CodeNode.Code);
+        Assert.Equal("40.3", drill.CodeNode.AddOnCode);
 
-        Assert.NotEmpty(results);
-        Assert.All(results, item => Assert.StartsWith("71.5", item.Code, StringComparison.Ordinal));
-        Assert.All(results, item => Assert.Contains("附加码 40.3", item.Note));
+        var expanded = Cm3IndexCodeExpander.Expand(
+            drill.CodeNode.Code!, ProcedureDictionary(), input, drill.PathKey);
+
+        // 主码照常展开，附加码 40.3 只出现在证据说明里，不进展开列表。
+        Assert.All(expanded, item => Assert.StartsWith("71.5", item.Code, StringComparison.Ordinal));
+        Assert.DoesNotContain(expanded, item => item.Code.StartsWith("40.3", StringComparison.Ordinal));
+
+        // 女阴/外阴词面不相交导致门控全落空，整列都是回退码 → 按新口径返回空。
+        Assert.Empty(Resolver().Resolve(snapshot, ProcedureDictionary(), input));
     }
 
     [Fact]
@@ -371,8 +401,15 @@ public sealed class Cm3IndexTests
         Assert.Contains("手", Cm3SiteQualifiers.Extract("手部手术"));
 
         Assert.Equal(2, snapshot.Leads.Count);
-        Assert.NotEmpty(Resolver().Resolve(
-            snapshot, ProcedureDictionary(), "女阴切除术伴腹股沟淋巴结清扫"));
+
+        // Bassett 主导词必须照常召回并下钻（这是本用例真正要守的：手术 不冒充部位限定词），
+        // 但两条 eponym 行在字典切片里都只能回退泛码，回退码按新口径不占首 → 解析结果为空。
+        const string input = "女阴切除术伴腹股沟淋巴结清扫";
+        var inputKey = TextMatch.NormalizeKey(input);
+        var hit = Assert.Single(Cm3ProcedureIndexMatcher.RecallLeads(snapshot, inputKey, 8));
+        Assert.Equal(110, hit.Node.SeqNo);
+        Assert.NotNull(Cm3ProcedureIndexMatcher.Drill(snapshot, hit, inputKey));
+        Assert.Empty(Resolver().Resolve(snapshot, ProcedureDictionary(), input));
     }
 
     [Fact]

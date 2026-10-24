@@ -1240,7 +1240,7 @@ static int RunCm3Modes(
     var diagTop = int.TryParse(Environment.GetEnvironmentVariable("ICD_INDEX_DIAG_TOP"), out var parsedTop)
         ? parsedTop
         : 3;
-    var resolver = new Cm3ProcedureIndexResolver(8, diagTop);
+    var resolver = new Cm3ProcedureIndexResolver(20, diagTop);
     foreach (var input in inputs)
     {
         Console.WriteLine($"===== {input} =====");
@@ -1396,7 +1396,7 @@ static void RunProcedureBatch(
     string outFile)
 {
     var names = File.ReadLines(inFile).Select(line => line.Trim()).Where(line => line.Length > 0).ToList();
-    var resolver = new Cm3ProcedureIndexResolver(8, 3);
+    var resolver = new Cm3ProcedureIndexResolver(20, 3);
     var sb = new StringBuilder();
     var produced = 0;
     var fallback = 0;
@@ -1432,7 +1432,7 @@ static void RunProcedureBlank(
     string outFile)
 {
     var names = File.ReadLines(inFile).Select(line => line.Trim()).Where(line => line.Length > 0).ToList();
-    var resolver = new Cm3ProcedureIndexResolver(8, 3);
+    var resolver = new Cm3ProcedureIndexResolver(20, 3);
     var buckets = new Dictionary<string, int>(StringComparer.Ordinal);
     var sb = new StringBuilder();
     var empty = 0;

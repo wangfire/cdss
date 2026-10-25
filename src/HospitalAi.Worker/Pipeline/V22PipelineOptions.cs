@@ -47,6 +47,14 @@ public sealed class V22PipelineOptions
     /// <summary>手术侧 CM3 索引两段式链路开关；关闭时手术输入维持今天的 Exact+BM25 通道。</summary>
     public bool Cm3IndexEnabled { get; set; } = true;
 
+    /// <summary>
+    /// 手术侧字典标题直达开关：直达 = 输入与字典标题逐字相等或完整包含标题的硬词面候选，
+    /// 常驻与索引链路同台竞争。关闭后手术推荐只由索引链路自产候选裁决，
+    /// 用于"链路能力/直达增益"分开问责与灰度对照。2026-10-24 两面 A/B：开启时
+    /// D_CM3 44.02%→98.11%、临床 39.69%→97.72%，链路自产命中零流失（becameEmpty=0）。
+    /// </summary>
+    public bool Cm3TitleDirectEnabled { get; set; } = true;
+
     /// <summary>索引展开后手术字典的编码体系标识。</summary>
     public string IndexProcedureCodeSystem { get; set; } = "ICD-9-CM-3";
 

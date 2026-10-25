@@ -562,7 +562,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     task.HospitalId, settings.IndexProcedureCodeSystem, cancellationToken);
                 var cm3Synonyms = _termSynonymSource.GetSnapshot(cancellationToken);
                 var cm3Resolver = new Cm3ProcedureIndexResolver(
-                    settings.ProcedureLeadWordTopK, settings.MaxCandidatesPerInput);
+                    settings.ProcedureLeadWordTopK, settings.MaxCandidatesPerInput, settings.Cm3TitleDirectEnabled);
                 foreach (var input in procedureInputs)
                 {
                     var inputName = input.NormalizedText ?? input.OriginalText;

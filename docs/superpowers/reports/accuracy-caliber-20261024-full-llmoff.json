@@ -1,0 +1,68 @@
+{
+  "Layers": [
+    {
+      "Id": "L0",
+      "Label": "端到端交付口径（全部诊断名）",
+      "Total": 10000,
+      "WithRec": 10000,
+      "CodingTop1": 2752,
+      "CodingTop3": 3797,
+      "CategoryTop1": 4381
+    },
+    {
+      "Id": "L0-E1",
+      "Label": "单独剔除 Z 状态与医疗接触码",
+      "Total": 8149,
+      "WithRec": 8149,
+      "CodingTop1": 2463,
+      "CodingTop3": 3280,
+      "CategoryTop1": 3944
+    },
+    {
+      "Id": "L0-E1-E2",
+      "Label": "再剔除 V/W/X/Y 外部原因码",
+      "Total": 8119,
+      "WithRec": 8119,
+      "CodingTop1": 2463,
+      "CodingTop3": 3280,
+      "CategoryTop1": 3944
+    },
+    {
+      "Id": "L1",
+      "Label": "范围内可判定口径（剔除 E1/E2/E3/E4/E5）",
+      "Total": 7906,
+      "WithRec": 7906,
+      "CodingTop1": 2384,
+      "CodingTop3": 3174,
+      "CategoryTop1": 3830
+    }
+  ],
+  "Knowledge": [
+    {
+      "Name": "主导词可召回率",
+      "Value": "n/a（未提供 --attribution）"
+    },
+    {
+      "Name": "链路出码率（有推荐名/可召回名）",
+      "Value": "100%"
+    },
+    {
+      "Name": "索引码回退条占比",
+      "Value": "11.5%"
+    },
+    {
+      "Name": "最优推荐为回退的名占比",
+      "Value": "0.7%"
+    }
+  ],
+  "Counts": {
+    "Total": 10000,
+    "MissingExpected": 0,
+    "E1": 1851,
+    "E2": 30,
+    "E3": null,
+    "E4": 244,
+    "Excluded": 2094
+  },
+  "NoAttribution": true
+}

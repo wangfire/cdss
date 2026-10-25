@@ -28,8 +28,6 @@ public sealed record Cm3ExpandedItem(
 /// </summary>
 public static class Cm3IndexCodeExpander
 {
-    public const decimal FallbackScore = 0.55m;
-
     /// <summary>单个索引码最多展开的细码数：86.04 这类扇出 154 的前缀必须被这条挡住。</summary>
     public const int MaxExpandedCodes = 3;
 
@@ -85,7 +83,7 @@ public static class Cm3IndexCodeExpander
         // 字典侧的 X 占位详码 43.6X00 / 43.6X00X005 都落在 43.6 前缀下，固定 5 位前缀会整族漏掉）。
         var rows = dictionary.Prefix(code);
         var items = RankRows(rows, inputKey, pathKey);
-        return items.Count > 0 ? items : [FallbackItem(code, rows, inputKey)];
+        return items.Count > 0 ? items : ReverseTitleRows(rows, inputKey, pathKey);
     }
 
     private static IReadOnlyList<Cm3ExpandedItem> RankRows(
@@ -175,37 +173,84 @@ public static class Cm3IndexCodeExpander
     }
 
     /// <summary>
-    /// 索引码在字典里一行都展不开时的回退：先取同前缀最泛码（编码员口径"该族未特指"），
-    /// 前缀连一行都没有时才按索引码原样回退。
-    /// 37.17 / 40.92 / 64.69 实测属这类知识库覆盖缺口（方案 §6.5-5），
-    /// 按 E 类排除台账处理，不为此在匹配器加判据。
+    /// 门控全落空时的同族标题反查，取代原"回退同前缀最泛码"：
+    /// 两面真值实测回退码 Top1 命中 0/1555，最泛码是纯负资产；改为只认硬词面证据——
+    /// 标题被输入逐字完整包含（标题短于输入、输入带前缀修饰语），或输入字符 90% 以上被标题覆盖
+    /// （语序倒装/插字被 MaxSegment≥3 门槛打散的写法）。三道硬门（否定极/部位冲突/相位极）原样保留，
+    /// 门控刻意挡掉的行不会被反查放回来。反查仍无命中即返回空——错分支链路（如 周围血管的血管内显像
+    /// 落进 38.5x 族）宁空勿错，由知识库覆盖台账接手。
     /// </summary>
-    private static Cm3ExpandedItem FallbackItem(
-        string code,
-        IReadOnlyList<IcdDictionaryRow> prefixRows,
-        string inputKey)
+    private static IReadOnlyList<Cm3ExpandedItem> ReverseTitleRows(
+        IReadOnlyList<IcdDictionaryRow> rows,
+        string inputKey,
+        string pathKey)
     {
-        var exact = prefixRows.FirstOrDefault(row =>
-            row.Code.ToUpperInvariant() == code);
-        var chosen = exact
-            ?? prefixRows
-                .OrderBy(row => row.Code.Length)
-                .ThenBy(row => row.Code, StringComparer.Ordinal)
-                .FirstOrDefault();
-        return chosen is null
-            ? new Cm3ExpandedItem(
-                Cm3CodeSystem.DictionaryCodeSystem, code, inputKey, FallbackScore,
-                IsIndexFallback: true,
-                Note: $"手术索引编码 {code} 在字典中无展开结果，回退推荐索引编码本身")
-            : new Cm3ExpandedItem(
-                chosen.CodeSystemCode,
-                chosen.Code,
-                chosen.Title,
-                FallbackScore,
-                IsIndexFallback: true,
-                Note: $"手术索引编码 {code} 在字典中无门控命中，回退同前缀最泛码",
-                TitleSpecificity: TextMatch.CoverageOf(
-                    TextMatch.NormalizeKey(chosen.Title), inputKey).Ratio);
+        if (rows.Count == 0 || inputKey.Length == 0)
+        {
+            return [];
+        }
+
+        var results = new List<Cm3ExpandedItem>();
+        var inputQualifiers = Cm3SiteQualifiers.Extract(inputKey);
+        foreach (var row in rows)
+        {
+            if (TextMatch.HasNegationPoleConflict(row.Title, inputKey)
+                || Cm3SiteQualifiers.Conflicts(row.Title, inputQualifiers)
+                || TextMatch.HasPhasePoleConflict(row.Title, inputKey))
+            {
+                continue;
+            }
+
+            var titleKey = TextMatch.NormalizeKey(row.Title);
+            var searchTextKey = TextMatch.NormalizeKey(row.SearchText);
+            var titleInInput = TextMatch.CoverageOf(titleKey, inputKey);
+            var inputInTitle = Best(
+                TextMatch.CoverageOf(inputKey, titleKey),
+                TextMatch.CoverageOf(inputKey, searchTextKey));
+            var pathCover = Best(
+                Best(
+                    TextMatch.CoverageOf(pathKey, titleKey),
+                    TextMatch.CoverageOf(pathKey, titleKey, countSingleCharSegments: true)),
+                TextMatch.CoverageOf(TextMatch.Reverse(pathKey), titleKey, countSingleCharSegments: true));
+
+            var admitted = (titleKey.Length >= 2 && titleInInput.Ratio >= 1.0m)
+                || (inputKey.Length >= 3 && inputInTitle.Ratio >= 0.9m);
+            if (!admitted)
+            {
+                continue;
+            }
+
+            var score = Math.Max(inputInTitle.Ratio, pathCover.Ratio * 0.9m);
+            var wholeTitleHit = titleKey.Length > 0
+                && inputKey.Contains(titleKey, StringComparison.Ordinal)
+                && inputInTitle.Ratio >= WholeTitleMinInputRatio;
+            if (wholeTitleHit)
+            {
+                score = 1.0m;
+            }
+
+            results.Add(new Cm3ExpandedItem(
+                row.CodeSystemCode,
+                row.Code,
+                row.Title,
+                score,
+                IsIndexFallback: false,
+                Note: "门控全落空，按同族标题反查命中",
+                TitleSpecificity: titleInInput.Ratio,
+                WholeTitleDepth: wholeTitleHit
+                    ? Math.Min(1m, titleKey.Length / (decimal)inputKey.Length)
+                    : 0m));
+        }
+
+        var ranked = Rank(results)
+            .Take(MaxExpandedCodes)
+            .ToList();
+        for (var i = 0; i < ranked.Count; i++)
+        {
+            ranked[i] = ranked[i] with { FamilyRank = i };
+        }
+
+        return ranked;
     }
 
     private static TextMatch.Coverage Best(TextMatch.Coverage left, TextMatch.Coverage right)

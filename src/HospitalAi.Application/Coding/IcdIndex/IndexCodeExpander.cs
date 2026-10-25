@@ -45,6 +45,59 @@ public sealed class IcdDictionarySnapshot
             && entry.UpperCode.Contains("+" + asteriskUpper, StringComparison.Ordinal))
         .Select(entry => entry.Row)
         .ToList();
+
+    /// <summary>
+    /// 字典标题直达匹配：标题键与输入键逐字相等，或标题键（≥3 字）被输入键逐字完整包含
+    /// 且贴合度（标题长/输入长）≥0.5——解释不了输入一半的短泛标题不是直达证据
+    /// （肠吻合术 ⊂ 胃空肠吻合术 的教训）。
+    /// 只认硬词面证据（复用预计算键），供手术索引链路的直达候选使用；
+    /// 刻意不认"输入被标题覆盖"的模糊方向——女阴/外阴族的教训，0.9 级别的模糊覆盖
+    /// 会把 广泛性/根治性 一类变体错配。返回按贴合度降序，同码去重。
+    /// </summary>
+    public IReadOnlyList<(IcdDictionaryRow Row, decimal Depth)> TitleDirectMatches(string inputKey)
+    {
+        if (inputKey.Length == 0)
+        {
+            return [];
+        }
+
+        var matches = new List<(IcdDictionaryRow Row, decimal Depth, string TitleKey)>();
+        foreach (var entry in _entries)
+        {
+            if (entry.TitleKey.Length < 2)
+            {
+                continue;
+            }
+
+            if (string.Equals(entry.TitleKey, inputKey, StringComparison.Ordinal)
+                || string.Equals(entry.SearchTextKey, inputKey, StringComparison.Ordinal))
+            {
+                matches.Add((entry.Row, 1m, entry.TitleKey));
+            }
+            else if (entry.TitleKey.Length >= 3
+                && inputKey.Contains(entry.TitleKey, StringComparison.Ordinal))
+            {
+                var depth = Math.Min(1m, entry.TitleKey.Length / (decimal)inputKey.Length);
+                if (depth >= 0.5m)
+                {
+                    matches.Add((entry.Row, depth, entry.TitleKey));
+                }
+            }
+        }
+
+        // 极大性：包含匹配若被任一已准入标题包含则丢弃——更长标题已经逐字解释了这段词面，
+        // 短泛包含不该挤进同一场竞争（肠吻合术 ⊂ 胆囊肠吻合术 的教训）。
+        return matches
+            .Where(match => match.Depth >= 1m || !matches.Any(other =>
+                other.TitleKey.Length > match.TitleKey.Length
+                && other.TitleKey.Contains(match.TitleKey, StringComparison.Ordinal)))
+            .GroupBy(match => match.Row.Code, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderByDescending(match => match.Depth)
+            .ThenBy(match => match.Row.Code, StringComparer.Ordinal)
+            .Select(match => (match.Row, match.Depth))
+            .ToList();
+    }
 }
 
 /// <summary>展开产物：字典详码或索引码回退。</summary>

@@ -14,7 +14,7 @@ var codeSystem = "ICD-10";
 if (args.Length == 0)
 {
     Console.Error.WriteLine("用法: IcdIndexDiag <诊断文本> [...] [--tree <seq_no>] [--terms <输出文件>] [--blank <输入名文件> <输出判定文件>] [--leadstats <输入名文件> <产出台账文件>] [--leads <输入名文件> <全主导词台账文件>] [--batch <输入名文件> <Top1台账文件>] [--export <输入名文件> <推荐与链路明细文件>]");
-    Console.Error.WriteLine("     手术通道: IcdIndexDiag --procedure <手术名> [...] [--ptree <seq_no>] [--pbatch <输入名文件> <台账文件>] [--pblank <输入名文件> <归因文件>]");
+    Console.Error.WriteLine("     手术通道: IcdIndexDiag --procedure <手术名> [...] [--ptree <seq_no>] [--pbatch <输入名文件> <台账文件>] [--pblank <输入名文件> <归因文件>] [--cleads <输入名文件> <全主导词台账文件>]");
     return 1;
 }
 
@@ -39,6 +39,8 @@ var cm3BatchIn = (string?)null;
 var cm3BatchOut = (string?)null;
 var cm3BlankIn = (string?)null;
 var cm3BlankOut = (string?)null;
+var cm3LeadsIn = (string?)null;
+var cm3LeadsOut = (string?)null;
 var inputs = new List<string>();
 for (var i = 0; i < args.Length; i++)
 {
@@ -62,6 +64,12 @@ for (var i = 0; i < args.Length; i++)
         procedureMode = true;
         cm3BlankIn = args[++i];
         cm3BlankOut = args[++i];
+    }
+    else if (args[i] == "--cleads" && i + 2 < args.Length)
+    {
+        procedureMode = true;
+        cm3LeadsIn = args[++i];
+        cm3LeadsOut = args[++i];
     }
     else if (args[i] == "--tree" && i + 1 < args.Length)
     {
@@ -120,7 +128,8 @@ if (termsOut is not null)
 // 手术通道单独一套 face：索引库（cm3_index）与展开字典（ICD-9-CM-3）都与诊断侧不同构，不混用快照。
 if (procedureMode)
 {
-    return RunCm3Modes(conn, hospital, cm3TreeSeq, cm3BatchIn, cm3BatchOut, cm3BlankIn, cm3BlankOut, inputs);
+    return RunCm3Modes(conn, hospital, cm3TreeSeq, cm3BatchIn, cm3BatchOut, cm3BlankIn, cm3BlankOut,
+        cm3LeadsIn, cm3LeadsOut, inputs);
 }
 
 var snapshot = BuildSnapshot(conn);
@@ -465,6 +474,13 @@ static void RunBlankDiagnosis(
 
 static string Sanitize(string value) =>
     value.Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' ');
+
+/// <summary>
+/// 手术字典标题直达开关（对齐生产配置 V22Lite:Cm3TitleDirectEnabled）：
+/// 环境变量 CM3_TITLE_DIRECT=0 关闭，缺省开启。关闭后台账即"链路自产能力"口径。
+/// </summary>
+static bool TitleDirectEnabled() =>
+    Environment.GetEnvironmentVariable("CM3_TITLE_DIRECT") != "0";
 
 /// <summary>
 /// 批量 Top1 台账（改动前后回归对比的唯一口径）：逐名记录产出条数、Top1 编码、
@@ -1196,6 +1212,8 @@ static int RunCm3Modes(
     string? batchOut,
     string? blankIn,
     string? blankOut,
+    string? leadsIn,
+    string? leadsOut,
     List<string> inputs)
 {
     var snapshot = BuildCm3Snapshot(conn);
@@ -1230,17 +1248,23 @@ static int RunCm3Modes(
         return 0;
     }
 
+    if (leadsIn is not null && leadsOut is not null)
+    {
+        RunCm3LeadEnumeration(snapshot, dictionary, synonyms, leadsIn, leadsOut);
+        return 0;
+    }
+
     if (inputs.Count == 0)
     {
         Console.Error.WriteLine(
-            "用法: --procedure <手术名> [...] / --ptree <seq_no> / --pbatch <名文件> <台账文件> / --pblank <名文件> <归因文件>");
+            "用法: --procedure <手术名> [...] / --ptree <seq_no> / --pbatch <名文件> <台账文件> / --pblank <名文件> <归因文件> / --cleads <名文件> <全主导词台账文件>");
         return 1;
     }
 
     var diagTop = int.TryParse(Environment.GetEnvironmentVariable("ICD_INDEX_DIAG_TOP"), out var parsedTop)
         ? parsedTop
         : 3;
-    var resolver = new Cm3ProcedureIndexResolver(20, diagTop);
+    var resolver = new Cm3ProcedureIndexResolver(20, diagTop, TitleDirectEnabled());
     foreach (var input in inputs)
     {
         Console.WriteLine($"===== {input} =====");
@@ -1396,7 +1420,7 @@ static void RunProcedureBatch(
     string outFile)
 {
     var names = File.ReadLines(inFile).Select(line => line.Trim()).Where(line => line.Length > 0).ToList();
-    var resolver = new Cm3ProcedureIndexResolver(20, 3);
+    var resolver = new Cm3ProcedureIndexResolver(20, 3, TitleDirectEnabled());
     var sb = new StringBuilder();
     var produced = 0;
     var fallback = 0;
@@ -1420,7 +1444,7 @@ static void RunProcedureBatch(
     }
 
     File.WriteAllText(outFile, sb.ToString(), new UTF8Encoding(false));
-    Console.WriteLine($"wrote {outFile} names={names.Count} 有推荐={produced} Top1索引码回退={fallback}");
+    Console.WriteLine($"wrote {outFile} names={names.Count} 有推荐={produced} Top1索引码回退={fallback} 字典标题直达={(TitleDirectEnabled() ? "开" : "关")}");
 }
 
 /// <summary>空推荐归因：按生产判据依次落到 无主导词召回 / 链路无编码 / 链路重叠门控 / 字典前缀零命中。</summary>
@@ -1432,7 +1456,7 @@ static void RunProcedureBlank(
     string outFile)
 {
     var names = File.ReadLines(inFile).Select(line => line.Trim()).Where(line => line.Length > 0).ToList();
-    var resolver = new Cm3ProcedureIndexResolver(20, 3);
+    var resolver = new Cm3ProcedureIndexResolver(20, 3, TitleDirectEnabled());
     var buckets = new Dictionary<string, int>(StringComparer.Ordinal);
     var sb = new StringBuilder();
     var empty = 0;
@@ -1508,6 +1532,208 @@ static string ClassifyEmptyProcedure(
         drill.CodeNode.Code, dictionary, name, drill.PathKey, 3).Count == 0)
         ? "字典前缀零命中"
         : "同族名额被挤占";
+}
+
+/// <summary>
+/// 手术通道的全主导词枚举：列序与诊断侧 --leads 一字不差（同一份工作簿脚本可直接套），
+/// 差别只有三处口径——席位取生产侧 ProcedureLeadWordTopK=8（CM3_DIAG_LEADK 可临时放宽）、
+/// 变体只走 术语同义词（cm3_index 没有 又称 形态）、展开字典是 ICD-9-CM-3。
+/// </summary>
+static void RunCm3LeadEnumeration(
+    Cm3IndexSnapshot snapshot,
+    IcdDictionarySnapshot dictionary,
+    IcdTermSynonymSnapshot synonyms,
+    string inFile,
+    string outFile)
+{
+    const int enumerateTopK = 100;
+    var productionTopK = int.TryParse(Environment.GetEnvironmentVariable("CM3_DIAG_LEADK"), out var parsedLeadK)
+        ? parsedLeadK
+        : 8;
+
+    var sb = new StringBuilder();
+    sb.AppendLine(string.Join('\t',
+        "名称", "变体", "来源", "名次", "主导词", "主导词编码", "命中的别名键", "覆盖字数", "覆盖率",
+        "生产名额内", "下钻", "修饰词(下钻路径)", "修饰词编码", "链路终点编码", "祖先兜底", "链路重叠", "字典展开码"));
+    var nameCount = 0;
+    var rowCount = 0;
+    var namesWithoutLead = 0;
+
+    foreach (var rawName in File.ReadLines(inFile).Select(line => line.Trim()).Where(line => line.Length > 0))
+    {
+        nameCount++;
+        // 与生产同款的输入归一（剥结尾括号里的编码标注、剥首页写在术式前的编号），
+        // 否则逐名台账与 --pbatch 对不上同一个名。
+        var name = NormalizeProcedureInput(rawName);
+        var variants = new List<(string Text, string Source)> { (name, "原文") };
+        foreach (var text in synonyms.ExpandVariants(name, TermSynonymTypes.Procedure))
+        {
+            if (text.Length > 0 && !variants.Any(item => item.Text == text))
+            {
+                variants.Add((text, "术语同义词"));
+            }
+        }
+
+        var emitted = 0;
+        foreach (var variant in variants)
+        {
+            var inputKey = TextMatch.NormalizeKey(variant.Text);
+            if (inputKey.Length == 0)
+            {
+                continue;
+            }
+
+            var source = variant.Source;
+            var drillKey = inputKey;
+            var leads = new List<Cm3LeadWordHit>();
+            if (inputKey.Length >= 2)
+            {
+                leads = Cm3ProcedureIndexMatcher.RecallLeads(snapshot, drillKey, enumerateTopK).ToList();
+                if (leads.Count == 0 && Cm3ProcedureIndexMatcher.ResolveRedirect(snapshot, drillKey) is { } redirect)
+                {
+                    var redirectKey = TextMatch.NormalizeKey(redirect);
+                    leads = Cm3ProcedureIndexMatcher.RecallLeads(snapshot, redirectKey, enumerateTopK).ToList();
+                    if (leads.Count > 0)
+                    {
+                        source += "→见重定向";
+                        drillKey = redirectKey;
+                    }
+                }
+            }
+            else if (FindExactCm3Lead(snapshot, inputKey) is { } exact)
+            {
+                // 单字术名（疝、痣）在生产里靠"别名逐字相等"锚定，不走覆盖率门控；台账同口径。
+                leads.Add(exact);
+                source += "→逐字主导词";
+            }
+
+            var rank = 0;
+            foreach (var hit in leads)
+            {
+                rank++;
+                var drill = Cm3ProcedureIndexMatcher.Drill(snapshot, hit, drillKey);
+                string verdict;
+                string modifierTerms;
+                string modifierCodes;
+                var terminalCode = string.Empty;
+                var ancestorFallback = "0";
+                var overlapText = string.Empty;
+                var expandedText = string.Empty;
+
+                if (drill is null)
+                {
+                    var candidates = DirectCm3ModifierCandidates(hit.Node, drillKey);
+                    modifierTerms = string.Join("→", candidates.Select(node => node.Term));
+                    modifierCodes = string.Join("→", candidates.Select(node => node.Code ?? "无"));
+                    verdict = candidates.Count > 0 ? "下钻无编码(列出词面可沾的子行)" : "下钻无编码";
+                    overlapText = "0.000";
+                }
+                else
+                {
+                    var indexCode = drill.CodeNode.Code;
+                    var hasCode = !string.IsNullOrEmpty(indexCode);
+                    terminalCode = indexCode ?? string.Empty;
+                    ancestorFallback = drill.CodeFromAncestorFallback ? "1" : "0";
+                    modifierTerms = string.Join("→", drill.Path.Skip(1).Select(node => node.Term));
+                    modifierCodes = string.Join("→", drill.Path.Skip(1).Select(node => node.Code ?? "无"));
+                    var overlap = Cm3ProcedureIndexResolver.PathOverlapRatio(drill.Path, variant.Text);
+                    overlapText = overlap.ToString("0.000");
+                    // CM3 的 ―见/―另见/―见亚目 改道写在链路里，诊断侧没有这一列，折进 下钻 判据文本。
+                    var jumpText = drill.Jumps.Count > 0
+                        ? $"[指针:{string.Join(";", drill.Jumps)}]"
+                        : string.Empty;
+                    if (!hasCode)
+                    {
+                        verdict = "链路终点无编码" + jumpText;
+                    }
+                    else if (overlap < Cm3ProcedureIndexResolver.MinPathOverlap)
+                    {
+                        verdict = "有编码但被0.30重叠门槛剔除" + jumpText;
+                        expandedText = "（未展开）";
+                    }
+                    else
+                    {
+                        verdict = (modifierTerms.Length > 0 ? "有编码+修饰词" : "有编码(主导词自身带码)") + jumpText;
+                        expandedText = string.Join("|", Cm3IndexCodeExpander
+                            .Expand(indexCode, dictionary, variant.Text, drill.PathKey, 3)
+                            .Select(item => item.Code + (item.IsIndexFallback ? "(fb)" : string.Empty)));
+                    }
+                }
+
+                sb.AppendLine(string.Join('\t',
+                    Sanitize(name),
+                    Sanitize(variant.Text == name ? string.Empty : variant.Text),
+                    source,
+                    rank,
+                    Sanitize(hit.Node.Term),
+                    Sanitize(hit.Node.Code ?? string.Empty),
+                    Sanitize(hit.Alias.Key),
+                    hit.CoveredChars,
+                    hit.CoverRatio.ToString("0.00"),
+                    rank <= productionTopK ? 1 : 0,
+                    verdict,
+                    Sanitize(modifierTerms),
+                    Sanitize(modifierCodes),
+                    Sanitize(terminalCode),
+                    ancestorFallback,
+                    overlapText,
+                    Sanitize(expandedText)));
+                rowCount++;
+                emitted++;
+            }
+        }
+
+        if (emitted == 0)
+        {
+            namesWithoutLead++;
+        }
+    }
+
+    File.WriteAllText(outFile, sb.ToString(), new UTF8Encoding(false));
+    Console.WriteLine($"wrote {outFile} names={nameCount} rows={rowCount} namesWithoutLead={namesWithoutLead}");
+}
+
+/// <summary>生产同款输入归一（<c>Cm3ProcedureIndexResolver.NormalizeInput</c> 的两条判据，那里是 private）。</summary>
+static string NormalizeProcedureInput(string inputText)
+{
+    var text = inputText.Trim();
+    text = System.Text.RegularExpressions.Regex
+        .Replace(text, @"[\(（]\s*[A-Za-z]?\d[\d.A-Za-z]*\s*[\)）]\s*$", string.Empty).Trim();
+    text = System.Text.RegularExpressions.Regex
+        .Replace(text, @"^\s*(?:[（(]?\d+[)）.、：:]|[①②③④⑤⑥⑦⑧⑨⑩])\s*", string.Empty).Trim();
+    return text;
+}
+
+/// <summary>主导词别名（含去装饰变体）与输入逐字相等才锚定——短术名（疝）的唯一入口。</summary>
+static Cm3LeadWordHit? FindExactCm3Lead(Cm3IndexSnapshot snapshot, string inputKey)
+{
+    foreach (var lead in snapshot.Leads)
+    {
+        foreach (var alias in lead.Aliases)
+        {
+            if (string.Equals(alias.Key, inputKey, StringComparison.Ordinal)
+                || string.Equals(alias.MatchKey, inputKey, StringComparison.Ordinal))
+            {
+                return new Cm3LeadWordHit(lead, alias, 1m, inputKey.Length);
+            }
+        }
+    }
+
+    return null;
+}
+
+/// <summary>下钻取不到编码时，列出词面出现在输入里、且本通道节点门控放行的直接子行（最多 6 条）。</summary>
+static List<Cm3IndexNode> DirectCm3ModifierCandidates(Cm3IndexNode lead, string inputKey)
+{
+    var inputQualifiers = Cm3SiteQualifiers.Extract(inputKey);
+    return lead.Children
+        .Where(child => child.Qualifiers.IsSubsetOf(inputQualifiers)
+            && !TextMatch.HasPhasePoleConflict(child.Term, inputKey)
+            && !TextMatch.HasNegationPoleConflict(child.CoreTerm, inputKey))
+        .Where(child => child.Aliases.Any(alias => alias.MatchKey.Length >= 2
+            && inputKey.Contains(alias.MatchKey, StringComparison.Ordinal)))
+        .Take(6)
+        .ToList();
 }
 
 static void DumpCm3Tree(Cm3IndexSnapshot snapshot, int seq)

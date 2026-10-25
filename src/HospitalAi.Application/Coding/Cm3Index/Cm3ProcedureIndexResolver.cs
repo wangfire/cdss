@@ -25,10 +25,11 @@ public sealed record ProcedureIndexRecommendation(
 
 /// <summary>
 /// 手术名称的两段式解析：主导词召回 → 该主导词子树内逐层下钻 → 索引码前缀展开。
-/// 与诊断侧同一套决策：主导词全落空即返回空，不回退字典直匹配（字典通道本来就在流水线里，
-/// 索引通道的产出只与它平权入池，不构成兜底）；索引命中但字典展不开时回退同前缀最泛码。
+/// 字典标题直达候选（只认逐字相等/逐字包含的硬词面证据，2026-10-24 修订原"不回退字典"约束）
+/// 受 <c>titleDirectEnabled</c> 开关控制：开启时常驻与链路同台竞争，关闭后由链路独自裁决；
+/// 直达与反查都不命中时返回空，宁空勿错。
 /// </summary>
-public sealed class Cm3ProcedureIndexResolver(int leadWordTopK, int maxResults)
+public sealed class Cm3ProcedureIndexResolver(int leadWordTopK, int maxResults, bool titleDirectEnabled = true)
 {
     /// <summary>
     /// 医生把院内码直接写在手术名后面（"针刺（99.9200）"）。抽取通道里 <c>ClinicalFactExtractor</c>
@@ -81,6 +82,18 @@ public sealed class Cm3ProcedureIndexResolver(int leadWordTopK, int maxResults)
             ResolveText(snapshot, dictionary, text, ranked, hints);
         }
 
+        // 字典标题直达（2026-10-24 修订建设方案 §6.2"不做字典兜底"约束）：
+        // 输入逐字包含完整标题（或与标题逐字相等）是比任何链路都硬的证据。常驻参与竞争而非
+        // 只在零产出时兜底：走错分支的链路（泛属性尾段抢锚点、兄弟部位串用）产出再高，
+        // 也不该压过输入里逐字写着的标准标题码；判据只认硬词面包含，直达通道两面实测
+        // 命中率 99.8%。可经配置关闭（V22Lite:Cm3TitleDirectEnabled / 离线工具 CM3_TITLE_DIRECT），
+        // 关闭后链路独自裁决——用于"链路能力/直达增益"分开问责与灰度对照。
+        // 反查不命中即无直达候选，链路照常独自裁决，宁空勿错口径不变。
+        if (titleDirectEnabled)
+        {
+            CollectDictionaryDirect(dictionary, texts, ranked);
+        }
+
         var results = Order(ranked).ToList();
         var taken = results.Select(item => item.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var hint in Order(hints))
@@ -91,9 +104,9 @@ public sealed class Cm3ProcedureIndexResolver(int leadWordTopK, int maxResults)
             }
         }
 
-        // 回退码不占 Top1：IsIndexFallback 是"索引码在字典里没有门控命中"的泛码，
-        // 两面真值实测 0/1555 命中，摆在首位只会把"空"换成错码。有非回退候选时把
-        // 排名最高的那个提到首位；整列都是回退码时返回空，否则回退码仍会占 Top1。
+        // 回退码不占 Top1（常备护栏）：IsIndexFallback 语义是"没有词面证据的泛码"，两面真值实测
+        // 0/1555 命中。展开器已改为"标题反查、反查不中宁空"，当前不再产出回退码，但只要任何路径
+        // 重新引入该标志，这里保证它不会把"空"换成错码。
         if (results.Count > 0 && results[0].IsIndexFallback)
         {
             var promoted = results.FindIndex(item => !item.IsIndexFallback);
@@ -110,6 +123,39 @@ public sealed class Cm3ProcedureIndexResolver(int leadWordTopK, int maxResults)
         }
 
         return results;
+    }
+
+    private void CollectDictionaryDirect(
+        IcdDictionarySnapshot dictionary,
+        List<string> texts,
+        List<(decimal RawScore, ProcedureIndexRecommendation Recommendation)> ranked)
+    {
+        foreach (var text in texts)
+        {
+            var inputKey = TextMatch.NormalizeKey(text);
+            if (inputKey.Length < 3)
+            {
+                // 过短输入的逐字包含判断噪声大（"肠吻合"能包含进一串含肠标题），不参与直达。
+                continue;
+            }
+
+            foreach (var (row, depth) in dictionary.TitleDirectMatches(inputKey).Take(maxResults * 2))
+            {
+                // 完全相等（depth=1）才走整标题深度通道参与保首竞争；包含匹配只有分数证据
+                // （depth×1.5 同钳位口径），不给 WholeTitleDepth——否则"药物涂层支架置入术"
+                // 这类部分包含会凭深度键挤掉链路里逐字命中的正确码（两面 A/B 实测 2 条对→错）。
+                var raw = Math.Min(1m, depth * 1.5m);
+                ranked.Add((raw, new ProcedureIndexRecommendation(
+                    row.CodeSystemCode,
+                    row.Code,
+                    row.Title,
+                    raw,
+                    IsIndexFallback: false,
+                    $"字典标题直达 | 标题: {row.Title}",
+                    depth >= 1m ? "字典标题直达（标题逐字相等）" : "字典标题直达（标题被输入逐字包含）",
+                    WholeTitleDepth: depth >= 1m ? 1m : 0m)));
+            }
+        }
     }
 
     private void ResolveText(

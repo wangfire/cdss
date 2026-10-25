@@ -6,7 +6,7 @@ namespace HospitalAi.Application.Tests;
 
 /// <summary>
 /// 手术名称按 CM3 索引库推荐链路的纯逻辑单测：词条解析（一字线指针、见亚目、主[附] 双码）、
-/// 主导词双轨判据与召回、修饰词下钻与连接行透明化、索引码→手术字典细码展开与两级回退。
+/// 主导词双轨判据与召回、修饰词下钻与连接行透明化、索引码→手术字典细码展开与同族标题反查。
 /// 夹具取自已验证的真实数据行（cm3_index seq 11/110/2695/2955/3004/3005/4243/7836/7837/14930-14956/15484-16100，
 /// medical_code ICD-9-CM-3 标题）。
 /// </summary>
@@ -277,11 +277,13 @@ public sealed class Cm3IndexTests
     [Fact]
     public void 索引码前缀按字面长度展开_吃到字典的X占位详码()
     {
+        // 43.6 是 4 位亚目码，前缀按字面长度取 4 位才能吃到 43.6X00 系 X 占位详码；
+        // 固定 5 位前缀会整族漏掉。输入与 43.6X00 标题逐字相等，走常规门控展开。
         var expanded = Cm3IndexCodeExpander.Expand(
-            "71.5", ProcedureDictionary(), "女阴切除术伴腹股沟淋巴结清扫", "女阴切除术");
+            "43.6", ProcedureDictionary(), "胃部分切除术伴胃十二指肠吻合术", "胃部分切除术");
 
         Assert.NotEmpty(expanded);
-        Assert.All(expanded, item => Assert.StartsWith("71.5X", item.Code, StringComparison.Ordinal));
+        Assert.All(expanded, item => Assert.StartsWith("43.6X", item.Code, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -297,33 +299,47 @@ public sealed class Cm3IndexTests
     }
 
     [Fact]
-    public void 同前缀有码但门控全落空_回退同族最泛码()
+    public void 同前缀有码但门控全落空_无逐字反查命中则宁空不出泛码()
     {
+        // Bassini 手术与 53.0 族标题（腹股沟疝单侧/斜疝修补术）无逐字包含关系：
+        // 反查不命中即返回空——最泛码回退已被实测否决（两面真值 0/1555 命中）。
         var expanded = Cm3IndexCodeExpander.Expand("53.0", ProcedureDictionary(), "Bassini手术", "修补术疝");
 
-        var only = Assert.Single(expanded);
-        Assert.True(only.IsIndexFallback);
-        Assert.Equal("53.0000", only.Code);
-        Assert.Contains("无门控命中", only.Note);
+        Assert.Empty(expanded);
     }
 
     [Fact]
-    public void 索引码在字典里一行都没有_回退索引编码本身()
+    public void 门控全落空时同族标题反查救回逐字包含的细码()
     {
-        // 37.17 / 40.92 / 64.69 实测属知识库覆盖缺口（方案 §6.5-5），按 E 类排除台账处理。
-        var expanded = Cm3IndexCodeExpander.Expand("37.17", ProcedureDictionary(), "主动脉与冠状动脉吻合术", "吻合术");
+        // 输入被前缀修饰语拉长后，输入被标题的覆盖率掉到 0.6 门之下、路径覆盖也不满
+        // （pathKey 里的 补片 不在标题里），门控整族落空；但标题 疝修补术 逐字出现在输入中，
+        // 反查按"标题被输入完整包含"救回，且不再标回退标志。
+        var dictionary = new IcdDictionarySnapshot([Dict("53.9000", "疝修补术")]);
+        var expanded = Cm3IndexCodeExpander.Expand(
+            "53.9", dictionary, "腹腔镜下双侧腹股沟疝修补术", "修补术疝补片");
 
         var only = Assert.Single(expanded);
-        Assert.True(only.IsIndexFallback);
-        Assert.Equal("37.17", only.Code);
-        Assert.Contains("无展开结果", only.Note);
+        Assert.Equal("53.9000", only.Code);
+        Assert.False(only.IsIndexFallback);
+        Assert.Contains("反查", only.Note);
+        Assert.Equal("疝修补术", only.Title);
+    }
+
+    [Fact]
+    public void 索引码在字典里一行都没有_宁空不回退索引编码本身()
+    {
+        // 37.17 / 40.92 / 64.69 实测属知识库覆盖缺口（方案 §6.5-5），
+        // 按 E 类排除台账处理；索引码自身没有词面证据，不再作为候选输出。
+        var expanded = Cm3IndexCodeExpander.Expand("37.17", ProcedureDictionary(), "主动脉与冠状动脉吻合术", "吻合术");
+
+        Assert.Empty(expanded);
     }
 
     [Fact]
     public void 整列都是回退码时不在首位出码_宁可空不推未验证码()
     {
-        // 37.17 在字典里一行都没有（E 类知识库缺口），展开只能回退索引编码本身；
-        // 这类回退码两面真值 0/1555 命中，摆在首位只会把"空"换成错码。
+        // 展开器已改为"反查不中宁空"，本例在展开层即产出空；解析层的回退不占首位护栏
+        // （Resolver 对 IsIndexFallback 首位的提升/清空）保留为常备不变量。
         var snapshot = Cm3IndexSnapshotBuilder.Build([
             Row(5001, 0, 0, "主动脉与冠状动脉吻合术 37.17"),
         ]);
@@ -354,8 +370,7 @@ public sealed class Cm3IndexTests
         // 见亚目行的目标亚目码就在本行 index_code 上，取码节点必须落在 17.4。
         Assert.Equal("17.4", drill.CodeNode.Code);
 
-        // 17.4 在本字典切片里只有 17.4x 细码、词面与输入全不相交，展开只能回退泛码；
-        // 回退码没有门控证据，新口径不让它占首（整列都是回退码时宁可返回空也不推未验证码）。
+        // 17.4 在本字典切片里只有 17.4x 细码、词面与输入无逐字包含关系，反查不命中 → 宁空。
         Assert.Empty(Resolver().Resolve(snapshot, ProcedureDictionary(), input));
     }
 
@@ -381,7 +396,7 @@ public sealed class Cm3IndexTests
         Assert.All(expanded, item => Assert.StartsWith("71.5", item.Code, StringComparison.Ordinal));
         Assert.DoesNotContain(expanded, item => item.Code.StartsWith("40.3", StringComparison.Ordinal));
 
-        // 女阴/外阴词面不相交导致门控全落空，整列都是回退码 → 按新口径返回空。
+        // 括注别名不作召回锚点、Bassett 又不在输入里 → 主导词召回为空，索引通道宁空。
         Assert.Empty(Resolver().Resolve(snapshot, ProcedureDictionary(), input));
     }
 
@@ -403,7 +418,7 @@ public sealed class Cm3IndexTests
         Assert.Equal(2, snapshot.Leads.Count);
 
         // Bassett 主导词必须照常召回并下钻（这是本用例真正要守的：手术 不冒充部位限定词），
-        // 但两条 eponym 行在字典切片里都只能回退泛码，回退码按新口径不占首 → 解析结果为空。
+        // 但输入里没有 Bassett 词面 → 召回为空，索引通道宁空不回退字典直匹配。
         const string input = "女阴切除术伴腹股沟淋巴结清扫";
         var inputKey = TextMatch.NormalizeKey(input);
         var hit = Assert.Single(Cm3ProcedureIndexMatcher.RecallLeads(snapshot, inputKey, 8));
@@ -443,11 +458,76 @@ public sealed class Cm3IndexTests
     }
 
     [Fact]
-    public void 无主导词命中时索引通道返回空不回退字典直匹配()
+    public void 无主导词命中且字典无逐字标题_索引通道返回空()
     {
+        // 输入与字典切片任何标题都无逐字相等/包含关系 → 直达兜底也不命中，宁空。
         var results = Resolver().Resolve(AnastomosisSnapshot(), ProcedureDictionary(), "经皮冠状动脉介入治疗");
 
         Assert.Empty(results);
+    }
+
+    [Fact]
+    public void 索引零产出时字典标题逐字相等即直达()
+    {
+        // 死路主导词（无码、无子树）链路一条都出不来；输入本身是字典标题 → 直达兜底出码。
+        var snapshot = Cm3IndexSnapshotBuilder.Build([
+            Row(5002, 0, 0, "胆囊切除术（全部）"),
+        ]);
+
+        var results = Resolver().Resolve(snapshot, ProcedureDictionary(), "胆囊切除术");
+
+        var top = Assert.Single(results);
+        Assert.Equal("51.2200", top.Code);
+        Assert.Equal("胆囊切除术", top.Title);
+        Assert.False(top.IsIndexFallback);
+        Assert.Equal(1m, top.WholeTitleDepth);
+        Assert.Contains("字典标题直达", top.EvidencePath);
+    }
+
+    [Fact]
+    public void 直达关闭时零产出保持空_不落字典标题()
+    {
+        // titleDirectEnabled=false 口径：推荐只由索引链路自产候选裁决，用于
+        // "链路能力/直达增益"分开问责；同一输入在开启时按直达出 51.2200。
+        var snapshot = Cm3IndexSnapshotBuilder.Build([
+            Row(5002, 0, 0, "胆囊切除术（全部）"),
+        ]);
+
+        var results = new Cm3ProcedureIndexResolver(8, 3, titleDirectEnabled: false)
+            .Resolve(snapshot, ProcedureDictionary(), "胆囊切除术");
+
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public void 索引零产出时输入包含完整标题即直达并按贴合度排序()
+    {
+        // 输入带着后缀状语（括注剥离后仍比标题长），字典里 腹腔镜下胆囊切除术 与 胆囊切除术
+        // 都被逐字包含但都不相等；包含匹配不给整标题深度通道，按分数（贴合度×1.5 钳位）裁决，
+        // 长标题（更具体）在前。
+        var snapshot = Cm3IndexSnapshotBuilder.Build([
+            Row(5003, 0, 0, "胆囊摘除术―见胆囊切除术"),
+        ]);
+
+        var results = Resolver().Resolve(snapshot, ProcedureDictionary(), "腹腔镜下胆囊切除术（急性期）");
+
+        Assert.NotEmpty(results);
+        Assert.Equal("51.2300", results[0].Code);
+        Assert.All(results, item => Assert.Contains("字典标题直达", item.EvidencePath));
+    }
+
+    [Fact]
+    public void 索引有产出时直达同台竞争_逐字标题的链路证据保持首位()
+    {
+        // 直达常驻参与竞争：链路候选与直达候选同码同分时，先入池的索引链路证据稳定保首
+        // （黄金用例的 Top1 仍须来自索引下钻而不是标题反查）。
+        var results = Resolver().Resolve(AnastomosisSnapshot(), ProcedureDictionary(), "胆囊肠吻合术");
+
+        Assert.NotEmpty(results);
+        Assert.Equal("51.3200", results[0].Code);
+        Assert.Contains("吻合术 → 胆囊", results[0].EvidencePath);
+        Assert.DoesNotContain(results, item =>
+            item.Code == "51.3200" && item.EvidencePath.Contains("字典标题直达", StringComparison.Ordinal));
     }
 
     [Fact]

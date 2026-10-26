@@ -986,18 +986,46 @@ public sealed class V22LitePipelineTests
     }
 
     [Fact]
-    public async Task 诊断侧已删除字典直匹配_无索引行时不产出推荐()
+    public async Task 字典标题直达关闭时_无索引行不产出推荐()
     {
         await using var database = await V22TestDatabase.CreateAsync();
         var (hospitalId, taskId, message) = await database.SeedV22TaskAsync(FullDocumentText);
-        // 只播种字典（旧直匹配可命中），不播种索引行：决策 2 下诊断输入必须零推荐。
+        // 只播种字典（标题逐字等于输入，直达通道开启时会命中），不播种索引行：
+        // 决策 2 说的是"索引之外不再无条件直匹配"，关掉逐字直达通道后仍是零推荐。
         await database.SeedCodeAsync(hospitalId, "ICD-10", FractureCode, Fracture);
+        var options = new V22PipelineOptions
+        {
+            IcdTitleDirectEnabled = false,
+            IcdTitleReverseEnabled = false
+        };
 
-        await database.CreateV22Runner().RunAsync(message);
+        await database.CreateV22Runner(options: options).RunAsync(message);
 
         await using var context = database.CreateContext();
         Assert.Empty(await context.CodingRecommendations.ToListAsync());
         Assert.Empty(await context.CodingCandidates.ToListAsync());
+    }
+
+    [Fact]
+    public async Task 字典标题直达开启时_无索引行但标题逐字相等仍产出推荐()
+    {
+        await using var database = await V22TestDatabase.CreateAsync();
+        var (hospitalId, taskId, message) = await database.SeedV22TaskAsync(FullDocumentText);
+        await database.SeedCodeAsync(hospitalId, "ICD-10", FractureCode, Fracture);
+
+        // 默认口径（两开关开启）：输入逐字等于字典标题属于硬词面证据，不依赖索引行。
+        await database.CreateV22Runner().RunAsync(message);
+
+        await using var context = database.CreateContext();
+        var recommendation = Assert.Single(await context.CodingRecommendations
+            .Include(item => item.Evidences)
+            .ToListAsync());
+        Assert.Equal(FractureCode, recommendation.Code);
+        Assert.Equal("ICD_INDEX", recommendation.RecallChannel);
+        // 证据串带直达通道自己的来源，便于与索引链路产出区分。
+        Assert.Contains(
+            recommendation.Evidences,
+            evidence => evidence.SourceText.Contains("字典标题直达", StringComparison.Ordinal));
     }
 
     [Fact]

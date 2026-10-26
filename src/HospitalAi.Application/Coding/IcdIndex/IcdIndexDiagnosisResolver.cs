@@ -43,8 +43,16 @@ public sealed record DiagnosisIndexRecommendation(
 /// 索引命中但字典展不开 → 回退推荐索引编码本身（IsIndexFallback）。
 /// 输入按术语同义词生成规范变体（原文 + 改写文各跑一遍，按编码去重取高分）；
 /// "X的 -见情况" 式失效主导词行命中时改道 病，疾病 主导词下钻部位修饰词。
+/// 两条标题词面通道受开关控制（口径对齐手术侧 CM3）：
+/// <c>titleDirectEnabled</c> = 字典标题直达候选常驻同台竞争；
+/// <c>titleReverseEnabled</c> = 索引门控全落空时先做同族标题反查、再取最泛码。
 /// </summary>
-public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, string diagnosisCodeSystem)
+public sealed class IcdIndexDiagnosisResolver(
+    int leadWordTopK,
+    int maxResults,
+    string diagnosisCodeSystem,
+    bool titleDirectEnabled = true,
+    bool titleReverseEnabled = true)
 {
     /// <summary>
     /// "见情况/另见情况" 泛词改道候选：文本变体 + 可在 病，疾病 下锚定的别名键 + 证据链标注。
@@ -124,6 +132,16 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
             ResolveText(snapshot, dictionary, text, ranked, hints, conditionFallbacks, tumor, cancellationToken);
         }
 
+        // 字典标题直达：输入逐字包含完整标题（或与标题逐字相等）是比任何链路都硬的证据。
+        // 常驻参与竞争而非只在零产出时兜底——走错分支的链路产出再高，也不该压过输入里
+        // 逐字写着的标准标题码。诊断侧比手术侧多两道约束：①沿用链路的三道硬门
+        // （糖尿病分型/否定极/部位冲突），否则 "无高血压" 会把 高血压 直达进来；
+        // ②只认可交付的单码，+ * / 组合码交给索引展开链路拆分。
+        if (titleDirectEnabled)
+        {
+            CollectDictionaryDirect(dictionary, texts, ranked);
+        }
+
         if (ranked.Count == 0 && conditionFallbacks.Count > 0)
         {
             foreach (var fallback in conditionFallbacks)
@@ -153,6 +171,56 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         }
 
         return results;
+    }
+
+    /// <summary>
+    /// 字典标题直达候选：只认 <see cref="IcdDictionarySnapshot.TitleDirectMatches"/> 的硬词面证据
+    /// （逐字相等，或 ≥3 字标题被输入逐字包含且贴合度 ≥0.5）。分数与手术侧同口径
+    /// （depth×1.5，钳位 1.0）；只有逐字相等才给 WholeTitleDepth=1，让管道按整标题贴合保首。
+    /// </summary>
+    private void CollectDictionaryDirect(
+        IcdDictionarySnapshot dictionary,
+        IReadOnlyList<string> texts,
+        List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)> ranked)
+    {
+        foreach (var text in texts)
+        {
+            var inputKey = TextMatch.NormalizeKey(text);
+            if (inputKey.Length < 3)
+            {
+                // 过短输入的逐字包含噪声大（"肺炎"能包含进一串含肺炎的标题），不参与直达。
+                continue;
+            }
+
+            foreach (var (row, depth) in dictionary.TitleDirectMatches(inputKey).Take(maxResults * 2))
+            {
+                // 交付码形态：+ * / 组合码不是单一临床编码，由索引展开链路负责拆分与回退。
+                if (row.Code.Contains('+') || row.Code.Contains('*') || row.Code.Contains('/'))
+                {
+                    continue;
+                }
+
+                if (TextMatch.IsUnjustifiedDiabetesCompound(row.Title, text)
+                    || TextMatch.HasDiabetesTypeConflict(row.Title, row.Code, text, resolveTypeFromCategoryAndDefault: false)
+                    || TextMatch.HasNegationPoleConflict(row.Title, text)
+                    || TextMatch.HasBodyPartConflict(row.Title, text))
+                {
+                    continue;
+                }
+
+                var raw = Math.Min(1m, depth * 1.5m);
+                ranked.Add((raw, new DiagnosisIndexRecommendation(
+                    row.CodeSystemCode,
+                    row.Code,
+                    row.Title,
+                    raw,
+                    IsIndexFallback: false,
+                    IsConditionalAddOn: false,
+                    $"字典标题直达 | 标题: {row.Title}",
+                    depth >= 1m ? "字典标题直达（标题逐字相等）" : "字典标题直达（标题被输入逐字包含）",
+                    WholeTitleDepth: depth >= 1m ? 1m : 0m)));
+            }
+        }
     }
 
     /// <summary>同一索引编码（同族粒度菜单）在最终名额里最多占的席位数。</summary>
@@ -595,7 +663,8 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
         }
 
         var expanded = IndexCodeExpander.Expand(
-            parsed, dictionary, inputText, drill.PathKey, maxResults, diagnosisCodeSystem, tumor);
+            parsed, dictionary, inputText, drill.PathKey, maxResults, diagnosisCodeSystem, tumor,
+            titleReverseEnabled);
 
         // 形态学码在肿瘤表没查到部位（输入只写 "C细胞癌"，没有部位词）：索引在同一节点下备了
         // "－－未特指部位" 行（全库 311 条、269 条带码，值就是该形态的最常见部位码
@@ -612,7 +681,8 @@ public sealed class IcdIndexDiagnosisResolver(int leadWordTopK, int maxResults, 
             indexCode = unspecifiedCode;
             parsed = ParsedIndexCode.Parse(unspecifiedCode);
             expanded = IndexCodeExpander.Expand(
-                parsed, dictionary, inputText, drill.PathKey, maxResults, diagnosisCodeSystem, tumor);
+                parsed, dictionary, inputText, drill.PathKey, maxResults, diagnosisCodeSystem, tumor,
+                titleReverseEnabled);
         }
 
         if (expanded.Count == 0)

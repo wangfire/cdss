@@ -178,7 +178,8 @@ var diagTop = int.TryParse(Environment.GetEnvironmentVariable("ICD_INDEX_DIAG_TO
 var diagLeadK = int.TryParse(Environment.GetEnvironmentVariable("ICD_INDEX_DIAG_LEADK"), out var parsedDiagLeadK)
     ? parsedDiagLeadK
     : 8;
-var resolver = new IcdIndexDiagnosisResolver(diagLeadK, diagTop, codeSystem);
+var resolver = new IcdIndexDiagnosisResolver(
+    diagLeadK, diagTop, codeSystem, DiagnosisTitleDirectEnabled(), DiagnosisTitleReverseEnabled());
 
 if (blankIn is not null && blankOut is not null)
 {
@@ -205,7 +206,9 @@ if (batchIn is not null && batchOut is not null)
     var batchLeadK = int.TryParse(Environment.GetEnvironmentVariable("ICD_INDEX_DIAG_LEADK"), out var parsedLeadK)
         ? parsedLeadK
         : 8;
-    RunBatch(snapshot, dictionary, synonyms, new IcdIndexDiagnosisResolver(batchLeadK, 3, codeSystem), batchIn, batchOut, tumor);
+    RunBatch(snapshot, dictionary, synonyms, new IcdIndexDiagnosisResolver(
+        batchLeadK, 3, codeSystem, DiagnosisTitleDirectEnabled(), DiagnosisTitleReverseEnabled()),
+        batchIn, batchOut, tumor);
     return 0;
 }
 
@@ -223,7 +226,9 @@ if (tumorLedgerIn is not null && tumorLedgerOut is not null)
         ? parsedLedgerK
         : 8;
     RunTumorLedger(snapshot, dictionary, synonyms, tumor,
-        new IcdIndexDiagnosisResolver(ledgerLeadK, 3, codeSystem), tumorLedgerIn, tumorLedgerOut);
+        new IcdIndexDiagnosisResolver(
+            ledgerLeadK, 3, codeSystem, DiagnosisTitleDirectEnabled(), DiagnosisTitleReverseEnabled()),
+        tumorLedgerIn, tumorLedgerOut);
     return 0;
 }
 
@@ -483,6 +488,20 @@ static bool TitleDirectEnabled() =>
     Environment.GetEnvironmentVariable("CM3_TITLE_DIRECT") != "0";
 
 /// <summary>
+/// 诊断字典标题直达开关（对齐生产配置 V22Lite:IcdTitleDirectEnabled）：
+/// 环境变量 ICD_TITLE_DIRECT=0 关闭，缺省开启。
+/// </summary>
+static bool DiagnosisTitleDirectEnabled() =>
+    Environment.GetEnvironmentVariable("ICD_TITLE_DIRECT") != "0";
+
+/// <summary>
+/// 诊断同族标题反查开关（对齐生产配置 V22Lite:IcdTitleReverseEnabled）：
+/// 环境变量 ICD_TITLE_REVERSE=0 关闭，缺省开启。
+/// </summary>
+static bool DiagnosisTitleReverseEnabled() =>
+    Environment.GetEnvironmentVariable("ICD_TITLE_REVERSE") != "0";
+
+/// <summary>
 /// 批量 Top1 台账（改动前后回归对比的唯一口径）：逐名记录产出条数、Top1 编码、
 /// Top1 是否索引码回退、全部编码列表与 Top1 证据链路。
 /// 输出：名称 \t 条数 \t Top1编码 \t Top1回退 \t 编码列表 \t Top1链路
@@ -515,7 +534,9 @@ static void RunBatch(
     }
 
     File.WriteAllText(outFile, sb.ToString(), new UTF8Encoding(false));
-    Console.WriteLine("wrote " + outFile);
+    Console.WriteLine("wrote " + outFile
+        + $" 字典标题直达={(DiagnosisTitleDirectEnabled() ? "开" : "关")}"
+        + $" 同族标题反查={(DiagnosisTitleReverseEnabled() ? "开" : "关")}");
 }
 
 /// <summary>
@@ -600,7 +621,8 @@ static void RunExport(
         }
     }
 
-    var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+    var resolver = new IcdIndexDiagnosisResolver(
+        8, 3, "ICD-10", DiagnosisTitleDirectEnabled(), DiagnosisTitleReverseEnabled());
     var sb = new StringBuilder();
     var names = 0;
     var unresolved = 0;
@@ -1056,7 +1078,8 @@ static void Diagnose(
 
         DescribeChildren(drill.Path[^1], drill.PathKey, inputKey, inputQualifiers, "   下一层");
         var expanded = IndexCodeExpander.Expand(
-            ParsedIndexCode.Parse(drill.CodeNode.Code!), dictionary, input, drill.PathKey, 3, codeSystem);
+            ParsedIndexCode.Parse(drill.CodeNode.Code!), dictionary, input, drill.PathKey, 3, codeSystem,
+            titleReverseEnabled: DiagnosisTitleReverseEnabled());
         Console.WriteLine($"   expanded={string.Join("|", expanded.Select(e => $"{e.Code}{(e.IsIndexFallback ? "(fb)" : "")}"))}");
     }
 

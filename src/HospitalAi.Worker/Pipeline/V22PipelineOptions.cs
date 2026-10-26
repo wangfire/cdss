@@ -41,6 +41,22 @@ public sealed class V22PipelineOptions
     /// </summary>
     public int ProcedureLeadWordTopK { get; set; } = 20;
 
+    /// <summary>
+    /// 诊断侧字典标题直达开关：直达 = 输入与字典标题逐字相等或完整包含标题的硬词面候选，
+    /// 受诊断侧三道硬门（糖尿病分型/否定极/部位冲突）与交付码形态（排除 + * / 组合码）约束，
+    /// 常驻与索引链路同台竞争。关闭后诊断推荐只由索引链路自产候选裁决，
+    /// 用于"链路能力/直达增益"分开问责与灰度对照。口径对齐 <see cref="Cm3TitleDirectEnabled"/>。
+    /// </summary>
+    public bool IcdTitleDirectEnabled { get; set; } = true;
+
+    /// <summary>
+    /// 诊断侧同族标题反查开关：索引下钻门控全落空、准备取同前缀最泛码之前，
+    /// 先在同族字典行里按双向逐字包含反查（标题被输入完整包含，或输入 90%+ 被标题覆盖）。
+    /// 反查不中仍走既有回退——诊断侧回退是字典精确码/语义已验证的索引码，不整段删除。
+    /// 关闭后行为与既有"门控→最泛码"完全一致。口径对齐 CM3 的同族标题反查（<c>ReverseTitleRows</c>）。
+    /// </summary>
+    public bool IcdTitleReverseEnabled { get; set; } = true;
+
     /// <summary>索引展开后诊断字典的编码体系标识。</summary>
     public string IndexDiagnosisCodeSystem { get; set; } = "ICD-10";
 

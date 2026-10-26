@@ -1235,7 +1235,7 @@ public sealed class IcdIndexTests
 
         var results = IndexCodeExpander.Expand(
             parsed, dictionary, "心肌变性伴有风湿热",
-            TextMatch.NormalizeKey("变性心肌伴有风湿热"), maxResults: 5);
+            TextMatch.NormalizeKey("变性心肌伴有风湿热"), maxResults: 5, titleReverseEnabled: false);
 
         Assert.Equal(2, results.Count);
         // 回退也要落在字典实码上：I00 这个索引原串在 medical_code 里查不到标题，
@@ -1458,7 +1458,7 @@ public sealed class IcdIndexTests
             Dict("C99.900", "肿瘤,恶性的(未特指部位)"),
             Dict("K62.903", "直肠肿瘤"),
         ]);
-        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10", titleDirectEnabled: false);
 
         var results = resolver.Resolve(snapshot, dictionary, "直肠肿瘤");
 
@@ -1479,7 +1479,7 @@ public sealed class IcdIndexTests
         var dictionary = new IcdDictionarySnapshot([
             Dict("K62.903", "直肠肿瘤"),
         ]);
-        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10", titleDirectEnabled: false);
 
         var results = resolver.Resolve(snapshot, dictionary, "直肠肿瘤");
 
@@ -1636,7 +1636,7 @@ public sealed class IcdIndexTests
             Dict("R51.900", "神经痛,未特指的"),
             Dict("G50.000", "颅神经痛"),
         ]);
-        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10", titleDirectEnabled: false);
 
         var retained = resolver.Resolve(snapshot, dictionary, "枕大颅神经痛");
         Assert.DoesNotContain("G50.000", retained.Select(item => item.Code));
@@ -1905,6 +1905,26 @@ public sealed class IcdIndexTests
 
         var results = IndexCodeExpander.Expand(
             parsed, dictionary, "轻度非增殖性糖尿病视网膜病变",
+            TextMatch.NormalizeKey("视网膜病糖尿病性"), maxResults: 3);
+
+        var only = Assert.Single(results);
+        Assert.Equal("E11.301+H36.0*", only.Code);
+        Assert.False(only.IsIndexFallback);
+    }
+
+    [Fact]
+    public void 同族标题反查_替代组内不生效_未特指别名不顶掉正式分型展开()
+    {
+        // E14「未特指」行的别名就是 糖尿病视网膜病变：若组内允许反查，它会以
+        // 非回退候选满覆盖分顶掉 E11「2型」的正式展开（万条实测 10 名 E11.x→E14.x）。
+        var parsed = ParsedIndexCode.Parse("E10.3† H36.0*;E11.3† H36.0*;E14.3† H36.0*");
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("E11.301+H36.0*", "2型糖尿病性视网膜病变"),
+            Dict("E14.300", "糖尿病伴有眼的并发症", "糖尿病视网膜病变"),
+        ]);
+
+        var results = IndexCodeExpander.Expand(
+            parsed, dictionary, "糖尿病视网膜病变",
             TextMatch.NormalizeKey("视网膜病糖尿病性"), maxResults: 3);
 
         var only = Assert.Single(results);
@@ -2477,7 +2497,8 @@ public sealed class IcdIndexTests
             Dict("D48.900", "动态未定或动态未知的肿瘤，部位未特指"),
             Dict("D37.502", "直肠乙状结肠交界处动态未定肿瘤"),
         ]);
-        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 12, maxResults: 6, diagnosisCodeSystem: "ICD-10");
+        var resolver = new IcdIndexDiagnosisResolver(
+            leadWordTopK: 12, maxResults: 6, diagnosisCodeSystem: "ICD-10", titleDirectEnabled: false);
 
         Assert.Empty(resolver.Resolve(
             snapshot, dictionary, "直肠乙状结肠交界处动态未定肿瘤", tumor: tumor));
@@ -2686,7 +2707,8 @@ public sealed class IcdIndexTests
     [InlineData("结核性肺纤维变性,痰镜检 ( - ) ")]
     public void 阴性标记改写成中文词后_索引写明的阴性行可达(string inputText)
     {
-        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 12, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+        var resolver = new IcdIndexDiagnosisResolver(
+            leadWordTopK: 12, maxResults: 3, diagnosisCodeSystem: "ICD-10", titleDirectEnabled: false);
 
         // 符号形态在 NormalizeKey 之后半角连字符整个消失、全角 dash 也留不下词面，
         // 索引那一行「细菌学和组织学检查为阴性」一个字都锚不住，输入只能落回中性行 A16.2。
@@ -2717,5 +2739,75 @@ public sealed class IcdIndexTests
         var results = resolver.Resolve(PoleMarkerSnapshot(), PoleMarkerDictionary(), "结核性肺纤维变性,痰镜检(x)");
 
         Assert.DoesNotContain(results, item => item.EvidencePath.Contains("阴性", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void 字典标题直达_输入与字典标题逐字相等时Top1直出()
+    {
+        // 走错分支的链路（肿瘤 C99.9）产出再高，也不该压过输入里逐字写着的标准标题码。
+        var snapshot = IcdIndexSnapshotBuilder.Build([LeadRow(43560, "肿瘤", "C99.9")]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("C99.900", "肿瘤,恶性的(未特指部位)"),
+            Dict("K62.903", "直肠肿瘤"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(snapshot, dictionary, "直肠肿瘤");
+
+        Assert.Equal("K62.903", results[0].Code);
+        Assert.Contains("字典标题直达", results[0].EvidencePath);
+        Assert.Equal(1m, results[0].WholeTitleDepth);
+        Assert.False(results[0].IsIndexFallback);
+    }
+
+    [Fact]
+    public void 字典标题直达关闭后_只由索引链路裁决()
+    {
+        var snapshot = IcdIndexSnapshotBuilder.Build([LeadRow(43560, "肿瘤", "C99.9")]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("C99.900", "肿瘤,恶性的(未特指部位)"),
+            Dict("K62.903", "直肠肿瘤"),
+        ]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10", titleDirectEnabled: false);
+
+        var results = resolver.Resolve(snapshot, dictionary, "直肠肿瘤");
+
+        Assert.DoesNotContain(results, item => item.EvidencePath.Contains("字典标题直达"));
+        Assert.Equal("C99.900", results[0].Code);
+    }
+
+    [Fact]
+    public void 字典标题直达_沿用否定极门控_非活动性结核不直达活动性结核()
+    {
+        // 直达若不过否定极门控，"非活动性结核" 会因逐字包含 活动性结核 而直出 A15.000。
+        var dictionary = new IcdDictionarySnapshot([Dict("A15.000", "活动性结核")]);
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        var results = resolver.Resolve(IcdIndexSnapshotBuilder.Build([]), dictionary, "非活动性结核");
+
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public void 同族标题反查_门控落空时按同族标题补码_关闭后回到最泛码()
+    {
+        var parsed = ParsedIndexCode.Parse("M10.0");
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("M10.000", "痛风"),
+            Dict("M10.001", "痛风性关节炎"),
+        ]);
+
+        // 输入 12 字、标题 6 字：输入覆盖率 0.5 掉在 0.6 门控下，常规展开整族落空。
+        var reversed = IndexCodeExpander.Expand(
+            parsed, dictionary, "患者痛风性关节炎急性发作", string.Empty, 3);
+        Assert.Equal("M10.001", reversed[0].Code);
+        Assert.False(reversed[0].IsIndexFallback);
+        Assert.Contains("同族标题反查", reversed[0].Note);
+
+        // 关闭反查即回到既有口径：取同前缀最短码（最泛码），行为与改动前一致。
+        var legacy = IndexCodeExpander.Expand(
+            parsed, dictionary, "患者痛风性关节炎急性发作", string.Empty, 3, titleReverseEnabled: false);
+        Assert.Equal("M10.000", legacy[0].Code);
+        Assert.True(legacy[0].IsIndexFallback);
     }
 }

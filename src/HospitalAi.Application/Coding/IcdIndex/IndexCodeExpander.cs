@@ -147,12 +147,14 @@ public static class IndexCodeExpander
         string pathKey,
         int maxResults,
         string fallbackCodeSystem = "ICD-10",
-        TumorIndexSnapshot? tumor = null)
+        TumorIndexSnapshot? tumor = null,
+        bool titleReverseEnabled = true)
     {
         // 覆盖度分母用剥掉不确定性引导语后的输入核："十二指肠溃疡伴出血可能性大" 的 性 会给
         // 慢性十二指肠溃疡伴有出血 白送一分覆盖，把与输入逐字相等的 K26.400X001 挤到 Top-2。
         var inputKey = TextMatch.StripUncertaintyPhrases(inputText);
-        var results = ExpandCore(parsed, dictionary, inputText, inputKey, pathKey, fallbackCodeSystem, tumor: tumor);
+        var results = ExpandCore(parsed, dictionary, inputText, inputKey, pathKey, fallbackCodeSystem,
+            tumor: tumor, titleReverseEnabled: titleReverseEnabled);
 
         // 先按编码收敛，再统一排序，避免下游按编码去重时由字典行序决定谁占住 Top-N 名额。
         return Rank(results
@@ -170,17 +172,18 @@ public static class IndexCodeExpander
         string pathKey,
         string fallbackCodeSystem,
         bool inAlternatives = false,
-        TumorIndexSnapshot? tumor = null)
+        TumorIndexSnapshot? tumor = null,
+        bool titleReverseEnabled = true)
     {
         switch (parsed.Kind)
         {
             case IndexCodeFormatKind.Alternatives:
                 return ExpandAlternatives(parsed, dictionary, inputText, inputKey, pathKey,
-                    fallbackCodeSystem, tumor);
+                    fallbackCodeSystem, tumor, titleReverseEnabled);
 
             case IndexCodeFormatKind.Conditional:
                 return ExpandConditional(parsed, dictionary, inputText, inputKey, pathKey,
-                    fallbackCodeSystem, inAlternatives, tumor);
+                    fallbackCodeSystem, inAlternatives, tumor, titleReverseEnabled);
 
             case IndexCodeFormatKind.Morphology:
             {
@@ -240,7 +243,8 @@ public static class IndexCodeExpander
                     parsed.MorphologyCode, dictionary, inputText, inputKey, pathKey);
                 return morphologyOnly.Count > 0
                     ? morphologyOnly
-                    : FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
+                    : FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
+                        fallbackCodeSystem, titleReverseEnabled);
             }
 
             case IndexCodeFormatKind.DaggerPair:
@@ -274,7 +278,8 @@ public static class IndexCodeExpander
                         note: $"联合编码表现码（配 {parsed.DaggerCode}†）"));
                 }
 
-                return pair.Count > 0 ? pair : FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
+                return pair.Count > 0 ? pair : FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
+                    fallbackCodeSystem, titleReverseEnabled);
             }
 
             case IndexCodeFormatKind.CodeRange:
@@ -283,7 +288,8 @@ public static class IndexCodeExpander
                     parsed.RangeStart ?? string.Empty, parsed.RangeEnd ?? string.Empty);
                 if (prefixes.Count == 0)
                 {
-                    return FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
+                    return FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
+                        fallbackCodeSystem, titleReverseEnabled);
                 }
 
                 var rows = prefixes
@@ -291,7 +297,8 @@ public static class IndexCodeExpander
                     .ToList();
                 var items = RankRows(rows, inputText, inputKey, pathKey, parsed.Kind,
                     inAlternatives, note: null);
-                return items.Count > 0 ? items : FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
+                return items.Count > 0 ? items : FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
+                    fallbackCodeSystem, titleReverseEnabled);
             }
 
             case IndexCodeFormatKind.CategoryUnspecified:
@@ -302,12 +309,14 @@ public static class IndexCodeExpander
                 var prefix = (parsed.Prefix ?? parsed.Raw).ToUpperInvariant().TrimEnd('*');
                 if (prefix.Length < 3)
                 {
-                    return FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
+                    return FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
+                        fallbackCodeSystem, titleReverseEnabled);
                 }
 
                 var items = ExpandByPrefix(prefix, dictionary, inputText, inputKey, pathKey,
                     parsed.Kind, excludeJoint: false, inAlternatives, note: null);
-                return items.Count > 0 ? items : FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
+                return items.Count > 0 ? items : FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
+                    fallbackCodeSystem, titleReverseEnabled);
             }
         }
     }
@@ -340,13 +349,14 @@ public static class IndexCodeExpander
         string pathKey,
         string fallbackCodeSystem,
         bool inAlternatives,
-        TumorIndexSnapshot? tumor = null)
+        TumorIndexSnapshot? tumor = null,
+        bool titleReverseEnabled = true)
     {
         // 触发码 = 本行主码；索引链路已完成语义验证，字典展不开时按索引码原样推荐。
         var triggerItems = parsed.Trigger is null
             ? []
             : ExpandCore(parsed.Trigger, dictionary, inputText, inputKey, pathKey,
-                fallbackCodeSystem, inAlternatives, tumor);
+                fallbackCodeSystem, inAlternatives, tumor, titleReverseEnabled);
         IReadOnlyList<ExpandedItem> result = triggerItems.Count > 0
             ? triggerItems.Select(item => item with { Score = Math.Max(item.Score, 0.62m) }).ToList()
             :
@@ -360,7 +370,7 @@ public static class IndexCodeExpander
         if (parsed.AddOn is { } addOn)
         {
             var addOnItems = ExpandCore(addOn, dictionary, inputText, inputKey, pathKey,
-                fallbackCodeSystem, inAlternatives, tumor);
+                fallbackCodeSystem, inAlternatives, tumor, titleReverseEnabled);
             var chosen = addOnItems.FirstOrDefault(item => !item.IsIndexFallback) ?? addOnItems.FirstOrDefault();
             if (chosen is not null)
             {
@@ -383,14 +393,21 @@ public static class IndexCodeExpander
         string inputKey,
         string pathKey,
         string fallbackCodeSystem,
-        TumorIndexSnapshot? tumor = null)
+        TumorIndexSnapshot? tumor = null,
+        bool titleReverseEnabled = true)
     {
         var alternatives = parsed.Alternatives ?? [];
         var scored = alternatives
             .Select(alt =>
             {
+                // 替代组是索引自己列出的分型/分支菜单，选哪一支由字典展开裁决；
+                // 标题反查只补"单码展不开"，若在替代组内也生效，E14「未特指」这类
+                // 别名词面会被翻成非回退候选、顶掉 E11「2型」的正式展开
+                // （万条实测糖尿病整族 10 名 E11.x→E14.x）。所以组内一律不反查，
+                // 整组全落空后的组级回退仍按开关执行。
                 var items = ExpandCore(alt, dictionary, inputText, inputKey, pathKey,
-                    fallbackCodeSystem, inAlternatives: true, tumor: tumor);
+                    fallbackCodeSystem, inAlternatives: true, tumor: tumor,
+                    titleReverseEnabled: false);
                 return (Alt: alt, Items: items, Best: items.Count > 0 ? items.Max(item => item.Score) : 0m);
             })
             .Where(entry => !entry.Items.Any(item => item.IsIndexFallback))
@@ -399,7 +416,8 @@ public static class IndexCodeExpander
 
         if (scored.Count == 0)
         {
-            return FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
+            return FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
+                fallbackCodeSystem, titleReverseEnabled);
         }
 
         // 病历信息不足以区分替代编码（并列/全部低分）→ 回退主导词未特指码，禁止全量输出。
@@ -407,7 +425,8 @@ public static class IndexCodeExpander
         var second = scored.Count > 1 ? scored[1].Best : 0m;
         if (top.Best <= 0m || top.Best - second < 0.15m)
         {
-            return FallbackItems(parsed, dictionary, inputText, fallbackCodeSystem);
+            return FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
+                fallbackCodeSystem, titleReverseEnabled);
         }
 
         return top.Items;
@@ -745,12 +764,18 @@ public static class IndexCodeExpander
     /// "E85.4† K93.8*"）不是可采用的临床编码，下游按编码取标题会取空，
     /// 所以按 †/* 与 ; 拆成单码，各自取字典同前缀最泛码（星码按其本身编码）；
     /// 裸形态学码直接丢弃，宁可不推也不推一个查不到的码。
+    /// 同族标题反查开启时，取最泛码之前先在同一个前缀族里按双向逐字包含找证据
+    /// （口径同 CM3 <c>ReverseTitleRows</c>）；反查不中仍走原有回退——诊断侧回退是
+    /// 字典精确码或语义已验证的索引码，与 CM3 的"纯最泛码"不是同一资产，不整段删除。
     /// </summary>
     private static IReadOnlyList<ExpandedItem> FallbackItems(
         ParsedIndexCode parsed,
         IcdDictionarySnapshot dictionary,
         string inputText,
-        string fallbackCodeSystem)
+        string inputKey,
+        string pathKey,
+        string fallbackCodeSystem,
+        bool titleReverseEnabled)
     {
         var components = parsed.Kind switch
         {
@@ -775,11 +800,35 @@ public static class IndexCodeExpander
             var rows = dictionary.Prefix(key);
             var exact = rows.FirstOrDefault(row =>
                 row.Code.TrimEnd('*').Equals(key, StringComparison.Ordinal));
-            var chosen = exact
-                ?? rows
-                    .OrderBy(row => row.Code.Length)
-                    .ThenBy(row => row.Code, StringComparer.Ordinal)
-                    .FirstOrDefault();
+            if (exact is not null)
+            {
+                // 索引码本身就在字典里：这不是"猜一个最泛码"，是精确码，保留原口径。
+                items.Add(new ExpandedItem(
+                    fallbackCodeSystem,
+                    exact.Code,
+                    exact.Title,
+                    FallbackScore,
+                    parsed.Kind,
+                    IsIndexFallback: true,
+                    IsConditionalAddOn: false,
+                    Note: $"索引编码 {parsed.Raw} 在字典中无展开结果，回退推荐同前缀码"));
+                continue;
+            }
+
+            if (titleReverseEnabled)
+            {
+                var reversed = ReverseTitleRows(rows, inputKey, pathKey, parsed.Kind);
+                if (reversed.Count > 0)
+                {
+                    items.AddRange(reversed);
+                    continue;
+                }
+            }
+
+            var chosen = rows
+                .OrderBy(row => row.Code.Length)
+                .ThenBy(row => row.Code, StringComparer.Ordinal)
+                .FirstOrDefault();
             items.Add(chosen is null
                 ? Fallback(parsed, inputText, fallbackCodeSystem)
                 : new ExpandedItem(
@@ -794,5 +843,87 @@ public static class IndexCodeExpander
         }
 
         return items;
+    }
+
+    /// <summary>
+    /// 门控全落空时的同族标题反查（移植 CM3 口径）：标题被输入逐字完整包含，
+    /// 或输入字符 90% 以上被标题覆盖。三道硬门（糖尿病分型/否定极/部位冲突）与
+    /// <see cref="RankRows"/> 完全一致——门控刻意挡掉的行不会被反查放回来。
+    /// 反查只做"补证据"，调用方在无命中时仍走原回退。
+    /// </summary>
+    private static IReadOnlyList<ExpandedItem> ReverseTitleRows(
+        IReadOnlyList<IcdDictionaryRow> rows,
+        string inputKey,
+        string pathKey,
+        IndexCodeFormatKind format)
+    {
+        if (rows.Count == 0 || inputKey.Length == 0)
+        {
+            return [];
+        }
+
+        var results = new List<ExpandedItem>();
+        foreach (var row in rows)
+        {
+            if (TextMatch.IsUnjustifiedDiabetesCompound(row.Title, inputKey)
+                || TextMatch.HasDiabetesTypeConflict(row.Title, row.Code, inputKey, resolveTypeFromCategoryAndDefault: false)
+                || TextMatch.HasNegationPoleConflict(row.Title, inputKey)
+                || TextMatch.HasBodyPartConflict(row.Title, inputKey))
+            {
+                continue;
+            }
+
+            var titleKey = TextMatch.NormalizeKey(row.Title);
+            var searchTextKey = TextMatch.NormalizeKey(row.SearchText);
+            var titleInInput = TextMatch.CoverageOf(titleKey, inputKey);
+            var inputInTitle = Best(
+                TextMatch.CoverageOf(inputKey, titleKey),
+                TextMatch.CoverageOf(inputKey, searchTextKey));
+            var pathCover = Best(
+                Best(
+                    TextMatch.CoverageOf(pathKey, titleKey),
+                    TextMatch.CoverageOf(pathKey, titleKey, countSingleCharSegments: true)),
+                TextMatch.CoverageOf(TextMatch.Reverse(pathKey), titleKey, countSingleCharSegments: true));
+
+            var admitted = (titleKey.Length >= 2 && titleInInput.Ratio >= 1.0m)
+                || (inputKey.Length >= 3 && inputInTitle.Ratio >= 0.9m);
+            if (!admitted)
+            {
+                continue;
+            }
+
+            var score = Math.Max(inputInTitle.Ratio, pathCover.Ratio * 0.9m);
+            var wholeTitleHit = titleKey.Length > 0
+                && inputKey.Contains(titleKey, StringComparison.Ordinal)
+                && inputInTitle.Ratio >= WholeTitleMinInputRatio;
+            if (wholeTitleHit)
+            {
+                score = 1.0m;
+            }
+
+            results.Add(new ExpandedItem(
+                row.CodeSystemCode,
+                row.Code,
+                row.Title,
+                score,
+                format,
+                IsIndexFallback: false,
+                IsConditionalAddOn: false,
+                Note: "门控全落空，按同族标题反查命中",
+                TitleSpecificity: titleInInput.Ratio,
+                WholeTitleDepth: wholeTitleHit
+                    ? Math.Min(1m, titleKey.Length / (decimal)inputKey.Length)
+                    : 0m));
+        }
+
+        var ranked = Rank(results)
+            .Take(10)
+            .ToList();
+        for (var i = 0; i < ranked.Count; i++)
+        {
+            ranked[i] = ranked[i] with { FamilyRank = i };
+        }
+
+        return ranked;
     }
 }

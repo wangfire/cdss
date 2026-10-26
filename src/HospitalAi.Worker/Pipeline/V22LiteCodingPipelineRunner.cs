@@ -467,7 +467,8 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                     task.HospitalId, settings.IndexDiagnosisCodeSystem, cancellationToken);
                 var termSynonyms = _termSynonymSource.GetSnapshot(cancellationToken);
                 var resolver = new IcdIndexDiagnosisResolver(
-                    settings.LeadWordTopK, settings.MaxCandidatesPerInput, settings.IndexDiagnosisCodeSystem);
+                    settings.LeadWordTopK, settings.MaxCandidatesPerInput, settings.IndexDiagnosisCodeSystem,
+                    settings.IcdTitleDirectEnabled, settings.IcdTitleReverseEnabled);
                 foreach (var input in selectedInputs)
                 {
                     if (IsProcedureInput(input))

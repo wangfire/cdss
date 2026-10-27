@@ -213,6 +213,64 @@ export interface Cm3IndexChildrenResponse {
   items: (Cm3IndexDto & { hasChildren: boolean })[]
 }
 
+/**
+ * 肿瘤索引库条目（表 tumor_index，"肿瘤，肿瘤性"部位表）：一行并排五个动态码，
+ * 无主导词状态；jumpKind 0=无跳转，1=见，2=另见。
+ */
+export interface TumorIndexDto {
+  id: string
+  seqNo: number
+  indexName: string
+  indexNameEn: string | null
+  indexLevel: number
+  parentSeqNo: number
+  fullIndexName: string
+  codeMalignantPrimary: string | null
+  codeMalignantSecondary: string | null
+  codeInSitu: string | null
+  codeBenign: string | null
+  codeUncertain: string | null
+  jumpKind: number
+  jumpTarget: string | null
+}
+
+/** 肿瘤索引库节点树子节点响应。 */
+export interface TumorIndexChildrenResponse {
+  parentSeqNo: number
+  total: number
+  items: (TumorIndexDto & { hasChildren: boolean })[]
+}
+
+/** 索引库单行增改入参（ICD/CM3 共用）；字段留空表示沿用库中原值，seqNo 只在新增时生效。 */
+export interface IndexEntryInputDto {
+  seqNo?: number
+  rawName?: string
+  rawNameEn?: string
+  indexName?: string
+  indexCode?: string
+  indexLevel?: number
+  parentSeqNo?: number
+  fullIndexName?: string
+  leadWordStatus?: number
+}
+
+/** 肿瘤索引单行增改入参；字段留空表示沿用库中原值，seqNo 只在新增时生效。 */
+export interface TumorIndexEntryInputDto {
+  seqNo?: number
+  indexName?: string
+  indexNameEn?: string
+  indexLevel?: number
+  parentSeqNo?: number
+  fullIndexName?: string
+  codeMalignantPrimary?: string
+  codeMalignantSecondary?: string
+  codeInSitu?: string
+  codeBenign?: string
+  codeUncertain?: string
+  jumpKind?: number
+  jumpTarget?: string
+}
+
 export interface IcdTermSynonymVariantDto {
   id: string
   variantTerm: string

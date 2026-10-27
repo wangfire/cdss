@@ -55,4 +55,11 @@ public sealed record AppRoleResponse(
     [property: JsonPropertyName("code")] string Code,
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("description")] string Description,
-    [property: JsonPropertyName("createdAt")] DateTimeOffset CreatedAt);
+    [property: JsonPropertyName("createdAt")] DateTimeOffset CreatedAt,
+    [property: JsonPropertyName("permissions")] IReadOnlyList<string> Permissions);
+
+/// <summary>
+/// 整体替换角色权限集合。
+/// </summary>
+public sealed record UpdateRolePermissionsRequest(
+    [property: JsonPropertyName("permissions")] IReadOnlyList<string> Permissions);

@@ -56,7 +56,7 @@ public sealed class SqlServerAuthService(
         }
 
         var roles = await GetRoleCodesAsync(user.Id, hospitalId, cancellationToken);
-        var permissions = await GetPermissionCodesAsync(user.Id, hospitalId, cancellationToken);
+        var permissions = await GetPermissionCodesAsync(hospitalId, roles, cancellationToken);
 
         // 更新最后登录时间（尽力而为，失败不影响登录成功）。
         try
@@ -75,7 +75,7 @@ public sealed class SqlServerAuthService(
         var now = DateTimeOffset.UtcNow;
         var lifetimeMinutes = Math.Max(jwtOptionsProvider.Options.TokenLifetimeMinutes, 1);
         var expiresAt = now.AddMinutes(lifetimeMinutes);
-        var token = BuildJwt(user, hospitalId, expiresAt, roles);
+        var token = BuildJwt(user, hospitalId, expiresAt, roles, permissions);
 
         return new LoginResponse(
             token,
@@ -111,7 +111,7 @@ public sealed class SqlServerAuthService(
         }
 
         var roles = await GetRoleCodesAsync(user.Id, requestContext.HospitalId, cancellationToken);
-        var permissions = await GetPermissionCodesAsync(user.Id, requestContext.HospitalId, cancellationToken);
+        var permissions = await GetPermissionCodesAsync(requestContext.HospitalId, roles, cancellationToken);
 
         return new CurrentUserResponse(
             ToUserDto(user, roles),
@@ -170,15 +170,36 @@ public sealed class SqlServerAuthService(
     }
 
     private async Task<IReadOnlyList<string>> GetPermissionCodesAsync(
-        Guid userId, Guid hospitalId, CancellationToken ct)
+        Guid hospitalId,
+        IReadOnlyList<string> roles,
+        CancellationToken ct)
     {
-        // 第一阶段：权限码 = 角色 code（角色矩阵待医院接入前确认）。
-        var codes = await dbContext.AppUserRoles
+        // ADMIN 固定拥有全部权限，避免角色权限配置误伤管理面。
+        if (roles.Any(role => string.Equals(role, "ADMIN", StringComparison.OrdinalIgnoreCase)))
+        {
+            return AppPermissions.All;
+        }
+
+        if (roles.Count == 0)
+        {
+            return [];
+        }
+
+        var roleCodes = roles.ToList();
+        var codes = await dbContext.AppRolePermissions
             .AsNoTracking()
-            .Where(link => link.HospitalId == hospitalId && link.AppUserId == userId)
-            .Select(link => link.AppRole!.Code)
+            .Where(item => item.HospitalId == hospitalId)
+            .Join(
+                dbContext.AppRoles
+                    .AsNoTracking()
+                    .Where(role => role.HospitalId == hospitalId
+                        && roleCodes.Contains(role.Code)),
+                permission => permission.AppRoleId,
+                role => role.Id,
+                (permission, role) => permission.PermissionCode)
+            .Distinct()
             .ToListAsync(ct);
-        return codes;
+        return AppPermissions.Order(codes);
     }
 
     private static UserDto ToUserDto(AppUserRecord user, IReadOnlyList<string> roles)
@@ -216,7 +237,8 @@ public sealed class SqlServerAuthService(
         AppUserRecord user,
         Guid hospitalId,
         DateTimeOffset expiresAt,
-        IReadOnlyList<string> roles)
+        IReadOnlyList<string> roles,
+        IReadOnlyList<string> permissions)
     {
         var options = jwtOptionsProvider.Options;
         if (string.IsNullOrEmpty(options.Key))
@@ -237,8 +259,13 @@ public sealed class SqlServerAuthService(
             new("username", user.Code),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString("N")),
         };
-        // RBAC：角色码以 ClaimTypes.Role 声明写入令牌，供 IsInRole 策略判定。
+        // RBAC：角色码保留给管理面展示；鉴权按权限码判定。
         claims.AddRange(roles.Select(role => new Claim(ClaimTypes.Role, role)));
+        claims.AddRange(permissions.Select(permission => new Claim(AppClaimTypes.Permission, permission)));
+        // 新令牌即使零权限也带版本声明，避免被当成旧令牌走角色码回退。
+        claims.Add(new Claim(
+            AppClaimTypes.PermissionVersion,
+            AppClaimTypes.PermissionVersionValue));
 
         var handler = new JwtSecurityTokenHandler
         {

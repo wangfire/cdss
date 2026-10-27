@@ -301,6 +301,30 @@ public sealed class AppUserRoleRecord
 }
 
 /// <summary>
+/// 角色-权限关联。ADMIN 角色不落库，隐式拥有全部权限。
+/// </summary>
+public sealed class AppRolePermissionRecord
+{
+    public Guid Id { get; set; }
+
+    public Guid HospitalId { get; set; }
+
+    public Guid AppRoleId { get; set; }
+
+    public string PermissionCode { get; set; } = string.Empty;
+
+    public DateTimeOffset CreatedAt { get; set; }
+
+    public DateTimeOffset UpdatedAt { get; set; }
+
+    public byte[] RowVersion { get; set; } = [];
+
+    public HospitalRecord Hospital { get; set; } = null!;
+
+    public AppRoleRecord AppRole { get; set; } = null!;
+}
+
+/// <summary>
 /// 编码规则记录。V2.2-Lite 起支持版本化 JSON 条件规则（ConditionJson / ActionJson），
 /// 旧平面规则沿用 code_pattern + rule_type 字段，ConditionJson 为空时按兼容模式评估。
 /// </summary>

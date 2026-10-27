@@ -14,6 +14,8 @@ public sealed class SqlServerSecurityService(
     HospitalAiDbContext dbContext,
     IRequestContext requestContext) : ISecurityService
 {
+    private const string AdminRoleCode = "ADMIN";
+
     public async Task<AppUserResponse> CreateUserAsync(
         CreateUserRequest request,
         CancellationToken cancellationToken = default)
@@ -103,7 +105,7 @@ public sealed class SqlServerSecurityService(
 
         if (existing is not null)
         {
-            return ToResponse(existing);
+            return ToResponse(existing, await LoadRolePermissionsAsync(existing, cancellationToken));
         }
 
         var role = new AppRoleRecord
@@ -118,7 +120,7 @@ public sealed class SqlServerSecurityService(
         };
         dbContext.AppRoles.Add(role);
         await dbContext.SaveChangesAsync(cancellationToken);
-        return ToResponse(role);
+        return ToResponse(role, PermissionsFor(role, []));
     }
 
     public async Task<IReadOnlyList<AppRoleResponse>> ListRolesAsync(
@@ -132,7 +134,23 @@ public sealed class SqlServerSecurityService(
             .OrderBy(item => item.Code)
             .ToListAsync(cancellationToken);
 
-        return roles.Select(ToResponse).ToList();
+        var permissionRows = await dbContext.AppRolePermissions
+            .AsNoTracking()
+            .Where(item => item.HospitalId == requestContext.HospitalId)
+            .Select(item => new { item.AppRoleId, item.PermissionCode })
+            .ToListAsync(cancellationToken);
+        var permissionsByRole = permissionRows
+            .GroupBy(item => item.AppRoleId)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<string>)AppPermissions.Order(
+                    group.Select(item => item.PermissionCode)));
+
+        return roles
+            .Select(role => ToResponse(
+                role,
+                PermissionsFor(role, permissionsByRole.GetValueOrDefault(role.Id) ?? [])))
+            .ToList();
     }
 
     public async Task AssignRoleAsync(
@@ -206,6 +224,16 @@ public sealed class SqlServerSecurityService(
             return;
         }
 
+        var role = await dbContext.AppRoles
+            .AsNoTracking()
+            .SingleAsync(
+                item => item.Id == roleId && item.HospitalId == requestContext.HospitalId,
+                cancellationToken);
+        if (IsAdminRole(role.Code) && await IsLastActiveAdminAsync(userId, cancellationToken))
+        {
+            throw new ValidationException("不能移除最后一名启用状态管理员的 ADMIN 角色。");
+        }
+
         dbContext.AppUserRoles.Remove(link);
         await dbContext.SaveChangesAsync(cancellationToken);
     }
@@ -240,7 +268,24 @@ public sealed class SqlServerSecurityService(
                 && roleIds.Contains(item.Id))
             .ToListAsync(cancellationToken);
 
-        return roleRecords.Select(ToResponse).ToList();
+        var permissionRows = await dbContext.AppRolePermissions
+            .AsNoTracking()
+            .Where(item => item.HospitalId == requestContext.HospitalId
+                && roleIds.Contains(item.AppRoleId))
+            .Select(item => new { item.AppRoleId, item.PermissionCode })
+            .ToListAsync(cancellationToken);
+        var permissionsByRole = permissionRows
+            .GroupBy(item => item.AppRoleId)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<string>)AppPermissions.Order(
+                    group.Select(item => item.PermissionCode)));
+
+        return roleRecords
+            .Select(role => ToResponse(
+                role,
+                PermissionsFor(role, permissionsByRole.GetValueOrDefault(role.Id) ?? [])))
+            .ToList();
     }
 
     public async Task SetUserStatusAsync(
@@ -269,9 +314,191 @@ public sealed class SqlServerSecurityService(
             throw new ResourceNotFoundException("应用用户不存在。");
         }
 
+        if (status == "DISABLED"
+            && string.Equals(user.Status, "ACTIVE", StringComparison.OrdinalIgnoreCase)
+            && await IsLastActiveAdminAsync(userId, cancellationToken))
+        {
+            throw new ValidationException("不能停用最后一名启用状态的管理员。");
+        }
+
         user.Status = status;
         user.UpdatedAt = DateTimeOffset.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<string>> GetRolePermissionsAsync(
+        Guid roleId,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureHospital();
+        var role = await FindRoleAsync(roleId, cancellationToken);
+        return await LoadRolePermissionsAsync(role, cancellationToken);
+    }
+
+    public async Task SetRolePermissionsAsync(
+        Guid roleId,
+        IReadOnlyList<string> permissionCodes,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureHospital();
+        var role = await FindRoleAsync(roleId, cancellationToken);
+        if (IsAdminRole(role.Code))
+        {
+            throw new ValidationException("ADMIN 角色固定拥有全部权限，不能修改。");
+        }
+
+        if (permissionCodes is null)
+        {
+            throw new ValidationException("权限列表不能为空。");
+        }
+
+        var codes = permissionCodes
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Select(code => code.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var unknown = codes.FirstOrDefault(code => !AppPermissions.IsDefined(code));
+        if (unknown is not null)
+        {
+            throw new ValidationException($"不支持的权限码：{unknown}。");
+        }
+
+        var existing = await dbContext.AppRolePermissions
+            .Where(item => item.HospitalId == requestContext.HospitalId
+                && item.AppRoleId == roleId)
+            .ToListAsync(cancellationToken);
+        var existingCodes = existing
+            .Select(item => item.PermissionCode)
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach (var row in existing.Where(item => !codes.Contains(item.PermissionCode)))
+        {
+            dbContext.AppRolePermissions.Remove(row);
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var code in codes.Where(code => !existingCodes.Contains(code)))
+        {
+            dbContext.AppRolePermissions.Add(new AppRolePermissionRecord
+            {
+                Id = Guid.NewGuid(),
+                HospitalId = requestContext.HospitalId,
+                AppRoleId = roleId,
+                PermissionCode = code,
+                CreatedAt = now,
+                UpdatedAt = now
+            });
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task<AppRoleRecord> FindRoleAsync(
+        Guid roleId,
+        CancellationToken cancellationToken)
+    {
+        var role = await dbContext.AppRoles
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                item => item.Id == roleId
+                    && item.HospitalId == requestContext.HospitalId,
+                cancellationToken);
+        if (role is null)
+        {
+            throw new ResourceNotFoundException("应用角色不存在。");
+        }
+
+        return role;
+    }
+
+    private async Task<IReadOnlyList<string>> LoadRolePermissionsAsync(
+        AppRoleRecord role,
+        CancellationToken cancellationToken)
+    {
+        if (IsAdminRole(role.Code))
+        {
+            return AppPermissions.All;
+        }
+
+        var codes = await dbContext.AppRolePermissions
+            .AsNoTracking()
+            .Where(item => item.HospitalId == requestContext.HospitalId
+                && item.AppRoleId == role.Id)
+            .Select(item => item.PermissionCode)
+            .ToListAsync(cancellationToken);
+        return AppPermissions.Order(codes);
+    }
+
+    private static IReadOnlyList<string> PermissionsFor(
+        AppRoleRecord role,
+        IEnumerable<string> storedPermissions)
+    {
+        return IsAdminRole(role.Code)
+            ? AppPermissions.All
+            : AppPermissions.Order(storedPermissions);
+    }
+
+    private static bool IsAdminRole(string code)
+    {
+        return string.Equals(code, AdminRoleCode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 判断目标用户是否为当前医院最后一名“启用且持有 ADMIN 角色”的用户。
+    /// 停用或移除其 ADMIN 角色会让管理面彻底失联，必须拒绝。
+    /// </summary>
+    private async Task<bool> IsLastActiveAdminAsync(
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        var hospitalId = requestContext.HospitalId;
+        var user = await dbContext.AppUsers
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                item => item.Id == userId && item.HospitalId == hospitalId,
+                cancellationToken);
+        if (user is null
+            || !string.Equals(user.Status, "ACTIVE", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var adminRoleIds = await dbContext.AppRoles
+            .AsNoTracking()
+            .Where(item => item.HospitalId == hospitalId && item.Code == AdminRoleCode)
+            .Select(item => item.Id)
+            .ToListAsync(cancellationToken);
+        if (adminRoleIds.Count == 0)
+        {
+            return false;
+        }
+
+        var userIsAdmin = await dbContext.AppUserRoles
+            .AsNoTracking()
+            .AnyAsync(
+                item => item.HospitalId == hospitalId
+                    && item.AppUserId == userId
+                    && adminRoleIds.Contains(item.AppRoleId),
+                cancellationToken);
+        if (!userIsAdmin)
+        {
+            return false;
+        }
+
+        var hasOtherActiveAdmin = await dbContext.AppUserRoles
+            .AsNoTracking()
+            .Where(item => item.HospitalId == hospitalId
+                && item.AppUserId != userId
+                && adminRoleIds.Contains(item.AppRoleId))
+            .Join(
+                dbContext.AppUsers
+                    .AsNoTracking()
+                    .Where(item => item.HospitalId == hospitalId && item.Status == "ACTIVE"),
+                link => link.AppUserId,
+                other => other.Id,
+                (link, other) => link.Id)
+            .AnyAsync(cancellationToken);
+        return !hasOtherActiveAdmin;
     }
 
     private void EnsureHospital()
@@ -293,7 +520,9 @@ public sealed class SqlServerSecurityService(
             user.CreatedAt);
     }
 
-    private static AppRoleResponse ToResponse(AppRoleRecord role)
+    private static AppRoleResponse ToResponse(
+        AppRoleRecord role,
+        IReadOnlyList<string> permissions)
     {
         return new AppRoleResponse(
             role.Id,
@@ -301,6 +530,7 @@ public sealed class SqlServerSecurityService(
             role.Code,
             role.Name,
             role.Description,
-            role.CreatedAt);
+            role.CreatedAt,
+            permissions);
     }
 }

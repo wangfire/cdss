@@ -61,6 +61,19 @@ const userStore = useUserStore()
 const themeStore = useThemeStore()
 const tabsStore = useTabsStore()
 
+/** 清理本地缓存里当前角色已无权访问的标签页（如切换账号后遗留的旧页签）。 */
+watch(
+  () => userStore.permissions,
+  (permissions) => {
+    const allowed = permissions ?? []
+    tabsStore.tabs = tabsStore.tabs.filter((tab) => {
+      const required = router.resolve(tab.fullPath).meta.permissions as string[] | undefined
+      return !required?.length || required.some(permission => allowed.includes(permission))
+    })
+  },
+  { immediate: true },
+)
+
 const { menuItems, visibleMenuItems, activeMenuItem, currentTopNavId } = useRouteMenu()
 
 const layoutRef = ref<InstanceType<typeof Layout> | null>(null)

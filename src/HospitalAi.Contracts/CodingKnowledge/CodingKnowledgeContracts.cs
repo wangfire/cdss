@@ -154,3 +154,37 @@ public sealed record IcdTermSynonymInput(
     [property: JsonPropertyName("canonicalTerm")] string? CanonicalTerm,
     [property: JsonPropertyName("variantTerm")] string? VariantTerm,
     [property: JsonPropertyName("isEnabled")] bool? IsEnabled);
+
+/// <summary>
+/// 索引库单行新增/修改请求（ICD/CM3 共用；字段为空表示沿用库中原值，新增时按必填校验）。
+/// seqNo 只在新增时生效，修改时不允许改号（父链按 seqNo 引用）。
+/// </summary>
+public sealed record IndexEntryInput(
+    [property: JsonPropertyName("seqNo")] int? SeqNo,
+    [property: JsonPropertyName("rawName")] string? RawName,
+    [property: JsonPropertyName("rawNameEn")] string? RawNameEn,
+    [property: JsonPropertyName("indexName")] string? IndexName,
+    [property: JsonPropertyName("indexCode")] string? IndexCode,
+    [property: JsonPropertyName("indexLevel")] int? IndexLevel,
+    [property: JsonPropertyName("parentSeqNo")] int? ParentSeqNo,
+    [property: JsonPropertyName("fullIndexName")] string? FullIndexName,
+    [property: JsonPropertyName("leadWordStatus")] int? LeadWordStatus);
+
+/// <summary>
+/// 肿瘤索引单行新增/修改请求（五个动态码并排；jumpKind：0=无跳转，1=见，2=另见）。
+/// seqNo 只在新增时生效，修改时不允许改号（父链按 seqNo 引用）。
+/// </summary>
+public sealed record TumorIndexEntryInput(
+    [property: JsonPropertyName("seqNo")] int? SeqNo,
+    [property: JsonPropertyName("indexName")] string? IndexName,
+    [property: JsonPropertyName("indexNameEn")] string? IndexNameEn,
+    [property: JsonPropertyName("indexLevel")] int? IndexLevel,
+    [property: JsonPropertyName("parentSeqNo")] int? ParentSeqNo,
+    [property: JsonPropertyName("fullIndexName")] string? FullIndexName,
+    [property: JsonPropertyName("codeMalignantPrimary")] string? CodeMalignantPrimary,
+    [property: JsonPropertyName("codeMalignantSecondary")] string? CodeMalignantSecondary,
+    [property: JsonPropertyName("codeInSitu")] string? CodeInSitu,
+    [property: JsonPropertyName("codeBenign")] string? CodeBenign,
+    [property: JsonPropertyName("codeUncertain")] string? CodeUncertain,
+    [property: JsonPropertyName("jumpKind")] int? JumpKind,
+    [property: JsonPropertyName("jumpTarget")] string? JumpTarget);

@@ -12,8 +12,12 @@ import type {
   IcdIndexDto,
   IcdTermSynonymGroupDto,
   IcdTermSynonymInputDto,
+  IndexEntryInputDto,
   MedicalCodeDto,
   PagedResult,
+  TumorIndexChildrenResponse,
+  TumorIndexDto,
+  TumorIndexEntryInputDto,
 } from './types-cdss'
 
 export const knowledgeApi = {
@@ -32,6 +36,10 @@ export const knowledgeApi = {
   getTermSynonyms: (params?: { termType?: string; keyword?: string }) =>
     http.get<{ total: number; items: IcdTermSynonymGroupDto[] }>(
       '/api/v1/knowledge/icd-term-synonym', params),
+
+  getTermSynonymRows: (params?: { page?: number; pageSize?: number; keyword?: string }) =>
+    http.get<PagedResult<{ id: string; term: string; normalizedTerm: string; entityType: string; codeSystemCode: string; code: string }>>(
+      '/api/v1/knowledge/term-synonyms', params),
 
   createTermSynonym: (data: IcdTermSynonymInputDto) =>
     http.post<{ id: string }>('/api/v1/knowledge/icd-term-synonym', data),
@@ -56,4 +64,37 @@ export const knowledgeApi = {
 
   getCm3IndexChildren: (params: { parentSeqNo?: number; leadWordStatus?: number; offset?: number; limit?: number }) =>
     http.get<Cm3IndexChildrenResponse>('/api/v1/knowledge/cm3-index/children', params),
+
+  getTumorIndex: (params?: { page?: number; pageSize?: number; keyword?: string; indexLevel?: number }) =>
+    http.get<PagedResult<TumorIndexDto>>('/api/v1/knowledge/tumor-index', params),
+
+  getTumorIndexChildren: (params: { parentSeqNo?: number; offset?: number; limit?: number }) =>
+    http.get<TumorIndexChildrenResponse>('/api/v1/knowledge/tumor-index/children', params),
+
+  createIcdIndexEntry: (data: IndexEntryInputDto) =>
+    http.post<{ id: string; seqNo: number }>('/api/v1/knowledge/icd-index', data),
+
+  updateIcdIndexEntry: (id: string, data: IndexEntryInputDto) =>
+    http.put<{ id: string; seqNo: number }>(`/api/v1/knowledge/icd-index/${id}`, data),
+
+  deleteIcdIndexEntry: (id: string) =>
+    http.delete<{ deleted: boolean }>(`/api/v1/knowledge/icd-index/${id}`),
+
+  createCm3IndexEntry: (data: IndexEntryInputDto) =>
+    http.post<{ id: string; seqNo: number }>('/api/v1/knowledge/cm3-index', data),
+
+  updateCm3IndexEntry: (id: string, data: IndexEntryInputDto) =>
+    http.put<{ id: string; seqNo: number }>(`/api/v1/knowledge/cm3-index/${id}`, data),
+
+  deleteCm3IndexEntry: (id: string) =>
+    http.delete<{ deleted: boolean }>(`/api/v1/knowledge/cm3-index/${id}`),
+
+  createTumorIndexEntry: (data: TumorIndexEntryInputDto) =>
+    http.post<{ id: string; seqNo: number }>('/api/v1/knowledge/tumor-index', data),
+
+  updateTumorIndexEntry: (id: string, data: TumorIndexEntryInputDto) =>
+    http.put<{ id: string; seqNo: number }>(`/api/v1/knowledge/tumor-index/${id}`, data),
+
+  deleteTumorIndexEntry: (id: string) =>
+    http.delete<{ deleted: boolean }>(`/api/v1/knowledge/tumor-index/${id}`),
 }

@@ -72,6 +72,8 @@ export interface AppRoleDto {
   name: string
   description: string
   createdAt: string
+  /** ADMIN 角色返回全部权限码。 */
+  permissions: string[]
 }
 
 export interface CreateAppUserRequest {

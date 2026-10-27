@@ -15,6 +15,7 @@ import {
 import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, onUpdated, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
+import { useUserStore } from '@/stores/user'
 import { ApiError, workbenchApi } from '@/api'
 import type {
   CodingRecommendationResponse,
@@ -55,6 +56,7 @@ import {
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
+const userStore = useUserStore()
 
 /* ============== 状态筛选 ============== */
 const statusFilters: { key: string; labelKey: string; value: CodingTaskStatus | '' }[] = [
@@ -503,6 +505,23 @@ const canReview = computed(() => {
   const s = selectedTask.value?.status
   return s === 'HUMAN_REQUIRED' || s === 'PENDING_REVIEW'
 })
+
+/** 审核操作按按钮权限逐项判定；父权限 coding.review 视为全量审核权限。 */
+const canAcceptReview = computed(
+  () => canReview.value
+    && userStore.hasAnyPermission(['coding.review', 'coding.review.accept']),
+)
+const canModifyReview = computed(
+  () => canReview.value
+    && userStore.hasAnyPermission(['coding.review', 'coding.review.modify']),
+)
+const canRejectReview = computed(
+  () => canReview.value
+    && userStore.hasAnyPermission(['coding.review', 'coding.review.reject']),
+)
+const canSubmitReview = computed(
+  () => canAcceptReview.value || canModifyReview.value || canRejectReview.value,
+)
 </script>
 
 <template>
@@ -738,7 +757,7 @@ const canReview = computed(() => {
                             </span>
                           </div>
                           <div class="flex items-center gap-2 shrink-0">
-                            <label v-if="canReview" class="flex items-center gap-1.5 cursor-pointer text-xs">
+                            <label v-if="canSubmitReview" class="flex items-center gap-1.5 cursor-pointer text-xs">
                               <input
                                 type="checkbox"
                                 :checked="selectedCodes.has(rec.id)"
@@ -788,7 +807,7 @@ const canReview = computed(() => {
           </Card>
 
           <!-- 审核操作 -->
-          <Card v-if="canReview" class="border border-border/40 flex-shrink-0 py-2 gap-[5px]">
+          <Card v-if="canSubmitReview" class="border border-border/40 flex-shrink-0 py-2 gap-[5px]">
             <div class="flex items-center gap-2 px-4">
               <ShieldCheck class="h-4 w-4 text-violet-500" />
               <span class="text-sm font-semibold">{{ t('workbench.review') }}</span>
@@ -802,6 +821,7 @@ const canReview = computed(() => {
               />
               <div class="flex items-center gap-2">
                 <Button
+                  v-if="canAcceptReview"
                   size="sm"
                   variant="default"
                   :disabled="reviewSubmitting || selectedCodes.size === 0"
@@ -812,6 +832,7 @@ const canReview = computed(() => {
                   {{ t('workbench.acceptAll') }}
                 </Button>
                 <Button
+                  v-if="canModifyReview"
                   size="sm"
                   variant="outline"
                   :disabled="reviewSubmitting"
@@ -820,6 +841,7 @@ const canReview = computed(() => {
                   {{ t('workbench.submitReview') }}
                 </Button>
                 <Button
+                  v-if="canRejectReview"
                   size="sm"
                   variant="destructive"
                   :disabled="reviewSubmitting"

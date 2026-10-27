@@ -11,7 +11,43 @@ export default {
     totalTasks: '任务总数',
     pendingReview: '待审核',
     accepted: '已完成',
+    processing: '处理中',
+    abnormal: '异常',
     systemHealth: '系统健康',
+  },
+
+  // 图表
+  charts: {
+    statusTitle: '任务状态分布',
+    trendTitle: '近 7 日任务量',
+    trendFallbackTitle: '最近活跃 7 日',
+    trendHint: '近 7 日无新增，已按最近活跃日回溯',
+    weekTotal: '7 日合计',
+    prevWeek: '前 7 日',
+    healthyDeps: '{ok}/{total} 依赖正常',
+    pendingRate: '占比 {rate}%',
+    completionRate: '完成率 {rate}%',
+    recommendationTotal: '累计推荐 {count} 条',
+    pendingRecs: '待审核推荐',
+    avgRecs: '平均每条任务',
+    distTitle: '每条任务推荐量分布',
+    distTotal: '共 {count} 条任务',
+    noTasks: '暂无任务数据',
+  },
+
+  // 知识库概况
+  knowledge: {
+    title: '知识库概况',
+    subtitle: '{count} 个编码体系',
+    icd: 'ICD-10 诊断索引',
+    cm3: 'ICD-9-CM3 手术索引',
+    tumor: '肿瘤部位索引',
+    synonyms: '术语同义词',
+    rules: '编码校验规则',
+    medicalCodes: '医学编码条目',
+    validLead: '有效主导词 {count}',
+    open: '进入知识库',
+    empty: '暂无知识库数据',
   },
 
   // 指标描述
@@ -79,8 +115,11 @@ export default {
 
   // 星期
   mon: '周一',
+  tue: '周二',
   wed: '周三',
+  thu: '周四',
   fri: '周五',
+  sat: '周六',
   sun: '周日',
 
   // 查看详情

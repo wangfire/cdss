@@ -228,7 +228,7 @@ app.MapPost(
         var response = await service.ImportCodeSystemAsync(request, cancellationToken);
         dictionarySource.Invalidate();
         return Results.Ok(ApiEnvelope.Create(response));
-    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeCodeSystemImport));
 
 app.MapPost(
     "/api/v1/coding-rules/import",
@@ -242,7 +242,7 @@ app.MapPost(
         // 同义词同时写入 icd_term_synonym（索引链路词库），导入后立即生效。
         synonymSource.Invalidate();
         return Results.Ok(ApiEnvelope.Create(response));
-    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeRulesImport));
 
 // 查询知识库数据
 app.MapGet(
@@ -256,7 +256,7 @@ app.MapGet(
             .Select(s => new { s.Id, s.Code, s.Name, s.Version, s.CreatedAt })
             .ToListAsync(cancellationToken);
         return Results.Ok(ApiEnvelope.Create(systems));
-    }).RequireAuthorization(RbacPolicies.CodingReader);
+    }).RequireAuthorization(RbacPolicies.KnowledgeReader);
 
 app.MapGet(
     "/api/v1/knowledge/medical-codes",
@@ -285,7 +285,7 @@ app.MapGet(
             .ToListAsync(cancellationToken);
 
         return Results.Ok(ApiEnvelope.Create(new { total, page = pageNum, pageSize = size, items }));
-    }).RequireAuthorization(RbacPolicies.CodingReader);
+    }).RequireAuthorization(RbacPolicies.KnowledgeReader);
 
 app.MapGet(
     "/api/v1/knowledge/term-synonyms",
@@ -311,7 +311,7 @@ app.MapGet(
             .ToListAsync(cancellationToken);
 
         return Results.Ok(ApiEnvelope.Create(new { total, page = pageNum, pageSize = size, items }));
-    }).RequireAuthorization(RbacPolicies.CodingReader);
+    }).RequireAuthorization(RbacPolicies.KnowledgeReader);
 
 app.MapGet(
     "/api/v1/knowledge/coding-rules",
@@ -337,7 +337,7 @@ app.MapGet(
             .ToListAsync(cancellationToken);
 
         return Results.Ok(ApiEnvelope.Create(new { total, page = pageNum, pageSize = size, items }));
-    }).RequireAuthorization(RbacPolicies.CodingReader);
+    }).RequireAuthorization(RbacPolicies.KnowledgeReader);
 
 // ICD 索引库导入（按序号 upsert，全列保留）。
 app.MapPost(
@@ -396,7 +396,7 @@ app.MapPost(
         indexSource.Invalidate();
         return Results.Ok(ApiEnvelope.Create(
             new ImportIcdIndexResponse(imported, updated)));
-    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeIcdImport));
 
 // 查询 ICD 索引库（leadWordStatus：0=有效，1=无效，缺省返回全部）。
 app.MapGet(
@@ -448,7 +448,7 @@ app.MapGet(
             .ToListAsync(cancellationToken);
 
         return Results.Ok(ApiEnvelope.Create(new { total, page = pageNum, pageSize = size, items }));
-    }).RequireAuthorization(RbacPolicies.CodingReader);
+    }).RequireAuthorization(RbacPolicies.KnowledgeReader);
 
 // ICD 索引库节点树：按父序号取直接子节点，并标记 each 节点是否还有下一级。
 app.MapGet(
@@ -511,7 +511,142 @@ app.MapGet(
         });
 
         return Results.Ok(ApiEnvelope.Create(new { parentSeqNo = parentId, total, items }));
-    }).RequireAuthorization(RbacPolicies.CodingReader);
+    }).RequireAuthorization(RbacPolicies.KnowledgeReader);
+
+// ICD 索引库单行新增：seqNo 全库唯一，父节点必须已存在；新增后失效快照让下钻用上新树。
+app.MapPost(
+    "/api/v1/knowledge/icd-index",
+    async (
+        IndexEntryInput input,
+        HospitalAiDbContext db,
+        HospitalAi.Application.Coding.IcdIndex.IIcdIndexSource indexSource,
+        CancellationToken cancellationToken) =>
+    {
+        var seqNo = input.SeqNo ?? 0;
+        var indexName = (input.IndexName ?? string.Empty).Trim();
+        var parentSeqNo = input.ParentSeqNo ?? 0;
+        var indexLevel = input.IndexLevel ?? 0;
+        var leadWordStatus = input.LeadWordStatus ?? 0;
+        if (seqNo <= 0)
+            throw new ValidationException("序号必须是正整数。");
+        if (indexName.Length == 0 || indexName.Length > 200)
+            throw new ValidationException("索引名称不能为空且不能超过 200 字。");
+        if (parentSeqNo < 0)
+            throw new ValidationException("父节点序号不能为负数。");
+        if (indexLevel is < 0 or > 9)
+            throw new ValidationException("索引级别只能是 0~9。");
+        if (leadWordStatus is not (0 or 1))
+            throw new ValidationException("主导词状态只能是 0（有效）或 1（无效）。");
+        if (parentSeqNo > 0
+            && !await db.IcdIndexes.AnyAsync(item => item.SeqNo == parentSeqNo, cancellationToken))
+        {
+            throw new ValidationException($"父节点序号 {parentSeqNo} 不存在。");
+        }
+
+        if (await db.IcdIndexes.AnyAsync(item => item.SeqNo == seqNo, cancellationToken))
+            throw new ValidationException($"序号 {seqNo} 已存在，请换一个序号。");
+
+        var now = DateTimeOffset.UtcNow;
+        var rawName = (input.RawName ?? string.Empty).Trim();
+        var record = new IcdIndexRecord
+        {
+            Id = Guid.NewGuid(),
+            SeqNo = seqNo,
+            RawName = rawName.Length > 0 ? rawName : indexName,
+            RawNameEn = TrimToNull(input.RawNameEn),
+            IndexName = indexName,
+            IndexCode = TrimToNull(input.IndexCode),
+            IndexLevel = indexLevel,
+            ParentSeqNo = parentSeqNo,
+            FullIndexName = TrimToNull(input.FullIndexName) ?? indexName,
+            LeadWordStatus = leadWordStatus,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+        if (record.FullIndexName.Length > 300)
+            throw new ValidationException("完整索引名称不能超过 300 字。");
+        db.IcdIndexes.Add(record);
+        await db.SaveChangesAsync(cancellationToken);
+        indexSource.Invalidate();
+        return Results.Ok(ApiEnvelope.Create(new { id = record.Id, seqNo = record.SeqNo }));
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeIcdCreate));
+
+// ICD 索引库单行修改：序号不可改（父链按 seqNo 引用），其余字段为空表示沿用原值。
+app.MapPut(
+    "/api/v1/knowledge/icd-index/{id:guid}",
+    async (
+        Guid id,
+        IndexEntryInput input,
+        HospitalAiDbContext db,
+        HospitalAi.Application.Coding.IcdIndex.IIcdIndexSource indexSource,
+        CancellationToken cancellationToken) =>
+    {
+        var record = await db.IcdIndexes.FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (record is null)
+            return Results.NotFound(ApiEnvelope.Create(new { message = "索引行不存在或已被删除。" }));
+
+        var indexName = TrimToNull(input.IndexName) ?? record.IndexName;
+        if (indexName.Length > 200)
+            throw new ValidationException("索引名称不能超过 200 字。");
+        var parentSeqNo = input.ParentSeqNo ?? record.ParentSeqNo;
+        if (parentSeqNo < 0)
+            throw new ValidationException("父节点序号不能为负数。");
+        if (parentSeqNo > 0 && parentSeqNo != record.ParentSeqNo
+            && !await db.IcdIndexes.AnyAsync(item => item.SeqNo == parentSeqNo, cancellationToken))
+        {
+            throw new ValidationException($"父节点序号 {parentSeqNo} 不存在。");
+        }
+        if (input.IndexLevel is int level && level is < 0 or > 9)
+            throw new ValidationException("索引级别只能是 0~9。");
+        if (input.LeadWordStatus is int status && status is not (0 or 1))
+            throw new ValidationException("主导词状态只能是 0（有效）或 1（无效）。");
+
+        await EnsureNoIndexParentCycleAsync(
+            record.SeqNo,
+            parentSeqNo,
+            seq => db.IcdIndexes.Where(item => item.SeqNo == seq)
+                .Select(item => (int?)item.ParentSeqNo).FirstOrDefaultAsync(cancellationToken),
+            cancellationToken);
+
+        record.RawName = TrimToNull(input.RawName) ?? record.RawName;
+        record.RawNameEn = input.RawNameEn is null ? record.RawNameEn : TrimToNull(input.RawNameEn);
+        record.IndexName = indexName;
+        record.IndexCode = input.IndexCode is null ? record.IndexCode : TrimToNull(input.IndexCode);
+        record.IndexLevel = input.IndexLevel ?? record.IndexLevel;
+        record.ParentSeqNo = parentSeqNo;
+        record.FullIndexName = TrimToNull(input.FullIndexName) ?? record.FullIndexName;
+        if (record.FullIndexName.Length > 300)
+            throw new ValidationException("完整索引名称不能超过 300 字。");
+        record.LeadWordStatus = input.LeadWordStatus ?? record.LeadWordStatus;
+        record.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+        indexSource.Invalidate();
+        return Results.Ok(ApiEnvelope.Create(new { id = record.Id, seqNo = record.SeqNo }));
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeIcdUpdate));
+
+// ICD 索引库单行删除：有子节点时拒绝（避免父链悬空，先删/迁子节点）。
+app.MapDelete(
+    "/api/v1/knowledge/icd-index/{id:guid}",
+    async (
+        Guid id,
+        HospitalAiDbContext db,
+        HospitalAi.Application.Coding.IcdIndex.IIcdIndexSource indexSource,
+        CancellationToken cancellationToken) =>
+    {
+        var record = await db.IcdIndexes.FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (record is null)
+            return Results.NotFound(ApiEnvelope.Create(new { message = "索引行不存在或已被删除。" }));
+
+        var childCount = await db.IcdIndexes.CountAsync(
+            item => item.ParentSeqNo == record.SeqNo, cancellationToken);
+        if (childCount > 0)
+            throw new ValidationException($"该节点下还有 {childCount} 个子节点，请先删除或调整子节点。");
+
+        db.IcdIndexes.Remove(record);
+        await db.SaveChangesAsync(cancellationToken);
+        indexSource.Invalidate();
+        return Results.Ok(ApiEnvelope.Create(new { deleted = true }));
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeIcdDelete));
 
 // CM3（手术操作）索引库导入（按序号 upsert，全列保留）。
 app.MapPost(
@@ -571,7 +706,7 @@ app.MapPost(
         cm3Source.Invalidate();
         return Results.Ok(ApiEnvelope.Create(
             new ImportCm3IndexResponse(imported, updated)));
-    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeCm3Import));
 
 // 查询 CM3 索引库（leadWordStatus：0=有效，1=无效，缺省返回全部）。
 app.MapGet(
@@ -623,7 +758,7 @@ app.MapGet(
             .ToListAsync(cancellationToken);
 
         return Results.Ok(ApiEnvelope.Create(new { total, page = pageNum, pageSize = size, items }));
-    }).RequireAuthorization(RbacPolicies.CodingReader);
+    }).RequireAuthorization(RbacPolicies.KnowledgeReader);
 
 // CM3 索引库节点树：按父序号取直接子节点，并标记每个节点是否还有下一级。
 app.MapGet(
@@ -686,7 +821,423 @@ app.MapGet(
         });
 
         return Results.Ok(ApiEnvelope.Create(new { parentSeqNo = parentId, total, items }));
-    }).RequireAuthorization(RbacPolicies.CodingReader);
+    }).RequireAuthorization(RbacPolicies.KnowledgeReader);
+
+// CM3 索引库单行新增：与 ICD 索引库同一套校验（序号唯一、父节点存在、级别 0~9）。
+app.MapPost(
+    "/api/v1/knowledge/cm3-index",
+    async (
+        IndexEntryInput input,
+        HospitalAiDbContext db,
+        HospitalAi.Application.Coding.Cm3Index.ICm3IndexSource cm3Source,
+        CancellationToken cancellationToken) =>
+    {
+        var seqNo = input.SeqNo ?? 0;
+        var indexName = (input.IndexName ?? string.Empty).Trim();
+        var parentSeqNo = input.ParentSeqNo ?? 0;
+        var indexLevel = input.IndexLevel ?? 0;
+        var leadWordStatus = input.LeadWordStatus ?? 0;
+        if (seqNo <= 0)
+            throw new ValidationException("序号必须是正整数。");
+        if (indexName.Length == 0 || indexName.Length > 200)
+            throw new ValidationException("索引名称不能为空且不能超过 200 字。");
+        if (parentSeqNo < 0)
+            throw new ValidationException("父节点序号不能为负数。");
+        if (indexLevel is < 0 or > 9)
+            throw new ValidationException("索引级别只能是 0~9。");
+        if (leadWordStatus is not (0 or 1))
+            throw new ValidationException("主导词状态只能是 0（有效）或 1（无效）。");
+        if (parentSeqNo > 0
+            && !await db.Cm3Indexes.AnyAsync(item => item.SeqNo == parentSeqNo, cancellationToken))
+        {
+            throw new ValidationException($"父节点序号 {parentSeqNo} 不存在。");
+        }
+
+        if (await db.Cm3Indexes.AnyAsync(item => item.SeqNo == seqNo, cancellationToken))
+            throw new ValidationException($"序号 {seqNo} 已存在，请换一个序号。");
+
+        var now = DateTimeOffset.UtcNow;
+        var rawName = (input.RawName ?? string.Empty).Trim();
+        var record = new Cm3IndexRecord
+        {
+            Id = Guid.NewGuid(),
+            SeqNo = seqNo,
+            RawName = rawName.Length > 0 ? rawName : indexName,
+            RawNameEn = TrimToNull(input.RawNameEn),
+            IndexName = indexName,
+            IndexCode = TrimToNull(input.IndexCode),
+            IndexLevel = indexLevel,
+            ParentSeqNo = parentSeqNo,
+            FullIndexName = TrimToNull(input.FullIndexName) ?? indexName,
+            LeadWordStatus = leadWordStatus,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+        if (record.FullIndexName.Length > 300)
+            throw new ValidationException("完整索引名称不能超过 300 字。");
+        db.Cm3Indexes.Add(record);
+        await db.SaveChangesAsync(cancellationToken);
+        cm3Source.Invalidate();
+        return Results.Ok(ApiEnvelope.Create(new { id = record.Id, seqNo = record.SeqNo }));
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeCm3Create));
+
+// CM3 索引库单行修改：序号不可改（父链按 seqNo 引用），其余字段为空表示沿用原值。
+app.MapPut(
+    "/api/v1/knowledge/cm3-index/{id:guid}",
+    async (
+        Guid id,
+        IndexEntryInput input,
+        HospitalAiDbContext db,
+        HospitalAi.Application.Coding.Cm3Index.ICm3IndexSource cm3Source,
+        CancellationToken cancellationToken) =>
+    {
+        var record = await db.Cm3Indexes.FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (record is null)
+            return Results.NotFound(ApiEnvelope.Create(new { message = "索引行不存在或已被删除。" }));
+
+        var indexName = TrimToNull(input.IndexName) ?? record.IndexName;
+        if (indexName.Length > 200)
+            throw new ValidationException("索引名称不能超过 200 字。");
+        var parentSeqNo = input.ParentSeqNo ?? record.ParentSeqNo;
+        if (parentSeqNo < 0)
+            throw new ValidationException("父节点序号不能为负数。");
+        if (parentSeqNo > 0 && parentSeqNo != record.ParentSeqNo
+            && !await db.Cm3Indexes.AnyAsync(item => item.SeqNo == parentSeqNo, cancellationToken))
+        {
+            throw new ValidationException($"父节点序号 {parentSeqNo} 不存在。");
+        }
+        if (input.IndexLevel is int level && level is < 0 or > 9)
+            throw new ValidationException("索引级别只能是 0~9。");
+        if (input.LeadWordStatus is int status && status is not (0 or 1))
+            throw new ValidationException("主导词状态只能是 0（有效）或 1（无效）。");
+
+        await EnsureNoIndexParentCycleAsync(
+            record.SeqNo,
+            parentSeqNo,
+            seq => db.Cm3Indexes.Where(item => item.SeqNo == seq)
+                .Select(item => (int?)item.ParentSeqNo).FirstOrDefaultAsync(cancellationToken),
+            cancellationToken);
+
+        record.RawName = TrimToNull(input.RawName) ?? record.RawName;
+        record.RawNameEn = input.RawNameEn is null ? record.RawNameEn : TrimToNull(input.RawNameEn);
+        record.IndexName = indexName;
+        record.IndexCode = input.IndexCode is null ? record.IndexCode : TrimToNull(input.IndexCode);
+        record.IndexLevel = input.IndexLevel ?? record.IndexLevel;
+        record.ParentSeqNo = parentSeqNo;
+        record.FullIndexName = TrimToNull(input.FullIndexName) ?? record.FullIndexName;
+        if (record.FullIndexName.Length > 300)
+            throw new ValidationException("完整索引名称不能超过 300 字。");
+        record.LeadWordStatus = input.LeadWordStatus ?? record.LeadWordStatus;
+        record.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+        cm3Source.Invalidate();
+        return Results.Ok(ApiEnvelope.Create(new { id = record.Id, seqNo = record.SeqNo }));
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeCm3Update));
+
+// CM3 索引库单行删除：有子节点时拒绝（避免父链悬空，先删/迁子节点）。
+app.MapDelete(
+    "/api/v1/knowledge/cm3-index/{id:guid}",
+    async (
+        Guid id,
+        HospitalAiDbContext db,
+        HospitalAi.Application.Coding.Cm3Index.ICm3IndexSource cm3Source,
+        CancellationToken cancellationToken) =>
+    {
+        var record = await db.Cm3Indexes.FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (record is null)
+            return Results.NotFound(ApiEnvelope.Create(new { message = "索引行不存在或已被删除。" }));
+
+        var childCount = await db.Cm3Indexes.CountAsync(
+            item => item.ParentSeqNo == record.SeqNo, cancellationToken);
+        if (childCount > 0)
+            throw new ValidationException($"该节点下还有 {childCount} 个子节点，请先删除或调整子节点。");
+
+        db.Cm3Indexes.Remove(record);
+        await db.SaveChangesAsync(cancellationToken);
+        cm3Source.Invalidate();
+        return Results.Ok(ApiEnvelope.Create(new { deleted = true }));
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeCm3Delete));
+
+// 查询肿瘤索引库（"肿瘤，肿瘤性"部位表：每行并排五个动态码，无主导词状态列）。
+app.MapGet(
+    "/api/v1/knowledge/tumor-index",
+    async (
+        HospitalAiDbContext db,
+        int? page,
+        int? pageSize,
+        string? keyword,
+        int? indexLevel,
+        CancellationToken cancellationToken) =>
+    {
+        var query = db.TumorIndexes.AsQueryable();
+        if (!string.IsNullOrEmpty(keyword))
+        {
+            query = query.Where(item =>
+                item.IndexName.Contains(keyword)
+                || item.FullIndexName.Contains(keyword)
+                || (item.IndexNameEn != null && item.IndexNameEn.Contains(keyword))
+                || (item.CodeMalignantPrimary != null && item.CodeMalignantPrimary.Contains(keyword))
+                || (item.CodeMalignantSecondary != null && item.CodeMalignantSecondary.Contains(keyword))
+                || (item.CodeInSitu != null && item.CodeInSitu.Contains(keyword))
+                || (item.CodeBenign != null && item.CodeBenign.Contains(keyword))
+                || (item.CodeUncertain != null && item.CodeUncertain.Contains(keyword))
+                || (item.JumpTarget != null && item.JumpTarget.Contains(keyword)));
+        }
+        if (indexLevel is int level)
+            query = query.Where(item => item.IndexLevel == level);
+
+        var total = await query.CountAsync(cancellationToken);
+        var pageNum = page ?? 1;
+        var size = Math.Min(pageSize ?? 20, 200);
+        var items = await query
+            .OrderBy(item => item.SeqNo)
+            .Skip((pageNum - 1) * size)
+            .Take(size)
+            .Select(item => new
+            {
+                item.Id,
+                item.SeqNo,
+                item.IndexName,
+                item.IndexNameEn,
+                item.IndexLevel,
+                item.ParentSeqNo,
+                item.FullIndexName,
+                item.CodeMalignantPrimary,
+                item.CodeMalignantSecondary,
+                item.CodeInSitu,
+                item.CodeBenign,
+                item.CodeUncertain,
+                item.JumpKind,
+                item.JumpTarget,
+            })
+            .ToListAsync(cancellationToken);
+
+        return Results.Ok(ApiEnvelope.Create(new { total, page = pageNum, pageSize = size, items }));
+    }).RequireAuthorization(RbacPolicies.KnowledgeReader);
+
+// 肿瘤索引库节点树：按父序号取直接子节点，并标记每个节点是否还有下一级。
+app.MapGet(
+    "/api/v1/knowledge/tumor-index/children",
+    async (
+        HospitalAiDbContext db,
+        int? parentSeqNo,
+        int? offset,
+        int? limit,
+        CancellationToken cancellationToken) =>
+    {
+        var parentId = parentSeqNo ?? 0;
+        var take = Math.Min(limit ?? 500, 1000);
+        var query = db.TumorIndexes.Where(item => item.ParentSeqNo == parentId);
+
+        var total = await query.CountAsync(cancellationToken);
+        var children = await query
+            .OrderBy(item => item.SeqNo)
+            .Skip(offset ?? 0)
+            .Take(take)
+            .Select(item => new
+            {
+                item.Id,
+                item.SeqNo,
+                item.IndexName,
+                item.IndexNameEn,
+                item.IndexLevel,
+                item.ParentSeqNo,
+                item.FullIndexName,
+                item.CodeMalignantPrimary,
+                item.CodeMalignantSecondary,
+                item.CodeInSitu,
+                item.CodeBenign,
+                item.CodeUncertain,
+                item.JumpKind,
+                item.JumpTarget,
+            })
+            .ToListAsync(cancellationToken);
+
+        var seqNos = children.Select(item => item.SeqNo).ToArray();
+        var parentsWithChildren = await db.TumorIndexes
+            .Where(item => seqNos.Contains(item.ParentSeqNo))
+            .Select(item => item.ParentSeqNo)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        var parentSet = parentsWithChildren.ToHashSet();
+
+        var items = children.Select(item => new
+        {
+            item.Id,
+            item.SeqNo,
+            item.IndexName,
+            item.IndexNameEn,
+            item.IndexLevel,
+            item.ParentSeqNo,
+            item.FullIndexName,
+            item.CodeMalignantPrimary,
+            item.CodeMalignantSecondary,
+            item.CodeInSitu,
+            item.CodeBenign,
+            item.CodeUncertain,
+            item.JumpKind,
+            item.JumpTarget,
+            hasChildren = parentSet.Contains(item.SeqNo),
+        });
+
+        return Results.Ok(ApiEnvelope.Create(new { parentSeqNo = parentId, total, items }));
+    }).RequireAuthorization(RbacPolicies.KnowledgeReader);
+
+// 肿瘤索引单行新增：序号唯一、父节点存在、跳转类型为 见/另见 时必须给目标词。
+app.MapPost(
+    "/api/v1/knowledge/tumor-index",
+    async (
+        TumorIndexEntryInput input,
+        HospitalAiDbContext db,
+        HospitalAi.Application.Coding.IcdIndex.ITumorIndexSource tumorSource,
+        CancellationToken cancellationToken) =>
+    {
+        var seqNo = input.SeqNo ?? 0;
+        var indexName = (input.IndexName ?? string.Empty).Trim();
+        var parentSeqNo = input.ParentSeqNo ?? 0;
+        var indexLevel = input.IndexLevel ?? 0;
+        var jumpKind = input.JumpKind ?? 0;
+        var jumpTarget = TrimToNull(input.JumpTarget);
+        if (seqNo <= 0)
+            throw new ValidationException("序号必须是正整数。");
+        if (indexName.Length == 0 || indexName.Length > 200)
+            throw new ValidationException("索引名称不能为空且不能超过 200 字。");
+        if (parentSeqNo < 0)
+            throw new ValidationException("父节点序号不能为负数。");
+        if (indexLevel is < 0 or > 9)
+            throw new ValidationException("索引级别只能是 0~9。");
+        if (jumpKind is not (0 or 1 or 2))
+            throw new ValidationException("跳转类型只能是 无跳转/见/另见。");
+        if (jumpKind != 0 && jumpTarget is null)
+            throw new ValidationException("跳转类型为「见」或「另见」时必须填写跳转目标词。");
+        if (parentSeqNo > 0
+            && !await db.TumorIndexes.AnyAsync(item => item.SeqNo == parentSeqNo, cancellationToken))
+        {
+            throw new ValidationException($"父节点序号 {parentSeqNo} 不存在。");
+        }
+
+        if (await db.TumorIndexes.AnyAsync(item => item.SeqNo == seqNo, cancellationToken))
+            throw new ValidationException($"序号 {seqNo} 已存在，请换一个序号。");
+
+        var now = DateTimeOffset.UtcNow;
+        var record = new TumorIndexRecord
+        {
+            Id = Guid.NewGuid(),
+            SeqNo = seqNo,
+            IndexName = indexName,
+            IndexNameEn = TrimToNull(input.IndexNameEn),
+            IndexLevel = indexLevel,
+            ParentSeqNo = parentSeqNo,
+            FullIndexName = TrimToNull(input.FullIndexName) ?? indexName,
+            CodeMalignantPrimary = TrimToNull(input.CodeMalignantPrimary),
+            CodeMalignantSecondary = TrimToNull(input.CodeMalignantSecondary),
+            CodeInSitu = TrimToNull(input.CodeInSitu),
+            CodeBenign = TrimToNull(input.CodeBenign),
+            CodeUncertain = TrimToNull(input.CodeUncertain),
+            JumpKind = jumpKind,
+            JumpTarget = jumpKind == 0 ? null : jumpTarget,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+        if (record.FullIndexName.Length > 300)
+            throw new ValidationException("完整索引名称不能超过 300 字。");
+        db.TumorIndexes.Add(record);
+        await db.SaveChangesAsync(cancellationToken);
+        tumorSource.Invalidate();
+        return Results.Ok(ApiEnvelope.Create(new { id = record.Id, seqNo = record.SeqNo }));
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeTumorCreate));
+
+// 肿瘤索引单行修改：序号不可改（父链按 seqNo 引用），其余字段为空表示沿用原值。
+app.MapPut(
+    "/api/v1/knowledge/tumor-index/{id:guid}",
+    async (
+        Guid id,
+        TumorIndexEntryInput input,
+        HospitalAiDbContext db,
+        HospitalAi.Application.Coding.IcdIndex.ITumorIndexSource tumorSource,
+        CancellationToken cancellationToken) =>
+    {
+        var record = await db.TumorIndexes.FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (record is null)
+            return Results.NotFound(ApiEnvelope.Create(new { message = "索引行不存在或已被删除。" }));
+
+        var indexName = TrimToNull(input.IndexName) ?? record.IndexName;
+        if (indexName.Length > 200)
+            throw new ValidationException("索引名称不能超过 200 字。");
+        var parentSeqNo = input.ParentSeqNo ?? record.ParentSeqNo;
+        if (parentSeqNo < 0)
+            throw new ValidationException("父节点序号不能为负数。");
+        if (parentSeqNo > 0 && parentSeqNo != record.ParentSeqNo
+            && !await db.TumorIndexes.AnyAsync(item => item.SeqNo == parentSeqNo, cancellationToken))
+        {
+            throw new ValidationException($"父节点序号 {parentSeqNo} 不存在。");
+        }
+        if (input.IndexLevel is int level && level is < 0 or > 9)
+            throw new ValidationException("索引级别只能是 0~9。");
+        if (input.JumpKind is int kind && kind is not (0 or 1 or 2))
+            throw new ValidationException("跳转类型只能是 无跳转/见/另见。");
+
+        await EnsureNoIndexParentCycleAsync(
+            record.SeqNo,
+            parentSeqNo,
+            seq => db.TumorIndexes.Where(item => item.SeqNo == seq)
+                .Select(item => (int?)item.ParentSeqNo).FirstOrDefaultAsync(cancellationToken),
+            cancellationToken);
+
+        var jumpKind = input.JumpKind ?? record.JumpKind;
+        var jumpTarget = input.JumpTarget is null ? record.JumpTarget : TrimToNull(input.JumpTarget);
+        if (jumpKind != 0 && jumpTarget is null)
+            throw new ValidationException("跳转类型为「见」或「另见」时必须填写跳转目标词。");
+
+        record.IndexName = indexName;
+        record.IndexNameEn = input.IndexNameEn is null ? record.IndexNameEn : TrimToNull(input.IndexNameEn);
+        record.IndexLevel = input.IndexLevel ?? record.IndexLevel;
+        record.ParentSeqNo = parentSeqNo;
+        record.FullIndexName = TrimToNull(input.FullIndexName) ?? record.FullIndexName;
+        if (record.FullIndexName.Length > 300)
+            throw new ValidationException("完整索引名称不能超过 300 字。");
+        record.CodeMalignantPrimary = input.CodeMalignantPrimary is null
+            ? record.CodeMalignantPrimary
+            : TrimToNull(input.CodeMalignantPrimary);
+        record.CodeMalignantSecondary = input.CodeMalignantSecondary is null
+            ? record.CodeMalignantSecondary
+            : TrimToNull(input.CodeMalignantSecondary);
+        record.CodeInSitu = input.CodeInSitu is null ? record.CodeInSitu : TrimToNull(input.CodeInSitu);
+        record.CodeBenign = input.CodeBenign is null ? record.CodeBenign : TrimToNull(input.CodeBenign);
+        record.CodeUncertain = input.CodeUncertain is null
+            ? record.CodeUncertain
+            : TrimToNull(input.CodeUncertain);
+        record.JumpKind = jumpKind;
+        record.JumpTarget = jumpKind == 0 ? null : jumpTarget;
+        record.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+        tumorSource.Invalidate();
+        return Results.Ok(ApiEnvelope.Create(new { id = record.Id, seqNo = record.SeqNo }));
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeTumorUpdate));
+
+// 肿瘤索引单行删除：有子节点时拒绝（避免父链悬空，先删/迁子节点）。
+app.MapDelete(
+    "/api/v1/knowledge/tumor-index/{id:guid}",
+    async (
+        Guid id,
+        HospitalAiDbContext db,
+        HospitalAi.Application.Coding.IcdIndex.ITumorIndexSource tumorSource,
+        CancellationToken cancellationToken) =>
+    {
+        var record = await db.TumorIndexes.FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (record is null)
+            return Results.NotFound(ApiEnvelope.Create(new { message = "索引行不存在或已被删除。" }));
+
+        var childCount = await db.TumorIndexes.CountAsync(
+            item => item.ParentSeqNo == record.SeqNo, cancellationToken);
+        if (childCount > 0)
+            throw new ValidationException($"该节点下还有 {childCount} 个子节点，请先删除或调整子节点。");
+
+        db.TumorIndexes.Remove(record);
+        await db.SaveChangesAsync(cancellationToken);
+        tumorSource.Invalidate();
+        return Results.Ok(ApiEnvelope.Create(new { deleted = true }));
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeTumorDelete));
 
 app.MapPost(
     "/api/v1/icd-term-synonym/import",
@@ -746,7 +1297,7 @@ app.MapPost(
         await db.SaveChangesAsync(cancellationToken);
         synonymSource.Invalidate();
         return Results.Ok(ApiEnvelope.Create(new ImportTermSynonymResponse(imported, updated)));
-    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeSynonymImport));
 
 // 术语同义词组查询（按 类型+规范词 聚合展示，停用行一并返回供页面维护）。
 app.MapGet(
@@ -783,7 +1334,7 @@ app.MapGet(
             .ToList();
 
         return Results.Ok(ApiEnvelope.Create(new { total = groups.Count, items = groups }));
-    }).RequireAuthorization(RbacPolicies.CodingReader);
+    }).RequireAuthorization(RbacPolicies.KnowledgeReader);
 
 // 单条同义词新增：在等价类里补一个等同词（类内任意两词在匹配时可互换）。
 app.MapPost(
@@ -836,7 +1387,7 @@ app.MapPost(
         await db.SaveChangesAsync(cancellationToken);
         synonymSource.Invalidate();
         return Results.Ok(ApiEnvelope.Create(new { id = record.Id }));
-    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeSynonymCreate));
 
 // 单条同义词修改：改等同词/规范词、换通道或启停（null 字段沿用原值）。
 app.MapPut(
@@ -895,7 +1446,7 @@ app.MapPut(
         await db.SaveChangesAsync(cancellationToken);
         synonymSource.Invalidate();
         return Results.Ok(ApiEnvelope.Create(new { id = record.Id, updated = true }));
-    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeSynonymUpdate));
 
 app.MapDelete(
     "/api/v1/knowledge/icd-term-synonym/{id:guid}",
@@ -916,7 +1467,7 @@ app.MapDelete(
         await db.SaveChangesAsync(cancellationToken);
         synonymSource.Invalidate();
         return Results.Ok(ApiEnvelope.Create(new { deleted = true }));
-    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeSynonymDelete));
 
 app.MapGet(
     "/api/v1/coding-tasks/{taskId:guid}/recommendations",
@@ -941,8 +1492,24 @@ app.MapPost(
         Guid taskId,
         ReviewCodingTaskRequest request,
         ICodingRecommendationService service,
+        HttpContext httpContext,
         CancellationToken cancellationToken) =>
     {
+        // 审核动作按按钮权限逐个校验：父权限 coding.review 视为全量审核权限。
+        var requiredPermission = request.ReviewStatus?.Trim().ToUpperInvariant() switch
+        {
+            "ACCEPTED" => AppPermissions.CodingReviewAccept,
+            "MODIFIED" => AppPermissions.CodingReviewModify,
+            "REJECTED" => AppPermissions.CodingReviewReject,
+            _ => null
+        };
+        if (requiredPermission is not null
+            && !RbacPolicies.HasPermission(httpContext.User, requiredPermission)
+            && !RbacPolicies.HasPermission(httpContext.User, AppPermissions.CodingReview))
+        {
+            return Results.Forbid();
+        }
+
         var response = await service.ReviewAsync(taskId, request, cancellationToken);
         return Results.Ok(ApiEnvelope.Create(response));
     }).RequireAuthorization(RbacPolicies.CodingReviewer);
@@ -1025,7 +1592,7 @@ app.MapPost(
     {
         var response = await service.CreateHospitalAsync(request, cancellationToken);
         return Results.Created($"/api/v1/hospitals/{response.Id}", ApiEnvelope.Create(response));
-    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeHospitalCreate));
 
 app.MapPost(
     "/api/v1/patients",
@@ -1131,7 +1698,7 @@ app.MapPost(
     {
         var response = await service.CreateUserAsync(request, cancellationToken);
         return Results.Created($"/api/v1/users/{response.Id}", ApiEnvelope.Create(response));
-    }).RequireAuthorization(RbacPolicies.UserAdmin);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.UserCreate));
 
 app.MapGet(
     "/api/v1/roles",
@@ -1152,7 +1719,7 @@ app.MapPost(
     {
         var response = await service.CreateRoleAsync(request, cancellationToken);
         return Results.Created($"/api/v1/roles/{response.Id}", ApiEnvelope.Create(response));
-    }).RequireAuthorization(RbacPolicies.UserAdmin);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.RoleCreate));
 
 app.MapPost(
     "/api/v1/users/{userId:guid}/roles/{roleId:guid}",
@@ -1164,7 +1731,7 @@ app.MapPost(
     {
         await service.AssignRoleAsync(userId, roleId, cancellationToken);
         return Results.Ok(ApiEnvelope.Create(new { ok = true }));
-    }).RequireAuthorization(RbacPolicies.UserAdmin);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.UserRoleAssign));
 
 app.MapDelete(
     "/api/v1/users/{userId:guid}/roles/{roleId:guid}",
@@ -1176,7 +1743,7 @@ app.MapDelete(
     {
         await service.RemoveRoleAsync(userId, roleId, cancellationToken);
         return Results.Ok(ApiEnvelope.Create(new { ok = true }));
-    }).RequireAuthorization(RbacPolicies.UserAdmin);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.UserRoleAssign));
 
 app.MapGet(
     "/api/v1/users/{userId:guid}/roles",
@@ -1199,7 +1766,30 @@ app.MapPatch(
     {
         await service.SetUserStatusAsync(userId, request.Status, cancellationToken);
         return Results.Ok(ApiEnvelope.Create(new { ok = true }));
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.UserStatus));
+
+app.MapGet(
+    "/api/v1/roles/{roleId:guid}/permissions",
+    async (
+        Guid roleId,
+        ISecurityService service,
+        CancellationToken cancellationToken) =>
+    {
+        var permissions = await service.GetRolePermissionsAsync(roleId, cancellationToken);
+        return Results.Ok(ApiEnvelope.Create(permissions));
     }).RequireAuthorization(RbacPolicies.UserAdmin);
+
+app.MapPut(
+    "/api/v1/roles/{roleId:guid}/permissions",
+    async (
+        Guid roleId,
+        UpdateRolePermissionsRequest request,
+        ISecurityService service,
+        CancellationToken cancellationToken) =>
+    {
+        await service.SetRolePermissionsAsync(roleId, request.Permissions, cancellationToken);
+        return Results.Ok(ApiEnvelope.Create(new { ok = true }));
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.RolePermission));
 
 // ===== V2.2-Lite 新增接口 =====
 // 约定：ApiEnvelope 包装；RequestContext 提供医院隔离；
@@ -1267,7 +1857,7 @@ app.MapPost(
     {
         var response = await service.CreateCaseEntryAsync(request, cancellationToken);
         return Results.Ok(ApiEnvelope.Create(response));
-    }).RequireAuthorization(RbacPolicies.CodingReviewer);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.CodingCaseEntry));
 
 app.MapPost(
     "/api/v1/coding/tasks/{taskId:guid}/diagnoses:batch",
@@ -1343,7 +1933,7 @@ app.MapPost(
         return response is null
             ? Results.NotFound(ApiEnvelope.Create<object>(new { error = "RECOMMENDATION_NOT_FOUND" }))
             : Results.Ok(ApiEnvelope.Create(response));
-    }).RequireAuthorization(RbacPolicies.CodingReviewer);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.CodingReviewAccept));
 
 app.MapPost(
     "/api/v1/reviews/{recommendationId:guid}/reject",
@@ -1360,7 +1950,7 @@ app.MapPost(
         return response is null
             ? Results.NotFound(ApiEnvelope.Create<object>(new { error = "RECOMMENDATION_NOT_FOUND" }))
             : Results.Ok(ApiEnvelope.Create(response));
-    }).RequireAuthorization(RbacPolicies.CodingReviewer);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.CodingReviewReject));
 
 app.MapPost(
     "/api/v1/reviews/{recommendationId:guid}/modify",
@@ -1374,7 +1964,7 @@ app.MapPost(
         return response is null
             ? Results.NotFound(ApiEnvelope.Create<object>(new { error = "RECOMMENDATION_NOT_FOUND" }))
             : Results.Ok(ApiEnvelope.Create(response));
-    }).RequireAuthorization(RbacPolicies.CodingReviewer);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.CodingReviewModify));
 
 app.MapPost(
     "/api/v1/final-results/submit",
@@ -1421,7 +2011,30 @@ app.MapPost(
             : Results.Json(
                 ApiEnvelope.Create<object>(new { error = "INDEX_REBUILD_FAILED", detail = result.ErrorBody }),
                 statusCode: StatusCodes.Status502BadGateway);
-    }).RequireAuthorization(RbacPolicies.KnowledgeManager);
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeIndexRebuild));
+
+// 索引库编辑端点共用：空白视为未填（null），其余去除首尾空白。
+static string? TrimToNull(string? value)
+    => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+// 父链防环：新父节点不能是自己或自己的子孙（沿新父节点向上走，遇到自身即环）。
+static async Task EnsureNoIndexParentCycleAsync(
+    int recordSeqNo,
+    int parentSeqNo,
+    Func<int, Task<int?>> readParentSeqNo,
+    CancellationToken cancellationToken)
+{
+    var cursor = parentSeqNo;
+    for (var hops = 0; cursor > 0 && hops < 32; hops++)
+    {
+        if (cursor == recordSeqNo)
+            throw new ValidationException("父节点不能是自身或其子孙节点。");
+        var next = await readParentSeqNo(cursor);
+        if (next is null)
+            break;
+        cursor = next.Value;
+    }
+}
 
 app.Run();
 

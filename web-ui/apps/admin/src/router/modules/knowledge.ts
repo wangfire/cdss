@@ -1,5 +1,6 @@
 import type { RouteRecordRaw } from 'vue-router'
 import { BookOpen } from 'lucide-vue-next'
+import { KNOWLEDGE_PERMISSIONS } from '@/constants/permissions'
 
 const knowledgeRoutes: RouteRecordRaw[] = [
   {
@@ -12,6 +13,7 @@ const knowledgeRoutes: RouteRecordRaw[] = [
       icon: BookOpen,
       order: 4,
       keepAlive: true,
+      permissions: KNOWLEDGE_PERMISSIONS,
     },
   },
 ]

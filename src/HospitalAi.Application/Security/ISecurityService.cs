@@ -4,7 +4,7 @@ using HospitalAi.Contracts.Security;
 namespace HospitalAi.Application.Security;
 
 /// <summary>
-/// RBAC 用户/角色管理契约。第一版只提供最小 RBAC 模型，完整权限矩阵待医院接入前确认。
+/// RBAC 用户/角色管理契约。权限按角色配置，用户下次登录后生效。
 /// </summary>
 public interface ISecurityService
 {
@@ -39,5 +39,14 @@ public interface ISecurityService
     Task SetUserStatusAsync(
         Guid userId,
         string status,
+        CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<string>> GetRolePermissionsAsync(
+        Guid roleId,
+        CancellationToken cancellationToken = default);
+
+    Task SetRolePermissionsAsync(
+        Guid roleId,
+        IReadOnlyList<string> permissionCodes,
         CancellationToken cancellationToken = default);
 }

@@ -17,6 +17,8 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
 
     public DbSet<AppUserRoleRecord> AppUserRoles => Set<AppUserRoleRecord>();
 
+    public DbSet<AppRolePermissionRecord> AppRolePermissions => Set<AppRolePermissionRecord>();
+
     public DbSet<PatientRecord> Patients => Set<PatientRecord>();
 
     public DbSet<VisitRecord> Visits => Set<VisitRecord>();
@@ -85,6 +87,7 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
         ConfigureAppUser(modelBuilder);
         ConfigureAppRole(modelBuilder);
         ConfigureAppUserRole(modelBuilder);
+        ConfigureAppRolePermission(modelBuilder);
         ConfigurePatient(modelBuilder);
         ConfigureVisit(modelBuilder);
         ConfigureCodingTask(modelBuilder);
@@ -191,6 +194,28 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
         entity.HasOne(item => item.AppUser)
             .WithMany()
             .HasForeignKey(item => item.AppUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+        entity.HasOne(item => item.AppRole)
+            .WithMany()
+            .HasForeignKey(item => item.AppRoleId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureAppRolePermission(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<AppRolePermissionRecord>();
+
+        entity.ToTable("app_role_permission");
+        ConfigureCommonProperties(entity);
+        entity.Property(item => item.HospitalId).HasColumnName("hospital_id").IsRequired();
+        entity.Property(item => item.AppRoleId).HasColumnName("app_role_id").IsRequired();
+        entity.Property(item => item.PermissionCode).HasColumnName("permission_code").HasMaxLength(64).IsRequired();
+        entity.HasIndex(item => new { item.HospitalId, item.AppRoleId, item.PermissionCode })
+            .HasDatabaseName("ux_app_role_permission_hospital_role_code")
+            .IsUnique();
+        entity.HasOne(item => item.Hospital)
+            .WithMany()
+            .HasForeignKey(item => item.HospitalId)
             .OnDelete(DeleteBehavior.Restrict);
         entity.HasOne(item => item.AppRole)
             .WithMany()

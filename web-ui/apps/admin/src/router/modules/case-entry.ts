@@ -1,5 +1,6 @@
 import type { RouteRecordRaw } from 'vue-router'
 import { FilePlus2 } from 'lucide-vue-next'
+import { CASE_ENTRY_PERMISSIONS } from '@/constants/permissions'
 
 const caseEntryRoutes: RouteRecordRaw[] = [
   {
@@ -12,6 +13,7 @@ const caseEntryRoutes: RouteRecordRaw[] = [
       icon: FilePlus2,
       order: 3,
       keepAlive: true,
+      permissions: CASE_ENTRY_PERMISSIONS,
     },
   },
 ]

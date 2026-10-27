@@ -1,5 +1,6 @@
 import type { RouteRecordRaw } from 'vue-router'
 import { ClipboardList } from 'lucide-vue-next'
+import { WORKBENCH_PERMISSIONS } from '@/constants/permissions'
 
 const workbenchRoutes: RouteRecordRaw[] = [
   {
@@ -12,6 +13,7 @@ const workbenchRoutes: RouteRecordRaw[] = [
       icon: ClipboardList,
       order: 2,
       keepAlive: true,
+      permissions: WORKBENCH_PERMISSIONS,
     },
   },
 ]

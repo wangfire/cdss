@@ -9,14 +9,18 @@ import {
   Download,
   FileJson,
   Loader2,
+  Pencil,
   Plus,
   Search,
+  Trash2,
   Upload,
   X,
 } from 'lucide-vue-next'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ApiError, knowledgeApi } from '@/api'
+import IndexEntryDialog from '@/components/IndexEntryDialog.vue'
+import { useUserStore } from '@/stores/user'
 import type {
   CodeSystemDto,
   Cm3IndexDto,
@@ -26,6 +30,7 @@ import type {
   ImportCodeSystemResponse,
   ImportCodingRulesResponse,
   MedicalCodeDto,
+  TumorIndexDto,
 } from '@/api'
 import {
   Badge,
@@ -60,6 +65,59 @@ import {
 } from '@tabtab/ui'
 
 const { t } = useI18n()
+const userStore = useUserStore()
+/** 知识库按钮级权限：与后端 permission:{code} 策略一一对应，增/改/删独立判定。 */
+const canImportCodeSystem = computed(
+  () => userStore.hasAnyPermission(['knowledge.codesystem.import']),
+)
+const canImportRules = computed(
+  () => userStore.hasAnyPermission(['knowledge.rules.import']),
+)
+const canCreateSynonym = computed(
+  () => userStore.hasAnyPermission(['knowledge.synonym.create']),
+)
+const canUpdateSynonym = computed(
+  () => userStore.hasAnyPermission(['knowledge.synonym.update']),
+)
+const canDeleteSynonym = computed(
+  () => userStore.hasAnyPermission(['knowledge.synonym.delete']),
+)
+const canCreateIcd = computed(
+  () => userStore.hasAnyPermission(['knowledge.icd.create']),
+)
+const canUpdateIcd = computed(
+  () => userStore.hasAnyPermission(['knowledge.icd.update']),
+)
+const canDeleteIcd = computed(
+  () => userStore.hasAnyPermission(['knowledge.icd.delete']),
+)
+const canManageIcd = computed(
+  () => canCreateIcd.value || canUpdateIcd.value || canDeleteIcd.value,
+)
+const canCreateCm3 = computed(
+  () => userStore.hasAnyPermission(['knowledge.cm3.create']),
+)
+const canUpdateCm3 = computed(
+  () => userStore.hasAnyPermission(['knowledge.cm3.update']),
+)
+const canDeleteCm3 = computed(
+  () => userStore.hasAnyPermission(['knowledge.cm3.delete']),
+)
+const canManageCm3 = computed(
+  () => canCreateCm3.value || canUpdateCm3.value || canDeleteCm3.value,
+)
+const canCreateTumor = computed(
+  () => userStore.hasAnyPermission(['knowledge.tumor.create']),
+)
+const canUpdateTumor = computed(
+  () => userStore.hasAnyPermission(['knowledge.tumor.update']),
+)
+const canDeleteTumor = computed(
+  () => userStore.hasAnyPermission(['knowledge.tumor.delete']),
+)
+const canManageTumor = computed(
+  () => canCreateTumor.value || canUpdateTumor.value || canDeleteTumor.value,
+)
 
 /* ============== 顶层 Tab ============== */
 const activeMainTab = ref('browse')
@@ -516,6 +574,8 @@ function onIcdIndexSearchInput() {
       loadIcdIndexSearch()
     } else {
       icdIndex.value = []
+      // 搜索期间可能增删改过行，退出搜索必须重拉树，否则树里留着已删除的旧行
+      loadIcdIndexTree()
     }
   }, 400)
 }
@@ -695,6 +755,8 @@ function onCm3IndexSearchInput() {
       loadCm3IndexSearch()
     } else {
       cm3Index.value = []
+      // 搜索期间可能增删改过行，退出搜索必须重拉树，否则树里留着已删除的旧行
+      loadCm3IndexTree()
     }
   }, 400)
 }
@@ -705,6 +767,326 @@ function onCm3IndexStatusFilterChange() {
     loadCm3IndexSearch()
   } else {
     loadCm3IndexTree()
+  }
+}
+
+/* ============== 数据浏览 — 肿瘤索引库（节点树 + 关键词搜索） ============== */
+interface TumorIndexTreeNode extends TumorIndexDto {
+  hasChildren: boolean
+}
+interface TumorIndexVisibleRow {
+  node: TumorIndexTreeNode
+  depth: number
+}
+
+const tumorIndexKeyword = ref('')
+const tumorIndexIsSearch = computed(() => tumorIndexKeyword.value.trim() !== '')
+
+const tumorIndexTableWrap = ref<HTMLElement | null>(null)
+const tumorIndexTableHeight = ref(480)
+
+async function updateTumorIndexTableHeight() {
+  const el = tumorIndexTableWrap.value
+  if (!el) return
+  let panel: HTMLElement | null = el.parentElement
+  while (panel && !/(auto|scroll)/.test(getComputedStyle(panel).overflowY))
+    panel = panel.parentElement
+  panel?.scrollTo({ top: 0 })
+  const card = el.parentElement?.parentElement?.parentElement ?? null
+  for (let i = 0; i < 4; i++) {
+    const rect = (card ?? el).getBoundingClientRect()
+    const gap = window.innerHeight - rect.bottom
+    if (gap > 12) {
+      tumorIndexTableHeight.value += Math.floor(gap - 10)
+      await nextTick()
+    } else if (gap < 6) {
+      tumorIndexTableHeight.value = Math.max(120, tumorIndexTableHeight.value + Math.ceil(gap - 10))
+      await nextTick()
+    } else {
+      break
+    }
+  }
+}
+
+watch(tumorIndexTableWrap, () => {
+  nextTick(updateTumorIndexTableHeight)
+  setTimeout(updateTumorIndexTableHeight, 150)
+})
+
+const tumorIndexTreeLoading = ref(false)
+const tumorIndexMoreLoading = ref(false)
+const tumorIndexRoots = ref<TumorIndexTreeNode[]>([])
+const tumorIndexRootTotal = ref(0)
+const tumorIndexRootPageSize = 200
+const tumorIndexChildrenMap = ref<Record<number, TumorIndexTreeNode[]>>({})
+const tumorIndexExpanded = ref<Record<number, boolean>>({})
+const tumorIndexNodeLoading = ref<Record<number, boolean>>({})
+
+const tumorIndexVisibleRows = computed<TumorIndexVisibleRow[]>(() => {
+  const rows: TumorIndexVisibleRow[] = []
+  const walk = (nodes: TumorIndexTreeNode[], depth: number) => {
+    for (const node of nodes) {
+      rows.push({ node, depth })
+      if (tumorIndexExpanded.value[node.seqNo])
+        walk(tumorIndexChildrenMap.value[node.seqNo] ?? [], depth + 1)
+    }
+  }
+  walk(tumorIndexRoots.value, 0)
+  return rows
+})
+
+async function loadTumorIndexTree() {
+  tumorIndexTreeLoading.value = true
+  try {
+    const result = await knowledgeApi.getTumorIndexChildren({
+      parentSeqNo: 0,
+      offset: 0,
+      limit: tumorIndexRootPageSize,
+    })
+    tumorIndexRoots.value = result.items
+    tumorIndexRootTotal.value = result.total
+    tumorIndexChildrenMap.value = {}
+    tumorIndexExpanded.value = {}
+    tumorIndexNodeLoading.value = {}
+  } catch { toast.error(t('knowledge.loadFailed')) }
+  finally { tumorIndexTreeLoading.value = false }
+}
+
+async function loadMoreTumorIndexRoots() {
+  if (tumorIndexMoreLoading.value) return
+  tumorIndexMoreLoading.value = true
+  try {
+    const result = await knowledgeApi.getTumorIndexChildren({
+      parentSeqNo: 0,
+      offset: tumorIndexRoots.value.length,
+      limit: tumorIndexRootPageSize,
+    })
+    tumorIndexRoots.value = [...tumorIndexRoots.value, ...result.items]
+    tumorIndexRootTotal.value = result.total
+  } catch { toast.error(t('knowledge.loadFailed')) }
+  finally { tumorIndexMoreLoading.value = false }
+}
+
+async function toggleTumorIndexNode(node: TumorIndexTreeNode) {
+  if (tumorIndexExpanded.value[node.seqNo]) {
+    tumorIndexExpanded.value = { ...tumorIndexExpanded.value, [node.seqNo]: false }
+    return
+  }
+  if (!tumorIndexChildrenMap.value[node.seqNo]) {
+    tumorIndexNodeLoading.value = { ...tumorIndexNodeLoading.value, [node.seqNo]: true }
+    try {
+      const result = await knowledgeApi.getTumorIndexChildren({
+        parentSeqNo: node.seqNo,
+        limit: 1000,
+      })
+      tumorIndexChildrenMap.value = { ...tumorIndexChildrenMap.value, [node.seqNo]: result.items }
+    } catch { toast.error(t('knowledge.loadFailed')) }
+    finally {
+      const next = { ...tumorIndexNodeLoading.value }
+      delete next[node.seqNo]
+      tumorIndexNodeLoading.value = next
+    }
+  }
+  tumorIndexExpanded.value = { ...tumorIndexExpanded.value, [node.seqNo]: true }
+}
+
+const tumorIndex = ref<TumorIndexDto[]>([])
+const tumorIndexTotal = ref(0)
+const tumorIndexPage = ref(1)
+const tumorIndexPageSize = 20
+const tumorIndexLoading = ref(false)
+
+const tumorIndexTotalPages = computed(() =>
+  Math.max(1, Math.ceil(tumorIndexTotal.value / tumorIndexPageSize)),
+)
+
+async function loadTumorIndexSearch() {
+  tumorIndexLoading.value = true
+  try {
+    const result = await knowledgeApi.getTumorIndex({
+      page: tumorIndexPage.value,
+      pageSize: tumorIndexPageSize,
+      keyword: tumorIndexKeyword.value.trim(),
+    })
+    tumorIndex.value = result.items
+    tumorIndexTotal.value = result.total
+  } catch { toast.error(t('knowledge.loadFailed')) }
+  finally { tumorIndexLoading.value = false }
+}
+
+let tumorIndexSearchTimer: ReturnType<typeof setTimeout> | null = null
+function onTumorIndexSearchInput() {
+  if (tumorIndexSearchTimer) clearTimeout(tumorIndexSearchTimer)
+  tumorIndexSearchTimer = setTimeout(() => {
+    if (tumorIndexIsSearch.value) {
+      tumorIndexPage.value = 1
+      loadTumorIndexSearch()
+    } else {
+      tumorIndex.value = []
+      // 搜索期间可能增删改过行，退出搜索必须重拉树，否则树里留着已删除的旧行
+      loadTumorIndexTree()
+    }
+  }, 400)
+}
+
+function tumorJumpLabel(row: { jumpKind: number; jumpTarget: string | null }) {
+  if (row.jumpKind === 1) return `${t('knowledge.jumpKindSee')} ${row.jumpTarget ?? ''}`.trim()
+  if (row.jumpKind === 2) return `${t('knowledge.jumpKindSeeAlso')} ${row.jumpTarget ?? ''}`.trim()
+  return t('knowledge.jumpKindNone')
+}
+
+/* ============== 索引库编辑（ICD / CM3 / 肿瘤共用弹窗） ============== */
+type IndexEditKind = 'icd' | 'cm3' | 'tumor'
+type IndexEditRow = IcdIndexDto | Cm3IndexDto | TumorIndexDto
+
+const indexEditOpen = ref(false)
+const indexEditKind = ref<IndexEditKind>('icd')
+const indexEditEntry = ref<IndexEditRow | null>(null)
+const indexEditParent = ref<{ seqNo: number; indexLevel: number; indexName: string } | null>(null)
+
+function openIndexEdit(kind: IndexEditKind, entry: IndexEditRow) {
+  indexEditKind.value = kind
+  indexEditEntry.value = entry
+  indexEditParent.value = null
+  indexEditOpen.value = true
+}
+
+function openIndexCreate(
+  kind: IndexEditKind,
+  parent: { seqNo: number; indexLevel: number; indexName: string } | null = null,
+) {
+  indexEditKind.value = kind
+  indexEditEntry.value = null
+  indexEditParent.value = parent
+  indexEditOpen.value = true
+  if (!parent) return
+  // 新增子级时父节点已展开，保存后刷新能立刻看到新行
+  if (kind === 'icd')
+    icdIndexExpanded.value = { ...icdIndexExpanded.value, [parent.seqNo]: true }
+  if (kind === 'cm3')
+    cm3IndexExpanded.value = { ...cm3IndexExpanded.value, [parent.seqNo]: true }
+  if (kind === 'tumor')
+    tumorIndexExpanded.value = { ...tumorIndexExpanded.value, [parent.seqNo]: true }
+}
+
+function patchIcdHasChildren(seqNo: number, hasChildren: boolean) {
+  icdIndexRoots.value = icdIndexRoots.value.map(node =>
+    node.seqNo === seqNo ? { ...node, hasChildren } : node)
+  icdIndexChildrenMap.value = Object.fromEntries(
+    Object.entries(icdIndexChildrenMap.value).map(([key, nodes]) => [
+      key,
+      nodes.map(node => (node.seqNo === seqNo ? { ...node, hasChildren } : node)),
+    ]),
+  )
+}
+
+function patchCm3HasChildren(seqNo: number, hasChildren: boolean) {
+  cm3IndexRoots.value = cm3IndexRoots.value.map(node =>
+    node.seqNo === seqNo ? { ...node, hasChildren } : node)
+  cm3IndexChildrenMap.value = Object.fromEntries(
+    Object.entries(cm3IndexChildrenMap.value).map(([key, nodes]) => [
+      key,
+      nodes.map(node => (node.seqNo === seqNo ? { ...node, hasChildren } : node)),
+    ]),
+  )
+}
+
+function patchTumorHasChildren(seqNo: number, hasChildren: boolean) {
+  tumorIndexRoots.value = tumorIndexRoots.value.map(node =>
+    node.seqNo === seqNo ? { ...node, hasChildren } : node)
+  tumorIndexChildrenMap.value = Object.fromEntries(
+    Object.entries(tumorIndexChildrenMap.value).map(([key, nodes]) => [
+      key,
+      nodes.map(node => (node.seqNo === seqNo ? { ...node, hasChildren } : node)),
+    ]),
+  )
+}
+
+async function refreshIcdIndexLevel(parentSeqNo: number) {
+  if (icdIndexIsSearch.value) {
+    await loadIcdIndexSearch()
+    return
+  }
+  if (parentSeqNo <= 0) {
+    await loadIcdIndexTree()
+    return
+  }
+  try {
+    const result = await knowledgeApi.getIcdIndexChildren({
+      parentSeqNo,
+      leadWordStatus: icdIndexStatusParam(),
+      limit: 1000,
+    })
+    icdIndexChildrenMap.value = { ...icdIndexChildrenMap.value, [parentSeqNo]: result.items }
+    icdIndexExpanded.value = { ...icdIndexExpanded.value, [parentSeqNo]: true }
+    patchIcdHasChildren(parentSeqNo, result.items.length > 0)
+  } catch { toast.error(t('knowledge.loadFailed')) }
+}
+
+async function refreshCm3IndexLevel(parentSeqNo: number) {
+  if (cm3IndexIsSearch.value) {
+    await loadCm3IndexSearch()
+    return
+  }
+  if (parentSeqNo <= 0) {
+    await loadCm3IndexTree()
+    return
+  }
+  try {
+    const result = await knowledgeApi.getCm3IndexChildren({
+      parentSeqNo,
+      leadWordStatus: cm3IndexStatusParam(),
+      limit: 1000,
+    })
+    cm3IndexChildrenMap.value = { ...cm3IndexChildrenMap.value, [parentSeqNo]: result.items }
+    cm3IndexExpanded.value = { ...cm3IndexExpanded.value, [parentSeqNo]: true }
+    patchCm3HasChildren(parentSeqNo, result.items.length > 0)
+  } catch { toast.error(t('knowledge.loadFailed')) }
+}
+
+async function refreshTumorIndexLevel(parentSeqNo: number) {
+  if (tumorIndexIsSearch.value) {
+    await loadTumorIndexSearch()
+    return
+  }
+  if (parentSeqNo <= 0) {
+    await loadTumorIndexTree()
+    return
+  }
+  try {
+    const result = await knowledgeApi.getTumorIndexChildren({ parentSeqNo, limit: 1000 })
+    tumorIndexChildrenMap.value = { ...tumorIndexChildrenMap.value, [parentSeqNo]: result.items }
+    tumorIndexExpanded.value = { ...tumorIndexExpanded.value, [parentSeqNo]: true }
+    patchTumorHasChildren(parentSeqNo, result.items.length > 0)
+  } catch { toast.error(t('knowledge.loadFailed')) }
+}
+
+async function refreshIndexLevel(kind: IndexEditKind, parentSeqNo: number) {
+  if (kind === 'icd') await refreshIcdIndexLevel(parentSeqNo)
+  else if (kind === 'cm3') await refreshCm3IndexLevel(parentSeqNo)
+  else await refreshTumorIndexLevel(parentSeqNo)
+}
+
+async function handleIndexEntrySaved(parentSeqNo: number) {
+  const kind = indexEditKind.value
+  const previousParent = indexEditEntry.value?.parentSeqNo ?? null
+  await refreshIndexLevel(kind, parentSeqNo)
+  // 换父：旧父节点的展开箭头也要跟着更新
+  if (previousParent !== null && previousParent !== parentSeqNo)
+    await refreshIndexLevel(kind, previousParent)
+}
+
+async function deleteIndexEntry(kind: IndexEditKind, row: IndexEditRow) {
+  if (!window.confirm(t('knowledge.deleteIndexEntryConfirm', { name: row.indexName, seqNo: row.seqNo })))
+    return
+  try {
+    if (kind === 'icd') await knowledgeApi.deleteIcdIndexEntry(row.id)
+    else if (kind === 'cm3') await knowledgeApi.deleteCm3IndexEntry(row.id)
+    else await knowledgeApi.deleteTumorIndexEntry(row.id)
+    toast.success(t('knowledge.indexEntryDeleted'))
+    await refreshIndexLevel(kind, row.parentSeqNo)
+  } catch (error) {
+    toast.error(error instanceof ApiError ? error.message : t('knowledge.deleteFailed'))
   }
 }
 
@@ -720,17 +1102,21 @@ watch(browseTab, (tab) => {
   if (tab === 'icd-index') nextTick(updateIcdIndexTableHeight)
   if (tab === 'cm3-index' && cm3IndexRoots.value.length === 0) loadCm3IndexTree()
   if (tab === 'cm3-index') nextTick(updateCm3IndexTableHeight)
+  if (tab === 'tumor-index' && tumorIndexRoots.value.length === 0) loadTumorIndexTree()
+  if (tab === 'tumor-index') nextTick(updateTumorIndexTableHeight)
 })
 
 onMounted(() => {
   loadCodeSystems()
   window.addEventListener('resize', updateIcdIndexTableHeight)
   window.addEventListener('resize', updateCm3IndexTableHeight)
+  window.addEventListener('resize', updateTumorIndexTableHeight)
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', updateIcdIndexTableHeight)
   window.removeEventListener('resize', updateCm3IndexTableHeight)
+  window.removeEventListener('resize', updateTumorIndexTableHeight)
 })
 
 /* ============== 统计 ============== */
@@ -878,7 +1264,7 @@ async function handleImportRules() {
 <template>
   <div class="space-y-6">
     <!-- 页面标题（索引库树/搜索模式隐藏，让表格占满可视高度） -->
-    <div v-if="!(activeMainTab === 'browse' && (browseTab === 'icd-index' || browseTab === 'cm3-index'))" class="flex items-center gap-4">
+    <div v-if="!(activeMainTab === 'browse' && (browseTab === 'icd-index' || browseTab === 'cm3-index' || browseTab === 'tumor-index'))" class="flex items-center gap-4">
       <div class="p-2 rounded-lg bg-emerald-500/10">
         <BookOpen class="h-5 w-5 text-emerald-500" />
       </div>
@@ -891,14 +1277,14 @@ async function handleImportRules() {
     <Tabs v-model="activeMainTab" class="space-y-6">
       <TabsList>
         <TabsTrigger value="browse">{{ t('knowledge.browseData') }}</TabsTrigger>
-        <TabsTrigger value="code-system">{{ t('knowledge.codeSystemImport') }}</TabsTrigger>
-        <TabsTrigger value="rules">{{ t('knowledge.rulesImport') }}</TabsTrigger>
+        <TabsTrigger v-if="canImportCodeSystem" value="code-system">{{ t('knowledge.codeSystemImport') }}</TabsTrigger>
+        <TabsTrigger v-if="canImportRules" value="rules">{{ t('knowledge.rulesImport') }}</TabsTrigger>
       </TabsList>
 
       <!-- ============ 数据浏览 ============ -->
       <TabsContent value="browse" class="space-y-6">
         <!-- 统计卡片（索引库树模式隐藏，让表格占满可视高度） -->
-        <div v-if="browseTab !== 'icd-index' && browseTab !== 'cm3-index'" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div v-if="browseTab !== 'icd-index' && browseTab !== 'cm3-index' && browseTab !== 'tumor-index'" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <Card class="border-border/40">
             <CardContent class="pt-6 flex items-center gap-3">
               <div class="p-2 rounded-lg bg-blue-500/10">
@@ -954,6 +1340,7 @@ async function handleImportRules() {
             <TabsTrigger value="rules">{{ t('knowledge.codingRulesTab') }}</TabsTrigger>
             <TabsTrigger value="icd-index">{{ t('knowledge.icdIndexTab') }}</TabsTrigger>
             <TabsTrigger value="cm3-index">{{ t('knowledge.cm3IndexTab') }}</TabsTrigger>
+            <TabsTrigger value="tumor-index">{{ t('knowledge.tumorIndexTab') }}</TabsTrigger>
           </TabsList>
 
           <!-- 编码体系列表 -->
@@ -1084,7 +1471,7 @@ async function handleImportRules() {
                   @input="onSynonymSearchInput"
                 />
               </div>
-              <Button size="sm" @click="openSynonymCreate">
+              <Button v-if="canCreateSynonym" size="sm" @click="openSynonymCreate">
                 <Plus class="h-4 w-4 mr-1" />
                 {{ t('knowledge.createSynonymGroup') }}
               </Button>
@@ -1104,7 +1491,7 @@ async function handleImportRules() {
                         <tr class="border-b border-border/40">
                           <th class="text-left py-3 px-4 font-medium text-muted-foreground">{{ t('knowledge.equivalenceGroupColumn') }}</th>
                           <th class="text-left py-3 px-4 font-medium text-muted-foreground">{{ t('knowledge.entityTypeColumn') }}</th>
-                          <th class="text-right py-3 px-4 font-medium text-muted-foreground">{{ t('knowledge.actionsColumn') }}</th>
+                          <th v-if="canUpdateSynonym || canDeleteSynonym" class="text-right py-3 px-4 font-medium text-muted-foreground">{{ t('knowledge.actionsColumn') }}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1123,11 +1510,11 @@ async function handleImportRules() {
                           <td class="py-3 px-4">
                             <Badge variant="outline">{{ synonymTermTypeLabel(syn.termType) }}</Badge>
                           </td>
-                          <td class="py-3 px-4 text-right whitespace-nowrap">
-                            <Button variant="ghost" size="sm" @click="openSynonymEdit(syn)">
+                          <td v-if="canUpdateSynonym || canDeleteSynonym" class="py-3 px-4 text-right whitespace-nowrap">
+                            <Button v-if="canUpdateSynonym" variant="ghost" size="sm" @click="openSynonymEdit(syn)">
                               {{ t('knowledge.edit') }}
                             </Button>
-                            <Button variant="ghost" size="sm" class="text-destructive" @click="deleteSynonymGroup(syn)">
+                            <Button v-if="canDeleteSynonym" variant="ghost" size="sm" class="text-destructive" @click="deleteSynonymGroup(syn)">
                               {{ t('knowledge.delete') }}
                             </Button>
                           </td>
@@ -1311,6 +1698,10 @@ async function handleImportRules() {
                   <SelectItem value="1">{{ t('knowledge.leadWordInvalid') }}</SelectItem>
                 </SelectContent>
               </Select>
+              <Button v-if="canCreateIcd" size="sm" class="shrink-0" @click="openIndexCreate('icd')">
+                <Plus class="h-4 w-4 mr-1" />
+                {{ t('knowledge.addRootIndexEntry') }}
+              </Button>
             </div>
 
             <!-- 搜索模式：关键词命中的平铺结果 -->
@@ -1328,11 +1719,12 @@ async function handleImportRules() {
                     <table class="w-full table-fixed text-sm">
                       <thead>
                         <tr class="border-b border-border/40">
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[8%]">{{ t('knowledge.seqNoColumn') }}</th>
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[26%]">{{ t('knowledge.indexNameColumn') }}</th>
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[16%]">{{ t('knowledge.indexCodeColumn') }}</th>
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[36%]">{{ t('knowledge.fullIndexNameColumn') }}</th>
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[16%]">{{ t('knowledge.leadWordStatusColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[7%]">{{ t('knowledge.seqNoColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[21%]">{{ t('knowledge.indexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[12%]">{{ t('knowledge.indexCodeColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[31%]">{{ t('knowledge.fullIndexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[12%]">{{ t('knowledge.leadWordStatusColumn') }}</th>
+                          <th v-if="canManageIcd" class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[17%]">{{ t('knowledge.actionsColumn') }}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1344,6 +1736,19 @@ async function handleImportRules() {
                           <td class="py-3 px-4">
                             <Badge v-if="row.leadWordStatus === 0" variant="default" class="bg-emerald-500/15 text-emerald-700">{{ t('knowledge.leadWordValid') }}</Badge>
                             <Badge v-else variant="secondary">{{ t('knowledge.leadWordInvalid') }}</Badge>
+                          </td>
+                          <td v-if="canManageIcd" class="py-3 px-2 whitespace-nowrap">
+                            <div class="flex items-center gap-0.5">
+                              <Button v-if="canUpdateIcd" variant="ghost" size="sm" class="h-7 w-7 p-0" :title="t('knowledge.edit')" @click="openIndexEdit('icd', row)">
+                                <Pencil class="h-3.5 w-3.5" />
+                              </Button>
+                              <Button v-if="canCreateIcd" variant="ghost" size="sm" class="h-7 w-7 p-0" :title="t('knowledge.addChildIndexEntry')" @click="openIndexCreate('icd', { seqNo: row.seqNo, indexLevel: row.indexLevel, indexName: row.indexName })">
+                                <Plus class="h-3.5 w-3.5" />
+                              </Button>
+                              <Button v-if="canDeleteIcd" variant="ghost" size="sm" class="h-7 w-7 p-0 text-destructive" :title="t('knowledge.delete')" @click="deleteIndexEntry('icd', row)">
+                                <Trash2 class="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
                           </td>
                         </tr>
                       </tbody>
@@ -1383,11 +1788,12 @@ async function handleImportRules() {
                     <table class="w-full table-fixed text-sm">
                       <thead>
                         <tr class="border-b border-border/40">
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[26%]">{{ t('knowledge.indexNameColumn') }}</th>
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[8%]">{{ t('knowledge.seqNoColumn') }}</th>
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[16%]">{{ t('knowledge.indexCodeColumn') }}</th>
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[36%]">{{ t('knowledge.fullIndexNameColumn') }}</th>
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[16%]">{{ t('knowledge.leadWordStatusColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[21%]">{{ t('knowledge.indexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[7%]">{{ t('knowledge.seqNoColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[12%]">{{ t('knowledge.indexCodeColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[31%]">{{ t('knowledge.fullIndexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[12%]">{{ t('knowledge.leadWordStatusColumn') }}</th>
+                          <th v-if="canManageIcd" class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[17%]">{{ t('knowledge.actionsColumn') }}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1416,6 +1822,19 @@ async function handleImportRules() {
                           <td class="py-2 px-4">
                             <Badge v-if="row.node.leadWordStatus === 0" variant="default" class="bg-emerald-500/15 text-emerald-700">{{ t('knowledge.leadWordValid') }}</Badge>
                             <Badge v-else variant="secondary">{{ t('knowledge.leadWordInvalid') }}</Badge>
+                          </td>
+                          <td v-if="canManageIcd" class="py-2 px-2 whitespace-nowrap">
+                            <div class="flex items-center gap-0.5">
+                              <Button v-if="canUpdateIcd" variant="ghost" size="sm" class="h-7 w-7 p-0" :title="t('knowledge.edit')" @click="openIndexEdit('icd', row.node)">
+                                <Pencil class="h-3.5 w-3.5" />
+                              </Button>
+                              <Button v-if="canCreateIcd" variant="ghost" size="sm" class="h-7 w-7 p-0" :title="t('knowledge.addChildIndexEntry')" @click="openIndexCreate('icd', { seqNo: row.node.seqNo, indexLevel: row.node.indexLevel, indexName: row.node.indexName })">
+                                <Plus class="h-3.5 w-3.5" />
+                              </Button>
+                              <Button v-if="canDeleteIcd" variant="ghost" size="sm" class="h-7 w-7 p-0 text-destructive" :title="t('knowledge.delete')" @click="deleteIndexEntry('icd', row.node)">
+                                <Trash2 class="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
                           </td>
                         </tr>
                       </tbody>
@@ -1455,6 +1874,10 @@ async function handleImportRules() {
                   <SelectItem value="1">{{ t('knowledge.leadWordInvalid') }}</SelectItem>
                 </SelectContent>
               </Select>
+              <Button v-if="canCreateCm3" size="sm" class="shrink-0" @click="openIndexCreate('cm3')">
+                <Plus class="h-4 w-4 mr-1" />
+                {{ t('knowledge.addRootIndexEntry') }}
+              </Button>
             </div>
 
             <!-- 搜索模式：关键词命中的平铺结果 -->
@@ -1472,11 +1895,12 @@ async function handleImportRules() {
                     <table class="w-full table-fixed text-sm">
                       <thead>
                         <tr class="border-b border-border/40">
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[8%]">{{ t('knowledge.seqNoColumn') }}</th>
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[26%]">{{ t('knowledge.indexNameColumn') }}</th>
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[16%]">{{ t('knowledge.indexCodeColumn') }}</th>
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[36%]">{{ t('knowledge.fullIndexNameColumn') }}</th>
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[16%]">{{ t('knowledge.leadWordStatusColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[7%]">{{ t('knowledge.seqNoColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[21%]">{{ t('knowledge.indexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[12%]">{{ t('knowledge.indexCodeColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[31%]">{{ t('knowledge.fullIndexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[12%]">{{ t('knowledge.leadWordStatusColumn') }}</th>
+                          <th v-if="canManageCm3" class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[17%]">{{ t('knowledge.actionsColumn') }}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1488,6 +1912,19 @@ async function handleImportRules() {
                           <td class="py-3 px-4">
                             <Badge v-if="row.leadWordStatus === 0" variant="default" class="bg-emerald-500/15 text-emerald-700">{{ t('knowledge.leadWordValid') }}</Badge>
                             <Badge v-else variant="secondary">{{ t('knowledge.leadWordInvalid') }}</Badge>
+                          </td>
+                          <td v-if="canManageCm3" class="py-3 px-2 whitespace-nowrap">
+                            <div class="flex items-center gap-0.5">
+                              <Button v-if="canUpdateCm3" variant="ghost" size="sm" class="h-7 w-7 p-0" :title="t('knowledge.edit')" @click="openIndexEdit('cm3', row)">
+                                <Pencil class="h-3.5 w-3.5" />
+                              </Button>
+                              <Button v-if="canCreateCm3" variant="ghost" size="sm" class="h-7 w-7 p-0" :title="t('knowledge.addChildIndexEntry')" @click="openIndexCreate('cm3', { seqNo: row.seqNo, indexLevel: row.indexLevel, indexName: row.indexName })">
+                                <Plus class="h-3.5 w-3.5" />
+                              </Button>
+                              <Button v-if="canDeleteCm3" variant="ghost" size="sm" class="h-7 w-7 p-0 text-destructive" :title="t('knowledge.delete')" @click="deleteIndexEntry('cm3', row)">
+                                <Trash2 class="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
                           </td>
                         </tr>
                       </tbody>
@@ -1527,11 +1964,12 @@ async function handleImportRules() {
                     <table class="w-full table-fixed text-sm">
                       <thead>
                         <tr class="border-b border-border/40">
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[26%]">{{ t('knowledge.indexNameColumn') }}</th>
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[8%]">{{ t('knowledge.seqNoColumn') }}</th>
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[16%]">{{ t('knowledge.indexCodeColumn') }}</th>
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[36%]">{{ t('knowledge.fullIndexNameColumn') }}</th>
-                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[16%]">{{ t('knowledge.leadWordStatusColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[21%]">{{ t('knowledge.indexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[7%]">{{ t('knowledge.seqNoColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[12%]">{{ t('knowledge.indexCodeColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[31%]">{{ t('knowledge.fullIndexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[12%]">{{ t('knowledge.leadWordStatusColumn') }}</th>
+                          <th v-if="canManageCm3" class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[17%]">{{ t('knowledge.actionsColumn') }}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1561,6 +1999,19 @@ async function handleImportRules() {
                             <Badge v-if="row.node.leadWordStatus === 0" variant="default" class="bg-emerald-500/15 text-emerald-700">{{ t('knowledge.leadWordValid') }}</Badge>
                             <Badge v-else variant="secondary">{{ t('knowledge.leadWordInvalid') }}</Badge>
                           </td>
+                          <td v-if="canManageCm3" class="py-2 px-2 whitespace-nowrap">
+                            <div class="flex items-center gap-0.5">
+                              <Button v-if="canUpdateCm3" variant="ghost" size="sm" class="h-7 w-7 p-0" :title="t('knowledge.edit')" @click="openIndexEdit('cm3', row.node)">
+                                <Pencil class="h-3.5 w-3.5" />
+                              </Button>
+                              <Button v-if="canCreateCm3" variant="ghost" size="sm" class="h-7 w-7 p-0" :title="t('knowledge.addChildIndexEntry')" @click="openIndexCreate('cm3', { seqNo: row.node.seqNo, indexLevel: row.node.indexLevel, indexName: row.node.indexName })">
+                                <Plus class="h-3.5 w-3.5" />
+                              </Button>
+                              <Button v-if="canDeleteCm3" variant="ghost" size="sm" class="h-7 w-7 p-0 text-destructive" :title="t('knowledge.delete')" @click="deleteIndexEntry('cm3', row.node)">
+                                <Trash2 class="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          </td>
                         </tr>
                       </tbody>
                     </table>
@@ -1577,11 +2028,195 @@ async function handleImportRules() {
               </CardContent>
             </Card>
           </TabsContent>
+
+          <TabsContent value="tumor-index" class="space-y-4">
+            <div class="flex flex-col sm:flex-row gap-3">
+              <div class="relative flex-1">
+                <Search class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  v-model="tumorIndexKeyword"
+                  :placeholder="t('knowledge.searchTumorIndexPlaceholder')"
+                  class="pl-9"
+                  @input="onTumorIndexSearchInput"
+                />
+              </div>
+              <Button v-if="canCreateTumor" size="sm" class="shrink-0" @click="openIndexCreate('tumor')">
+                <Plus class="h-4 w-4 mr-1" />
+                {{ t('knowledge.addRootIndexEntry') }}
+              </Button>
+            </div>
+
+            <!-- 搜索模式：关键词命中的平铺结果 -->
+            <Card v-if="tumorIndexIsSearch" class="border-border/40 -mb-[38px]">
+              <CardContent class="pt-2">
+                <div v-if="tumorIndexLoading" class="flex items-center justify-center py-12">
+                  <Loader2 class="h-5 w-5 animate-spin text-muted-foreground mr-2" />
+                  <span class="text-sm text-muted-foreground">{{ t('knowledge.loading') }}</span>
+                </div>
+                <div v-else-if="tumorIndex.length === 0" class="text-center py-12 text-muted-foreground text-sm">
+                  {{ t('knowledge.noTumorIndex') }}
+                </div>
+                <div v-else class="space-y-4">
+                  <div ref="tumorIndexTableWrap" class="overflow-auto" :style="{ height: `${tumorIndexTableHeight}px` }">
+                    <table class="w-full table-fixed text-sm">
+                      <thead>
+                        <tr class="border-b border-border/40">
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[6%]">{{ t('knowledge.seqNoColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[18%]">{{ t('knowledge.indexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[9%]">{{ t('knowledge.codeMalignantPrimaryColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[9%]">{{ t('knowledge.codeMalignantSecondaryColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[7%]">{{ t('knowledge.codeInSituColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[7%]">{{ t('knowledge.codeBenignColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[9%]">{{ t('knowledge.codeUncertainColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[12%]">{{ t('knowledge.fullIndexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[6%]">{{ t('knowledge.jumpKindColumn') }}</th>
+                          <th v-if="canManageTumor" class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[17%]">{{ t('knowledge.actionsColumn') }}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="row in tumorIndex" :key="row.id" class="border-b border-border/20 hover:bg-muted/30 transition-colors">
+                          <td class="py-3 px-4 font-mono text-xs whitespace-nowrap">{{ row.seqNo }}</td>
+                          <td class="py-3 px-4 truncate" :title="row.indexName">{{ row.indexName }}</td>
+                          <td class="py-3 px-4 font-mono text-xs">{{ row.codeMalignantPrimary || '-' }}</td>
+                          <td class="py-3 px-4 font-mono text-xs">{{ row.codeMalignantSecondary || '-' }}</td>
+                          <td class="py-3 px-4 font-mono text-xs">{{ row.codeInSitu || '-' }}</td>
+                          <td class="py-3 px-4 font-mono text-xs">{{ row.codeBenign || '-' }}</td>
+                          <td class="py-3 px-4 font-mono text-xs">{{ row.codeUncertain || '-' }}</td>
+                          <td class="py-3 px-4 text-muted-foreground text-xs truncate" :title="row.fullIndexName">{{ row.fullIndexName }}</td>
+                          <td class="py-3 px-4 text-xs truncate" :title="tumorJumpLabel(row)">{{ tumorJumpLabel(row) }}</td>
+                          <td v-if="canManageTumor" class="py-3 px-2 whitespace-nowrap">
+                            <div class="flex items-center gap-0.5">
+                              <Button v-if="canUpdateTumor" variant="ghost" size="sm" class="h-7 w-7 p-0" :title="t('knowledge.edit')" @click="openIndexEdit('tumor', row)">
+                                <Pencil class="h-3.5 w-3.5" />
+                              </Button>
+                              <Button v-if="canCreateTumor" variant="ghost" size="sm" class="h-7 w-7 p-0" :title="t('knowledge.addChildIndexEntry')" @click="openIndexCreate('tumor', { seqNo: row.seqNo, indexLevel: row.indexLevel, indexName: row.indexName })">
+                                <Plus class="h-3.5 w-3.5" />
+                              </Button>
+                              <Button v-if="canDeleteTumor" variant="ghost" size="sm" class="h-7 w-7 p-0 text-destructive" :title="t('knowledge.delete')" @click="deleteIndexEntry('tumor', row)">
+                                <Trash2 class="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div class="flex items-center justify-between">
+                    <span class="text-sm text-muted-foreground">{{ t('knowledge.totalRecords', { total: tumorIndexTotal }) }}</span>
+                    <div class="flex items-center gap-2">
+                      <Button variant="outline" size="sm" :disabled="tumorIndexPage <= 1" @click="tumorIndexPage--; loadTumorIndexSearch()">
+                        <ChevronLeft class="h-4 w-4 mr-1" />
+                        {{ t('knowledge.previousPage') }}
+                      </Button>
+                      <span class="text-sm text-muted-foreground">{{ t('knowledge.pagination', { page: tumorIndexPage, totalPages: tumorIndexTotalPages }) }}</span>
+                      <Button variant="outline" size="sm" :disabled="tumorIndexPage >= tumorIndexTotalPages" @click="tumorIndexPage++; loadTumorIndexSearch()">
+                        {{ t('knowledge.nextPage') }}
+                        <ChevronRight class="h-4 w-4 ml-1" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <!-- 树模式：按父节点层级展开 -->
+            <Card v-else class="border-border/40 -mb-[38px]">
+              <CardContent class="pt-2">
+                <div v-if="tumorIndexTreeLoading" class="flex items-center justify-center py-12">
+                  <Loader2 class="h-5 w-5 animate-spin text-muted-foreground mr-2" />
+                  <span class="text-sm text-muted-foreground">{{ t('knowledge.loading') }}</span>
+                </div>
+                <div v-else-if="tumorIndexRoots.length === 0" class="text-center py-12 text-muted-foreground text-sm">
+                  {{ t('knowledge.noTumorIndex') }}
+                </div>
+                <div v-else class="space-y-4">
+                  <div ref="tumorIndexTableWrap" class="overflow-auto" :style="{ height: `${tumorIndexTableHeight}px` }">
+                    <table class="w-full table-fixed text-sm">
+                      <thead>
+                        <tr class="border-b border-border/40">
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[18%]">{{ t('knowledge.indexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[6%]">{{ t('knowledge.seqNoColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[9%]">{{ t('knowledge.codeMalignantPrimaryColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[9%]">{{ t('knowledge.codeMalignantSecondaryColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[7%]">{{ t('knowledge.codeInSituColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[7%]">{{ t('knowledge.codeBenignColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[9%]">{{ t('knowledge.codeUncertainColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[12%]">{{ t('knowledge.fullIndexNameColumn') }}</th>
+                          <th class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[6%]">{{ t('knowledge.jumpKindColumn') }}</th>
+                          <th v-if="canManageTumor" class="sticky top-0 z-10 bg-card text-left py-3 px-3 font-medium text-muted-foreground truncate w-[17%]">{{ t('knowledge.actionsColumn') }}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="row in tumorIndexVisibleRows" :key="row.node.seqNo" class="border-b border-border/20 hover:bg-muted/30 transition-colors">
+                          <td class="py-2 pr-4 pl-4">
+                            <div class="flex items-center min-w-0" :style="{ paddingLeft: `${row.depth * 24}px` }">
+                              <button
+                                v-if="row.node.hasChildren"
+                                class="p-0.5 rounded hover:bg-muted/50 text-muted-foreground shrink-0"
+                                :title="tumorIndexExpanded[row.node.seqNo] ? t('knowledge.collapseNode') : t('knowledge.expandNode')"
+                                @click="toggleTumorIndexNode(row.node)"
+                              >
+                                <ChevronDown v-if="tumorIndexExpanded[row.node.seqNo]" class="h-4 w-4" />
+                                <ChevronRight v-else class="h-4 w-4" />
+                              </button>
+                              <span v-else class="w-5 shrink-0" />
+                              <span v-if="tumorIndexNodeLoading[row.node.seqNo]" class="mr-1.5 shrink-0">
+                                <Loader2 class="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                              </span>
+                              <span class="truncate min-w-0 flex-1" :title="row.node.indexName">{{ row.node.indexName }}</span>
+                            </div>
+                          </td>
+                          <td class="py-2 px-4 font-mono text-xs">{{ row.node.seqNo }}</td>
+                          <td class="py-2 px-4 font-mono text-xs">{{ row.node.codeMalignantPrimary || '-' }}</td>
+                          <td class="py-2 px-4 font-mono text-xs">{{ row.node.codeMalignantSecondary || '-' }}</td>
+                          <td class="py-2 px-4 font-mono text-xs">{{ row.node.codeInSitu || '-' }}</td>
+                          <td class="py-2 px-4 font-mono text-xs">{{ row.node.codeBenign || '-' }}</td>
+                          <td class="py-2 px-4 font-mono text-xs">{{ row.node.codeUncertain || '-' }}</td>
+                          <td class="py-2 px-4 text-muted-foreground text-xs truncate" :title="row.node.fullIndexName">{{ row.node.fullIndexName }}</td>
+                          <td class="py-2 px-4 text-xs truncate" :title="tumorJumpLabel(row.node)">{{ tumorJumpLabel(row.node) }}</td>
+                          <td v-if="canManageTumor" class="py-2 px-2 whitespace-nowrap">
+                            <div class="flex items-center gap-0.5">
+                              <Button v-if="canUpdateTumor" variant="ghost" size="sm" class="h-7 w-7 p-0" :title="t('knowledge.edit')" @click="openIndexEdit('tumor', row.node)">
+                                <Pencil class="h-3.5 w-3.5" />
+                              </Button>
+                              <Button v-if="canCreateTumor" variant="ghost" size="sm" class="h-7 w-7 p-0" :title="t('knowledge.addChildIndexEntry')" @click="openIndexCreate('tumor', { seqNo: row.node.seqNo, indexLevel: row.node.indexLevel, indexName: row.node.indexName })">
+                                <Plus class="h-3.5 w-3.5" />
+                              </Button>
+                              <Button v-if="canDeleteTumor" variant="ghost" size="sm" class="h-7 w-7 p-0 text-destructive" :title="t('knowledge.delete')" @click="deleteIndexEntry('tumor', row.node)">
+                                <Trash2 class="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div class="flex items-center justify-between">
+                    <span class="text-sm text-muted-foreground">{{ t('knowledge.tumorIndexRootProgress', { loaded: tumorIndexRoots.length, total: tumorIndexRootTotal }) }}</span>
+                    <Button variant="outline" size="sm" :disabled="tumorIndexRoots.length >= tumorIndexRootTotal || tumorIndexMoreLoading" @click="loadMoreTumorIndexRoots">
+                      <Loader2 v-if="tumorIndexMoreLoading" class="h-4 w-4 mr-1 animate-spin" />
+                      {{ t('knowledge.loadMoreRoots') }}
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
         </Tabs>
+
+        <IndexEntryDialog
+          v-model:open="indexEditOpen"
+          :kind="indexEditKind"
+          :entry="indexEditEntry"
+          :parent="indexEditParent"
+          @saved="handleIndexEntrySaved"
+        />
       </TabsContent>
 
       <!-- ============ 编码体系导入 ============ -->
-      <TabsContent value="code-system" class="space-y-6">
+      <TabsContent v-if="canImportCodeSystem" value="code-system" class="space-y-6">
         <Card class="border border-border/40">
           <CardHeader>
             <CardTitle class="text-base">{{ t('knowledge.codeSystemImport') }}</CardTitle>
@@ -1640,7 +2275,7 @@ async function handleImportRules() {
       </TabsContent>
 
       <!-- ============ 规则导入 ============ -->
-      <TabsContent value="rules" class="space-y-6">
+      <TabsContent v-if="canImportRules" value="rules" class="space-y-6">
         <Card class="border border-border/40">
           <CardHeader>
             <CardTitle class="text-base">{{ t('knowledge.rulesImport') }}</CardTitle>

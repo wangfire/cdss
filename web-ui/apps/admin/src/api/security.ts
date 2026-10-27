@@ -8,7 +8,8 @@ import type {
 } from './types'
 
 /**
- * 用户与角色管理：全部端点受 user-admin 策略保护（要求 ADMIN 角色），
+ * 用户与角色管理：查看端点要求 user.manage，写端点分别要求
+ * user.create / user.status / user.role.assign / role.create / role.permission；
  * 医院隔离上下文由 http 客户端注入的 X-Hospital-Id 提供。
  */
 export const securityApi = {
@@ -19,6 +20,8 @@ export const securityApi = {
 
   listRoles: () => http.get<AppRoleDto[]>('/api/v1/roles'),
   createRole: (data: CreateAppRoleRequest) => http.post<AppRoleDto>('/api/v1/roles', data),
+  updateRolePermissions: (roleId: string, permissions: string[]) =>
+    http.put<{ ok: boolean }>(`/api/v1/roles/${roleId}/permissions`, { permissions }),
   assignRole: (userId: string, roleId: string) =>
     http.post<{ ok: boolean }>(`/api/v1/users/${userId}/roles/${roleId}`),
   removeRole: (userId: string, roleId: string) =>

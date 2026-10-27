@@ -4,8 +4,17 @@ import { useI18n } from 'vue-i18n'
 import { Loader2, Plus, RefreshCw, ShieldCheck, UserPlus, X } from 'lucide-vue-next'
 import { useUserStore } from '@/stores/user'
 import { STORAGE_KEYS } from '@/constants/common'
+import {
+  ACCOUNT_MANAGE_PERMISSIONS,
+  ALL_PERMISSION_CODES,
+  PERMISSION_SUMMARY_GROUPS,
+  PERMISSION_TREE,
+  collectCodes,
+  type PermissionNode,
+} from '@/constants/permissions'
 import { ApiError, authApi, securityApi } from '@/api'
 import type { AppRoleDto, AppUserSummaryDto } from '@/api'
+import PermissionTree from '@/components/PermissionTree.vue'
 import {
   Badge,
   Button,
@@ -34,8 +43,21 @@ const BODY = 'px-6 pb-5'
 const { t } = useI18n()
 const userStore = useUserStore()
 
-const isAdmin = computed(() => userStore.roles.includes('ADMIN'))
+const canManageUsers = computed(
+  () => userStore.roles.includes('ADMIN')
+    || userStore.hasAnyPermission(ACCOUNT_MANAGE_PERMISSIONS),
+)
 const hospitalId = computed(() => localStorage.getItem(STORAGE_KEYS.HOSPITAL) || '')
+
+/** 角色卡只展示分组计数，完整清单在权限树里查看。 */
+function rolePermissionSummary(role: AppRoleDto) {
+  return PERMISSION_SUMMARY_GROUPS
+    .map(group => {
+      const count = group.codes.filter(code => role.permissions.includes(code)).length
+      return { ...group, count, total: group.codes.length }
+    })
+    .filter(group => group.count > 0)
+}
 
 function fmt(value?: string | null) {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : ''
@@ -112,7 +134,7 @@ const roleNameByCode = computed(() => {
 })
 
 async function loadDirectory() {
-  if (!isAdmin.value || directoryLoading.value) return
+  if (!canManageUsers.value || directoryLoading.value) return
   directoryLoading.value = true
   try {
     const [userList, roleList] = await Promise.all([
@@ -245,6 +267,67 @@ async function handleCreateRole() {
   }
 }
 
+/* 配置角色权限 */
+const permDialogOpen = ref(false)
+const permSaving = ref(false)
+const permRole = ref<AppRoleDto | null>(null)
+const permSelected = ref<string[]>([])
+
+const permIsAdmin = computed(() => permRole.value?.code.toUpperCase() === 'ADMIN')
+
+function openPermissionDialog(role: AppRoleDto) {
+  permRole.value = role
+  permSelected.value = [...role.permissions]
+  permDialogOpen.value = true
+}
+
+const permSelectedCount = computed(
+  () => ALL_PERMISSION_CODES.filter(code => permSelected.value.includes(code)).length,
+)
+
+function handlePermissionToggle(payload: {
+  node: PermissionNode
+  checked: boolean
+  ancestors: string[]
+}) {
+  const codes = collectCodes(payload.node)
+  if (payload.checked) {
+    // 选中按钮时一并带上祖先功能码：没有页面入口的按钮权限不可用。
+    const next = new Set(permSelected.value)
+    for (const code of [...payload.ancestors, ...codes]) next.add(code)
+    permSelected.value = [...next]
+    return
+  }
+  const removed = new Set(codes)
+  permSelected.value = permSelected.value.filter(code => !removed.has(code))
+}
+
+function selectAllPermissions() {
+  permSelected.value = [...ALL_PERMISSION_CODES]
+}
+
+function clearPermissions() {
+  permSelected.value = []
+}
+
+async function handleSavePermissions() {
+  if (permSaving.value || !permRole.value || permIsAdmin.value) return
+  permSaving.value = true
+  const role = permRole.value
+  try {
+    await securityApi.updateRolePermissions(role.id, permSelected.value)
+    permDialogOpen.value = false
+    toast.success(t('account.permissionsSaved', { role: role.name }))
+    await loadDirectory()
+  }
+  catch (err) {
+    toast.error(err instanceof ApiError ? err.message : t('common.error'))
+  }
+  finally {
+    permSaving.value = false
+  }
+}
+
 onMounted(async () => {
   await Promise.all([loadProfile(), loadDirectory()])
 })
@@ -304,8 +387,8 @@ onMounted(async () => {
       </div>
     </Card>
 
-    <!-- 无 ADMIN 角色：只读自己的账户 -->
-    <Card v-if="!isAdmin" :class="SHELL">
+    <!-- 无用户管理权限：只读自己的账户 -->
+    <Card v-if="!canManageUsers" :class="SHELL">
       <div :class="HEAD">
         <ShieldCheck class="size-4 text-muted-foreground" />
         <h2 class="text-sm font-semibold">{{ t('account.users') }}</h2>
@@ -442,12 +525,51 @@ onMounted(async () => {
           </p>
           <div v-else class="divide-y divide-border/60">
             <div v-for="role in roles" :key="role.id" class="py-2.5">
-              <div class="flex items-center gap-2">
+              <div class="flex flex-wrap items-center gap-2">
                 <span class="truncate text-sm font-medium">{{ role.name }}</span>
                 <code class="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px]">{{ role.code }}</code>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  class="ml-auto h-6 shrink-0 gap-1 px-1.5 text-[11px]"
+                  @click="openPermissionDialog(role)"
+                >
+                  <ShieldCheck class="size-3" />
+                  {{ role.code.toUpperCase() === 'ADMIN'
+                    ? t('account.allPermissions')
+                    : t('account.configurePermissions') }}
+                </Button>
               </div>
               <p v-if="role.description" class="mt-1 truncate text-xs text-muted-foreground">
                 {{ role.description }}
+              </p>
+              <div
+                v-if="role.code.toUpperCase() === 'ADMIN'"
+                class="mt-1.5 flex flex-wrap gap-1"
+              >
+                <Badge variant="secondary" class="px-1.5 py-0 text-[11px]">
+                  {{ t('account.allPermissions') }}
+                </Badge>
+              </div>
+              <div
+                v-else-if="role.permissions.length"
+                class="mt-1.5 flex flex-wrap gap-1"
+              >
+                <Badge
+                  v-for="group in rolePermissionSummary(role)"
+                  :key="group.key"
+                  variant="secondary"
+                  class="px-1.5 py-0 text-[11px]"
+                >
+                  {{ t('account.roleSummaryItem', {
+                    label: t(group.labelKey),
+                    count: group.count,
+                    total: group.total,
+                  }) }}
+                </Badge>
+              </div>
+              <p v-else class="mt-1.5 text-[11px] text-muted-foreground">
+                {{ t('account.noPermissions') }}
               </p>
             </div>
           </div>
@@ -520,6 +642,81 @@ onMounted(async () => {
             </Button>
           </DialogFooter>
         </form>
+      </DialogContent>
+    </Dialog>
+
+    <!-- 配置角色权限 -->
+    <Dialog v-model:open="permDialogOpen">
+      <DialogContent class="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle class="flex items-center gap-2">
+            <ShieldCheck class="size-5 text-primary" />
+            {{ t('account.configurePermissions') }} · {{ permRole?.name }}
+          </DialogTitle>
+          <DialogDescription>{{ t('account.permissionsHint') }}</DialogDescription>
+        </DialogHeader>
+        <div class="max-h-[65vh] space-y-3 overflow-y-auto pr-1">
+          <div
+            v-if="permIsAdmin"
+            class="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700"
+          >
+            {{ t('account.adminPermissionsFixed') }}
+          </div>
+          <div
+            v-else
+            class="flex flex-wrap items-center justify-between gap-2 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground"
+          >
+            <span>
+              {{ t('account.permissionSelection', {
+                count: permSelectedCount,
+                total: ALL_PERMISSION_CODES.length,
+              }) }}
+            </span>
+            <span class="flex items-center gap-3">
+              <button
+                type="button"
+                class="cursor-pointer text-primary hover:underline"
+                @click="selectAllPermissions"
+              >
+                {{ t('account.selectAll') }}
+              </button>
+              <button
+                type="button"
+                class="cursor-pointer hover:underline"
+                @click="clearPermissions"
+              >
+                {{ t('account.clearAll') }}
+              </button>
+            </span>
+          </div>
+          <p class="text-[11px] leading-4 text-muted-foreground">
+            {{ t('account.permissionTreeHint') }}
+          </p>
+          <section
+            v-for="menu in PERMISSION_TREE"
+            :key="menu.key"
+            class="rounded-lg border border-border/60 p-1"
+            :class="{ 'opacity-70': permIsAdmin }"
+          >
+            <PermissionTree
+              :node="menu"
+              :selected="permSelected"
+              :disabled="permIsAdmin"
+              @toggle="handlePermissionToggle"
+            />
+          </section>
+        </div>
+        <DialogFooter>
+          <DialogClose as-child>
+            <Button type="button" variant="outline" :disabled="permSaving">
+              {{ t('common.cancel') }}
+            </Button>
+          </DialogClose>
+          <Button type="button" :disabled="permSaving || permIsAdmin" @click="handleSavePermissions">
+            <Loader2 v-if="permSaving" class="mr-1.5 size-4 animate-spin" />
+            {{ t('common.save') }}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
 

@@ -11,7 +11,43 @@ export default {
     totalTasks: 'Total Tasks',
     pendingReview: 'Pending Review',
     accepted: 'Completed',
+    processing: 'Processing',
+    abnormal: 'Abnormal',
     systemHealth: 'System Health',
+  },
+
+  // Charts
+  charts: {
+    statusTitle: 'Task Status',
+    trendTitle: 'Tasks in Last 7 Days',
+    trendFallbackTitle: 'Last Active 7 Days',
+    trendHint: 'No new tasks in the last 7 days; showing the latest active week',
+    weekTotal: '7-day total',
+    prevWeek: 'Previous 7 days',
+    healthyDeps: '{ok}/{total} dependencies healthy',
+    pendingRate: '{rate}% pending',
+    completionRate: '{rate}% completed',
+    recommendationTotal: '{count} recommendations',
+    pendingRecs: 'Pending recommendations',
+    avgRecs: 'Avg per task',
+    distTitle: 'Recommendations per Task',
+    distTotal: '{count} tasks',
+    noTasks: 'No task data',
+  },
+
+  // Knowledge base overview
+  knowledge: {
+    title: 'Knowledge Base',
+    subtitle: '{count} code systems',
+    icd: 'ICD-10 diagnosis index',
+    cm3: 'ICD-9-CM3 procedure index',
+    tumor: 'Tumor site index',
+    synonyms: 'Term synonyms',
+    rules: 'Coding rules',
+    medicalCodes: 'Medical codes',
+    validLead: '{count} valid lead words',
+    open: 'Open knowledge base',
+    empty: 'No knowledge data',
   },
 
   // Metric descriptions
@@ -79,8 +115,11 @@ export default {
 
   // Days
   mon: 'Mon',
+  tue: 'Tue',
   wed: 'Wed',
+  thu: 'Thu',
   fri: 'Fri',
+  sat: 'Sat',
   sun: 'Sun',
 
   // View details

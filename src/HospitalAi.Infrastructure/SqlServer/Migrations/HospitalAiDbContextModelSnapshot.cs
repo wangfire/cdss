@@ -22,6 +22,52 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.AppRolePermissionRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AppRoleId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("app_role_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("HospitalId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("hospital_id");
+
+                    b.Property<string>("PermissionCode")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("permission_code");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion")
+                        .HasColumnName("row_version");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AppRoleId");
+
+                    b.HasIndex("HospitalId", "AppRoleId", "PermissionCode")
+                        .IsUnique()
+                        .HasDatabaseName("ux_app_role_permission_hospital_role_code");
+
+                    b.ToTable("app_role_permission", (string)null);
+                });
+
             modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.AppRoleRecord", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1070,14 +1116,14 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                     b.HasIndex("HospitalId", "PipelineVersion", "LifecycleStatus")
                         .HasDatabaseName("ix_coding_recommendation_hospital_pipeline_lifecycle");
 
-                    b.HasIndex("CodingTaskId", "HospitalId", "DiagnosisInputId", "RecommendationVersion")
-                        .HasDatabaseName("ix_coding_recommendation_task_input_version")
-                        .HasFilter("[diagnosis_input_id] IS NOT NULL AND [recommendation_version] IS NOT NULL");
-
                     b.HasIndex("CodingTaskId", "DiagnosisInputId", "RecommendationType", "Code")
                         .IsUnique()
                         .HasDatabaseName("ux_coding_recommendation_task_input_type_code")
                         .HasFilter("[recommendation_version] IS NULL");
+
+                    b.HasIndex("CodingTaskId", "HospitalId", "DiagnosisInputId", "RecommendationVersion")
+                        .HasDatabaseName("ix_coding_recommendation_task_input_version")
+                        .HasFilter("[diagnosis_input_id] IS NOT NULL AND [recommendation_version] IS NOT NULL");
 
                     b.HasIndex("CodingTaskId", "DiagnosisInputId", "RecommendationType", "Code", "RecommendationVersion")
                         .IsUnique()
@@ -2572,6 +2618,10 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
 
             modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.TumorIndexRecord", b =>
                 {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
                     b.Property<string>("CodeBenign")
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)")
@@ -2606,10 +2656,6 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                         .HasMaxLength(300)
                         .HasColumnType("nvarchar(300)")
                         .HasColumnName("full_index_name");
-
-                    b.Property<Guid>("Id")
-                        .HasColumnType("uniqueidentifier")
-                        .HasColumnName("id");
 
                     b.Property<int>("IndexLevel")
                         .HasColumnType("int")
@@ -2710,6 +2756,25 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                     b.HasIndex("PatientId");
 
                     b.ToTable("visit", (string)null);
+                });
+
+            modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.AppRolePermissionRecord", b =>
+                {
+                    b.HasOne("HospitalAi.Infrastructure.SqlServer.AppRoleRecord", "AppRole")
+                        .WithMany()
+                        .HasForeignKey("AppRoleId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HospitalAi.Infrastructure.SqlServer.HospitalRecord", "Hospital")
+                        .WithMany()
+                        .HasForeignKey("HospitalId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("AppRole");
+
+                    b.Navigation("Hospital");
                 });
 
             modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.AppRoleRecord", b =>

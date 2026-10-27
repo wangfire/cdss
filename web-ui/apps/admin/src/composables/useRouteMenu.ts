@@ -63,12 +63,11 @@ export function useRouteMenu(): UseRouteMenuReturn {
 
   /**
    * 根据权限过滤后的菜单项
+   * 权限列表为空表示当前角色无任何权限，不再回退展示全部菜单；
+   * 未声明 permissions 的菜单（首页/账户等）仍保持可见。
    */
   const menuItems = computed<MenuItem[]>(() => {
     const permissions = userStore.permissions ?? []
-    if (permissions.length === 0) {
-      return rawMenuItems.value
-    }
     return filterMenuByPermission(rawMenuItems.value, permissions)
   })
 

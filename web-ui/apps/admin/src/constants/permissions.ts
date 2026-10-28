@@ -198,6 +198,14 @@ export const CASE_ENTRY_PERMISSIONS = ['coding.caseEntry']
 /** 知识库路由：数据浏览或任一知识库按钮。 */
 export const KNOWLEDGE_PERMISSIONS = permissionCodesOf('menu-knowledge')
 
+/** 单个知识模块的操作码，用于按模块展示统计与按钮。 */
+export const KNOWLEDGE_CODESYSTEM_PERMISSIONS = ['knowledge.codesystem.import']
+export const KNOWLEDGE_RULES_PERMISSIONS = ['knowledge.rules.import']
+export const KNOWLEDGE_ICD_PERMISSIONS = permissionCodesOf('knowledge-icd')
+export const KNOWLEDGE_CM3_PERMISSIONS = permissionCodesOf('knowledge-cm3')
+export const KNOWLEDGE_TUMOR_PERMISSIONS = permissionCodesOf('knowledge-tumor')
+export const KNOWLEDGE_SYNONYM_PERMISSIONS = permissionCodesOf('knowledge-synonym')
+
 /** 用户与角色管理：功能权限或任一账户按钮。 */
 export const ACCOUNT_MANAGE_PERMISSIONS = permissionCodesOf('menu-account')
 

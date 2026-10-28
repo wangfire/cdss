@@ -23,7 +23,13 @@ import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import {
   CASE_ENTRY_PERMISSIONS,
+  KNOWLEDGE_CM3_PERMISSIONS,
+  KNOWLEDGE_CODESYSTEM_PERMISSIONS,
+  KNOWLEDGE_ICD_PERMISSIONS,
   KNOWLEDGE_PERMISSIONS,
+  KNOWLEDGE_RULES_PERMISSIONS,
+  KNOWLEDGE_SYNONYM_PERMISSIONS,
+  KNOWLEDGE_TUMOR_PERMISSIONS,
   WORKBENCH_PERMISSIONS,
 } from '@/constants/permissions'
 import { ApiError, authApi, healthApi, knowledgeApi, workbenchApi } from '@/api'
@@ -341,8 +347,30 @@ const recDistribution = computed(() =>
 const recDistMax = computed(() => Math.max(1, ...recDistribution.value.map(bucket => bucket.count)))
 
 /* ============== 知识库概况 ============== */
-const canReadKnowledge = computed(() =>
-  userStore.hasAnyPermission(['coding.read', ...KNOWLEDGE_PERMISSIONS]),
+/** 没有任何知识库权限时不展示整个区域。 */
+const canReadKnowledge = computed(() => userStore.hasAnyPermission(KNOWLEDGE_PERMISSIONS))
+/** 数据浏览与知识库维护都允许查看统计；单一模块操作码只展开对应模块。 */
+const canBrowseKnowledge = computed(() =>
+  userStore.hasAnyPermission(['knowledge.read', 'knowledge.write']),
+)
+const canReadCodeSystems = computed(() =>
+  canBrowseKnowledge.value
+  || userStore.hasAnyPermission(KNOWLEDGE_CODESYSTEM_PERMISSIONS),
+)
+const canReadIcd = computed(() =>
+  canBrowseKnowledge.value || userStore.hasAnyPermission(KNOWLEDGE_ICD_PERMISSIONS),
+)
+const canReadCm3 = computed(() =>
+  canBrowseKnowledge.value || userStore.hasAnyPermission(KNOWLEDGE_CM3_PERMISSIONS),
+)
+const canReadTumor = computed(() =>
+  canBrowseKnowledge.value || userStore.hasAnyPermission(KNOWLEDGE_TUMOR_PERMISSIONS),
+)
+const canReadSynonyms = computed(() =>
+  canBrowseKnowledge.value || userStore.hasAnyPermission(KNOWLEDGE_SYNONYM_PERMISSIONS),
+)
+const canReadRules = computed(() =>
+  canBrowseKnowledge.value || userStore.hasAnyPermission(KNOWLEDGE_RULES_PERMISSIONS),
 )
 const knowledgeLoading = ref(false)
 const knowledgeSystems = ref<string[]>([])
@@ -364,27 +392,35 @@ async function loadKnowledgeStats() {
   try {
     const [systems, medical, icd, icdValid, cm3, cm3Valid, tumor, synonyms, rules] =
       await Promise.all([
-        knowledgeApi.getCodeSystems(),
-        knowledgeApi.getMedicalCodes({ page: 1, pageSize: 1 }),
-        knowledgeApi.getIcdIndex({ page: 1, pageSize: 1 }),
-        knowledgeApi.getIcdIndex({ page: 1, pageSize: 1, leadWordStatus: 0 }),
-        knowledgeApi.getCm3Index({ page: 1, pageSize: 1 }),
-        knowledgeApi.getCm3Index({ page: 1, pageSize: 1, leadWordStatus: 0 }),
-        knowledgeApi.getTumorIndex({ page: 1, pageSize: 1 }),
-        knowledgeApi.getTermSynonymRows({ page: 1, pageSize: 1 }),
-        knowledgeApi.getCodingRules({ page: 1, pageSize: 1 }),
+        canReadCodeSystems.value ? knowledgeApi.getCodeSystems() : Promise.resolve(null),
+        canReadCodeSystems.value
+          ? knowledgeApi.getMedicalCodes({ page: 1, pageSize: 1 })
+          : Promise.resolve(null),
+        canReadIcd.value ? knowledgeApi.getIcdIndex({ page: 1, pageSize: 1 }) : Promise.resolve(null),
+        canReadIcd.value
+          ? knowledgeApi.getIcdIndex({ page: 1, pageSize: 1, leadWordStatus: 0 })
+          : Promise.resolve(null),
+        canReadCm3.value ? knowledgeApi.getCm3Index({ page: 1, pageSize: 1 }) : Promise.resolve(null),
+        canReadCm3.value
+          ? knowledgeApi.getCm3Index({ page: 1, pageSize: 1, leadWordStatus: 0 })
+          : Promise.resolve(null),
+        canReadTumor.value ? knowledgeApi.getTumorIndex({ page: 1, pageSize: 1 }) : Promise.resolve(null),
+        canReadSynonyms.value ? knowledgeApi.getTermSynonymRows({ page: 1, pageSize: 1 }) : Promise.resolve(null),
+        canReadRules.value ? knowledgeApi.getCodingRules({ page: 1, pageSize: 1 }) : Promise.resolve(null),
       ])
-    knowledgeSystems.value = Array.from(new Set(systems.map(item => `${item.code}@${item.version}`)))
+    knowledgeSystems.value = systems
+      ? Array.from(new Set(systems.map(item => `${item.code}@${item.version}`)))
+      : []
     knowledgeCounts.value = {
-      codeSystems: new Set(systems.map(item => item.code)).size,
-      medicalCodes: medical.total,
-      icd: icd.total,
-      icdValid: icdValid.total,
-      cm3: cm3.total,
-      cm3Valid: cm3Valid.total,
-      tumor: tumor.total,
-      synonyms: synonyms.total,
-      rules: rules.total,
+      codeSystems: systems ? new Set(systems.map(item => item.code)).size : 0,
+      medicalCodes: medical?.total ?? 0,
+      icd: icd?.total ?? 0,
+      icdValid: icdValid?.total ?? 0,
+      cm3: cm3?.total ?? 0,
+      cm3Valid: cm3Valid?.total ?? 0,
+      tumor: tumor?.total ?? 0,
+      synonyms: synonyms?.total ?? 0,
+      rules: rules?.total ?? 0,
     }
   }
   catch {
@@ -399,13 +435,13 @@ const knowledgeStats = computed(() => {
   const counts = knowledgeCounts.value
   if (!counts) return []
   const items = [
-    { key: 'icd', label: t('dashboard.knowledge.icd'), count: counts.icd, hint: t('dashboard.knowledge.validLead', { count: counts.icdValid }), color: 'bg-violet-500' },
-    { key: 'cm3', label: t('dashboard.knowledge.cm3'), count: counts.cm3, hint: t('dashboard.knowledge.validLead', { count: counts.cm3Valid }), color: 'bg-blue-500' },
-    { key: 'tumor', label: t('dashboard.knowledge.tumor'), count: counts.tumor, hint: '', color: 'bg-rose-500' },
-    { key: 'synonyms', label: t('dashboard.knowledge.synonyms'), count: counts.synonyms, hint: '', color: 'bg-emerald-500' },
-    { key: 'rules', label: t('dashboard.knowledge.rules'), count: counts.rules, hint: '', color: 'bg-amber-500' },
-    { key: 'medicalCodes', label: t('dashboard.knowledge.medicalCodes'), count: counts.medicalCodes, hint: '', color: 'bg-sky-500' },
-  ]
+    { key: 'icd', visible: canReadIcd.value, label: t('dashboard.knowledge.icd'), count: counts.icd, hint: t('dashboard.knowledge.validLead', { count: counts.icdValid }), color: 'bg-violet-500' },
+    { key: 'cm3', visible: canReadCm3.value, label: t('dashboard.knowledge.cm3'), count: counts.cm3, hint: t('dashboard.knowledge.validLead', { count: counts.cm3Valid }), color: 'bg-blue-500' },
+    { key: 'tumor', visible: canReadTumor.value, label: t('dashboard.knowledge.tumor'), count: counts.tumor, hint: '', color: 'bg-rose-500' },
+    { key: 'synonyms', visible: canReadSynonyms.value, label: t('dashboard.knowledge.synonyms'), count: counts.synonyms, hint: '', color: 'bg-emerald-500' },
+    { key: 'rules', visible: canReadRules.value, label: t('dashboard.knowledge.rules'), count: counts.rules, hint: '', color: 'bg-amber-500' },
+    { key: 'medicalCodes', visible: canReadCodeSystems.value, label: t('dashboard.knowledge.medicalCodes'), count: counts.medicalCodes, hint: '', color: 'bg-sky-500' },
+  ].filter(item => item.visible)
   const max = Math.max(1, ...items.map(item => item.count))
   // 数量级差异大（千 vs 十万），用平方根压缩后仍能看出相对规模。
   return items.map(item => ({ ...item, width: Math.sqrt(item.count / max) * 100 }))
@@ -663,14 +699,14 @@ const quickActions = computed(() => [
 
     <!-- 主要内容 -->
     <div class="grid grid-cols-1 gap-6" :class="canReadCoding ? 'lg:grid-cols-3' : 'lg:grid-cols-1'">
-      <!-- 左侧：快捷操作 + 系统状态 -->
-      <div class="space-y-6">
-        <Card v-if="quickActions.length > 0" class="dash-rise border border-border/40" style="animation-delay: 40ms">
+      <!-- 左侧：快捷操作 + 系统状态（大屏下并入主网格，与右侧同行等高） -->
+      <div class="flex flex-col gap-6 lg:contents">
+        <Card v-if="quickActions.length > 0" class="dash-rise border border-border/40 lg:col-start-1 lg:row-start-1" style="animation-delay: 40ms">
           <CardHeader class="pb-3">
             <CardTitle class="text-base font-semibold">{{ t('dashboard.quickEntry') }}</CardTitle>
           </CardHeader>
-          <CardContent class="pt-0">
-            <div class="grid grid-cols-2 gap-3">
+          <CardContent class="flex-1 pt-0">
+            <div class="grid h-full grid-cols-2 gap-3">
               <Button
                 v-for="action in quickActions"
                 :key="action.id"
@@ -687,7 +723,7 @@ const quickActions = computed(() => [
           </CardContent>
         </Card>
 
-        <Card class="dash-rise bg-muted/40 border border-border/50 rounded-xl" style="animation-delay: 90ms">
+        <Card class="dash-rise bg-muted/40 border border-border/50 rounded-xl lg:col-start-1 lg:row-start-2" style="animation-delay: 90ms">
           <CardHeader class="pb-4">
             <div class="flex items-center justify-between">
               <CardTitle class="text-base">{{ t('dashboard.systemStatus') }}</CardTitle>
@@ -715,10 +751,10 @@ const quickActions = computed(() => [
       </div>
 
       <!-- 中间：图表 -->
-      <div v-if="canReadCoding" class="lg:col-span-2 space-y-6">
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div v-if="canReadCoding" class="flex flex-col gap-6 lg:contents">
+        <div class="grid grid-cols-1 gap-6 md:grid-cols-2 lg:contents">
           <!-- 任务状态分布：环形图 -->
-          <Card class="dash-rise bg-muted/40 border border-border/50 rounded-xl" style="animation-delay: 40ms">
+          <Card class="dash-rise bg-muted/40 border border-border/50 rounded-xl lg:col-start-2 lg:row-start-1" style="animation-delay: 40ms">
             <CardHeader class="pb-2">
               <CardTitle class="flex items-center gap-2 text-base">
                 <PieChart class="h-4 w-4 text-violet-500" />
@@ -774,7 +810,7 @@ const quickActions = computed(() => [
           </Card>
 
           <!-- 近 7 日任务量：柱状趋势 -->
-          <Card class="dash-rise bg-muted/40 border border-border/50 rounded-xl" style="animation-delay: 90ms">
+          <Card class="dash-rise bg-muted/40 border border-border/50 rounded-xl lg:col-start-3 lg:row-start-1" style="animation-delay: 90ms">
             <CardHeader class="pb-2">
               <div class="flex items-center justify-between gap-2">
                 <CardTitle class="flex items-center gap-2 text-base">
@@ -793,7 +829,7 @@ const quickActions = computed(() => [
               </div>
             </CardHeader>
             <CardContent class="pt-1">
-              <div class="flex h-[104px] items-end gap-1.5">
+              <div class="flex h-[132px] items-end gap-1.5 py-[5px]">
                 <div
                   v-for="(day, idx) in trendDays"
                   :key="day.label"
@@ -819,7 +855,7 @@ const quickActions = computed(() => [
           </Card>
 
           <!-- 每条任务推荐量分布 -->
-          <Card class="dash-rise bg-muted/40 border border-border/50 rounded-xl md:col-span-2" style="animation-delay: 140ms">
+          <Card class="dash-rise bg-muted/40 border border-border/50 rounded-xl md:col-span-2 lg:col-start-2 lg:col-span-2 lg:row-start-2" style="animation-delay: 140ms">
             <CardHeader class="pb-2">
               <div class="flex items-center justify-between gap-2">
                 <CardTitle class="flex items-center gap-2 text-base">
@@ -829,8 +865,8 @@ const quickActions = computed(() => [
                 <span class="text-[11px] text-muted-foreground">{{ t('dashboard.charts.distTotal', { count: tasks.length }) }}</span>
               </div>
             </CardHeader>
-            <CardContent class="pt-1">
-              <div class="flex h-[104px] items-end gap-3">
+            <CardContent class="flex-1 pt-1">
+              <div class="flex h-full min-h-[104px] items-end gap-3">
                 <div
                   v-for="(bucket, idx) in recDistribution"
                   :key="bucket.key"
@@ -863,7 +899,7 @@ const quickActions = computed(() => [
                 <Library class="h-4 w-4 text-violet-500" />
                 {{ t('dashboard.knowledge.title') }}
               </CardTitle>
-              <CardDescription class="mt-1 text-xs">
+              <CardDescription v-if="canReadCodeSystems" class="mt-1 text-xs">
                 {{ t('dashboard.knowledge.subtitle', { count: knowledgeCounts?.codeSystems ?? 0 }) }}
                 <span v-if="knowledgeSystems.length"> · {{ knowledgeSystems.join(' / ') }}</span>
               </CardDescription>

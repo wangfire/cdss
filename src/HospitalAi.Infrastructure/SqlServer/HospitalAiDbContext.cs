@@ -147,8 +147,8 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
         entity.Property(item => item.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
         entity.Property(item => item.PasswordHash).HasColumnName("password_hash").HasMaxLength(512).IsRequired();
         entity.Property(item => item.FailedLoginCount).HasColumnName("failed_login_count");
-        entity.Property(item => item.LockedUntil).HasColumnName("locked_until");
-        entity.Property(item => item.LockoutAt).HasColumnName("lockout_at");
+        entity.Property(item => item.LockedUntil).HasColumnName("locked_until").HasColumnType("datetimeoffset(7)");
+        entity.Property(item => item.LockoutAt).HasColumnName("lockout_at").HasColumnType("datetimeoffset(7)");
         entity.Property(item => item.LastLoginAt).HasColumnName("last_login_at");
         entity.HasIndex(item => item.LockedUntil)
             .HasDatabaseName("IX_app_user_locked_until");

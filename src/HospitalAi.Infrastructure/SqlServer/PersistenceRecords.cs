@@ -237,6 +237,21 @@ public sealed class AppUserRecord
     public string PasswordHash { get; set; } = string.Empty;
 
     /// <summary>
+    /// 连续登录失败次数（成功登录后清零）。达到 Security:Lockout 阈值即锁定。
+    /// </summary>
+    public int FailedLoginCount { get; set; }
+
+    /// <summary>
+    /// 锁定截止时间（UTC）；null 表示未锁定。
+    /// </summary>
+    public DateTimeOffset? LockedUntil { get; set; }
+
+    /// <summary>
+    /// 最近一次触发锁定的时间（UTC，审计用）。
+    /// </summary>
+    public DateTimeOffset? LockoutAt { get; set; }
+
+    /// <summary>
     /// 最后登录时间（UTC）。
     /// </summary>
     public DateTimeOffset? LastLoginAt { get; set; }

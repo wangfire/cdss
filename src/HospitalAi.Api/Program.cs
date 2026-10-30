@@ -24,9 +24,11 @@ using HospitalAi.Infrastructure.Tracing;
 using HospitalAi.Worker;
 using OpenTelemetry.Exporter.Prometheus;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Serilog;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 if (!builder.Environment.IsEnvironment("Testing"))
@@ -87,6 +89,44 @@ builder.Services.Configure<DependencyHealthOptions>(
     builder.Configuration.GetSection(DependencyHealthOptions.SectionName));
 builder.Services.AddScoped<ReadinessProbe>();
 builder.Services.AddHospitalAiAuthorization();
+// 登录限流（Security:RateLimit）：按客户端 IP 分区的固定窗口，防登录接口被刷（锁定为账号级兜底）。
+var loginRateLimit = builder.Configuration
+    .GetSection(LoginRateLimitOptions.SectionName)
+    .Get<LoginRateLimitOptions>() ?? new LoginRateLimitOptions();
+if (loginRateLimit.LoginPermitLimit > 0)
+{
+    builder.Services.AddRateLimiter(options =>
+    {
+        options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+        options.AddPolicy("login", httpContext =>
+            RateLimitPartition.GetFixedWindowLimiter(
+                // X-Forwarded-For 首段优先（反向代理部署下取真实客户端），
+                // 缺失时回退 Connection.RemoteIpAddress；医院内网 NAT 由锁定策略兜底。
+                GetClientKey(httpContext),
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = loginRateLimit.LoginPermitLimit,
+                    Window = TimeSpan.FromSeconds(Math.Max(loginRateLimit.LoginWindowSeconds, 1)),
+                    QueueLimit = 0
+                }));
+    });
+}
+
+static string GetClientKey(HttpContext httpContext)
+{
+    var forwarded = httpContext.Request.Headers["X-Forwarded-For"].ToString();
+    if (!string.IsNullOrWhiteSpace(forwarded))
+    {
+        var first = forwarded.Split(',')[0].Trim();
+        if (!string.IsNullOrEmpty(first))
+        {
+            return first;
+        }
+    }
+
+    return httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown-client";
+}
+
 // 接口文档（WP-B2-2）：Minimal API 元数据 + Swashbuckle UI；中间件仅在非生产环境挂载。
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -135,6 +175,11 @@ app.UseMiddleware<RequestContextMiddleware>();
 // 覆盖 WebApplication 默认的“先于用户中间件”自动注入顺序。
 app.UseAuthentication();
 app.UseAuthorization();
+// 登录限流中间件：仅在启用限流时注册（AddRateLimiter 未调用时 UseRateLimiter 会抛异常）。
+if (loginRateLimit.LoginPermitLimit > 0)
+{
+    app.UseRateLimiter();
+}
 app.UseMiddleware<RequestLoggingMiddleware>();
 // 接口文档（WP-B2-2）：/swagger 仅非生产环境暴露，生产关闭避免扩大攻击面。
 if (!builder.Environment.IsProduction())
@@ -164,7 +209,7 @@ app.MapPost(
     {
         var response = await authService.LoginAsync(request, cancellationToken);
         return Results.Ok(ApiEnvelope.Create(response));
-    });
+    }).RequireRateLimiting("login");
 
 app.MapGet(
     "/api/v1/auth/me",
@@ -1767,6 +1812,29 @@ app.MapPatch(
         await service.SetUserStatusAsync(userId, request.Status, cancellationToken);
         return Results.Ok(ApiEnvelope.Create(new { ok = true }));
     }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.UserStatus));
+
+// 解除登录锁定（防暴力破解运维动作）：清零失败计数并解除锁定，与停用/启用同级权限。
+app.MapPost(
+    "/api/v1/users/{userId:guid}/unlock",
+    async (
+        Guid userId,
+        ISecurityService service,
+        CancellationToken cancellationToken) =>
+    {
+        await service.UnlockUserAsync(userId, cancellationToken);
+        return Results.Ok(ApiEnvelope.Create(new { ok = true }));
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.UserStatus));
+
+// 内置角色模板（正式权限矩阵）：创建角色时一键套用的授权口径，只读、账户管理面可见。
+app.MapGet(
+    "/api/v1/security/role-templates",
+    async (
+        ISecurityService service,
+        CancellationToken cancellationToken) =>
+    {
+        var templates = await service.ListRoleTemplatesAsync(cancellationToken);
+        return Results.Ok(ApiEnvelope.Create(templates));
+    }).RequireAuthorization(RbacPolicies.UserAdmin);
 
 app.MapGet(
     "/api/v1/roles/{roleId:guid}/permissions",

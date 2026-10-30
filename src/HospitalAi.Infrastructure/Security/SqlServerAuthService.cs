@@ -4,6 +4,7 @@ using HospitalAi.Application.Security;
 using HospitalAi.Contracts.Security;
 using HospitalAi.Infrastructure.SqlServer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
@@ -16,16 +17,20 @@ namespace HospitalAi.Infrastructure.Security;
 /// 基于 SQL Server 的认证服务实现。
 /// 用户身份：app_user（含 PBKDF2 密码哈希）；角色：app_role。
 /// JWT：HS256 短期令牌，声明含 sub(userId) + hospitalId。
+/// 登录锁定：连续失败达到 Security:Lockout 阈值即临时锁定，成功登录清零（防暴力破解）。
 /// </summary>
 public sealed class SqlServerAuthService(
     HospitalAiDbContext dbContext,
     IRequestContext requestContext,
-    IJwtOptionsProvider jwtOptionsProvider) : IAuthService
+    IJwtOptionsProvider jwtOptionsProvider,
+    IOptions<LockoutOptions> lockoutOptions) : IAuthService
 {
     private const int Pbkdf2Iterations = 100_000;
     private const int SaltSize = 16;
     private const int HashSize = 32;
     private const string HashVersion = "v1";
+
+    private LockoutOptions Lockout => lockoutOptions.Value;
 
     public async Task<LoginResponse> LoginAsync(
         LoginRequest request,
@@ -45,8 +50,22 @@ public sealed class SqlServerAuthService(
             throw new ValidationException("用户名或密码错误。");
         }
 
+        // 登录锁定（先于密码校验）：被锁定的账号即使密码正确也拒绝，剩余时长对齐锁定截止时间。
+        if (user.LockedUntil is { } lockedUntil && lockedUntil > DateTimeOffset.UtcNow)
+        {
+            throw new AccountLockedException(
+                (int)Math.Ceiling((lockedUntil - DateTimeOffset.UtcNow).TotalMinutes));
+        }
+
         if (!VerifyPassword(user.PasswordHash, request.Password))
         {
+            var lockedNow = await RecordLoginFailureAsync(user, cancellationToken);
+            if (lockedNow)
+            {
+                // 达到阈值的那次失败直接返回 423，让用户立刻知道账号已锁定。
+                throw new AccountLockedException(Lockout.LockoutDurationMinutes);
+            }
+
             throw new ValidationException("用户名或密码错误。");
         }
 
@@ -58,13 +77,16 @@ public sealed class SqlServerAuthService(
         var roles = await GetRoleCodesAsync(user.Id, hospitalId, cancellationToken);
         var permissions = await GetPermissionCodesAsync(hospitalId, roles, cancellationToken);
 
-        // 更新最后登录时间（尽力而为，失败不影响登录成功）。
+        // 更新最后登录时间并清零失败计数（尽力而为，失败不影响登录成功）。
         try
         {
             var tracked = await dbContext.AppUsers.SingleAsync(
                 item => item.Id == user.Id, cancellationToken);
             tracked.LastLoginAt = DateTimeOffset.UtcNow;
             tracked.UpdatedAt = DateTimeOffset.UtcNow;
+            // 成功登录即重置锁定状态：清零失败计数并解除未过期的锁（正常登录路径）。
+            tracked.FailedLoginCount = 0;
+            tracked.LockedUntil = null;
             await dbContext.SaveChangesAsync(cancellationToken);
         }
         catch (Exception)
@@ -83,6 +105,45 @@ public sealed class SqlServerAuthService(
             ToUserDto(user, roles),
             roles,
             permissions);
+    }
+
+    /// <summary>
+    /// 记录一次登录失败：累加连续失败计数，达到阈值即触发临时锁定。
+    /// 返回本次失败是否刚好触发锁定；计数写入失败不改变登录结果（仍按密码错误返回）。
+    /// </summary>
+    private async Task<bool> RecordLoginFailureAsync(
+        AppUserRecord user,
+        CancellationToken cancellationToken)
+    {
+        if (Lockout.MaxFailedAccessAttempts <= 0)
+        {
+            // 锁定策略关闭：不计数、不锁定。
+            return false;
+        }
+
+        try
+        {
+            var tracked = await dbContext.AppUsers.SingleAsync(
+                item => item.Id == user.Id, cancellationToken);
+            tracked.FailedLoginCount += 1;
+            if (tracked.FailedLoginCount >= Lockout.MaxFailedAccessAttempts)
+            {
+                var nowUtc = DateTimeOffset.UtcNow;
+                tracked.LockedUntil = nowUtc.AddMinutes(Lockout.LockoutDurationMinutes);
+                tracked.LockoutAt = nowUtc;
+                tracked.UpdatedAt = nowUtc;
+                await dbContext.SaveChangesAsync(cancellationToken);
+                return true;
+            }
+
+            tracked.UpdatedAt = DateTimeOffset.UtcNow;
+            await dbContext.SaveChangesAsync(cancellationToken);
+            return false;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     public async Task<CurrentUserResponse> GetCurrentUserAsync(

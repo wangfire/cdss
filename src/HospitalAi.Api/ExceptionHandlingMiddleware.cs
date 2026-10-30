@@ -41,6 +41,17 @@ public sealed class ExceptionHandlingMiddleware(
                 exception.Message,
                 requestContext.TraceId);
         }
+        catch (AccountLockedException exception)
+        {
+            // 登录锁定：423 Locked + locked_error，data 携带剩余锁定分钟数供前端提示。
+            await WriteErrorAsync(
+                httpContext,
+                StatusCodes.Status423Locked,
+                "locked_error",
+                exception.Message,
+                requestContext.TraceId,
+                exception.RemainingLockoutMinutes);
+        }
         catch (DomainException exception)
         {
             await WriteErrorAsync(
@@ -70,7 +81,8 @@ public sealed class ExceptionHandlingMiddleware(
         int statusCode,
         string code,
         string message,
-        string traceId)
+        string traceId,
+        object? data = null)
     {
         if (httpContext.Response.HasStarted)
         {
@@ -79,7 +91,7 @@ public sealed class ExceptionHandlingMiddleware(
 
         httpContext.Response.StatusCode = statusCode;
         httpContext.Response.ContentType = "application/json; charset=utf-8";
-        var response = new ErrorResponse(code, message, traceId, null);
+        var response = new ErrorResponse(code, message, traceId, data);
         await httpContext.Response.WriteAsync(JsonSerializer.Serialize(response));
     }
 }

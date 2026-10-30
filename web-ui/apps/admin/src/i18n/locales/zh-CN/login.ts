@@ -26,6 +26,11 @@ export default {
   username: '用户名',
   demoUserDesc: '管理员 admin / admin123',
   forgotPasswordHint: '请联系系统管理员重置密码',
+  accountLockedCountdown: '登录失败次数过多，账号已临时锁定，{time} 后可重试',
+  lockedHint: '期间管理员可在「账户设置」中为您解锁；请核对密码后再试',
+  countdownMinutesSeconds: '{minutes} 分 {seconds} 秒',
+  countdownSeconds: '{seconds} 秒',
+  tooManyAttempts: '登录请求过于频繁，请稍后再试',
 
   // 底部链接
   copyright: '© 2026 TABTAB',

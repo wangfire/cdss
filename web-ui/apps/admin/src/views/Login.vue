@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useUserStore } from '@/stores/user'
@@ -29,8 +29,10 @@ import {
   Lock,
   Mail,
   Moon,
+  ShieldAlert,
   Sparkles,
   Sun,
+  Timer,
   Users,
   Zap,
 } from 'lucide-vue-next'
@@ -51,6 +53,47 @@ const isLoading = ref(false)
 const rememberMe = ref(true)
 const errorMessage = ref('')
 const forgotOpen = ref(false)
+
+/* 登录锁定倒计时：423 remainingLockoutMinutes → 秒级递减，归零后自动恢复可登录。
+   429 限流走单独文案（IP 级，无法本地倒数，只提示稍后再试）。 */
+const lockoutSeconds = ref(0)
+const isRateLimited = ref(false)
+let countdownTimer: ReturnType<typeof setInterval> | null = null
+
+const isLockedOut = computed(() => lockoutSeconds.value > 0)
+
+function startLockoutCountdown(minutes: number) {
+  stopLockoutCountdown()
+  // 向上取整到秒：后端给 1 分钟时，实际剩余可能只有几秒，避免显示"0 分钟"。
+  lockoutSeconds.value = Math.max(minutes, 1) * 60
+  countdownTimer = setInterval(() => {
+    lockoutSeconds.value -= 1
+    if (lockoutSeconds.value <= 0) {
+      stopLockoutCountdown()
+      errorMessage.value = ''
+    }
+  }, 1000)
+}
+
+function stopLockoutCountdown() {
+  if (countdownTimer) {
+    clearInterval(countdownTimer)
+    countdownTimer = null
+  }
+  lockoutSeconds.value = 0
+  isRateLimited.value = false
+}
+
+const lockoutCountdownText = computed(() => {
+  const total = lockoutSeconds.value
+  if (total <= 0) return ''
+  const minutes = Math.floor(total / 60)
+  const seconds = total % 60
+  if (minutes <= 0) return t('login.countdownSeconds', { seconds })
+  return t('login.countdownMinutesSeconds', { minutes, seconds: String(seconds).padStart(2, '0') })
+})
+
+onUnmounted(stopLockoutCountdown)
 
 const passwordType = computed(() => (showPassword.value ? 'text' : 'password'))
 
@@ -86,8 +129,16 @@ async function handleLogin() {
   errorMessage.value = ''
   isLoading.value = true
 
+  // 锁定/限流期间不允许再发登录请求（服务端也会拒绝，这里省一次往返）。
+  if (isLockedOut.value) {
+    errorMessage.value = t('login.accountLockedCountdown', { time: lockoutCountdownText.value })
+    isLoading.value = false
+    return
+  }
+
   try {
     await userStore.login(userName.value.trim(), password.value, hospitalId.value.trim())
+    stopLockoutCountdown()
     const redirect = (route.query.redirect as string) || ''
     if (redirect && redirect.startsWith('/')) {
       router.push(redirect)
@@ -98,9 +149,27 @@ async function handleLogin() {
   }
   catch (err) {
     if (err instanceof ApiError) {
-      errorMessage.value = err.message || t('login.loginFailed')
+      // 423 登录锁定：读后端携带的剩余锁定分钟数，进入秒级倒计时。
+      if (err.status === 423) {
+        const data = err.data as { data?: number | null } | null
+        const remaining = typeof data?.data === 'number' ? data.data : 1
+        isRateLimited.value = false
+        startLockoutCountdown(remaining)
+        errorMessage.value = t('login.accountLockedCountdown', {
+          time: lockoutCountdownText.value,
+        })
+      }
+      else if (err.status === 429) {
+        isRateLimited.value = true
+        errorMessage.value = t('login.tooManyAttempts')
+      }
+      else {
+        isRateLimited.value = false
+        errorMessage.value = err.message || t('login.loginFailed')
+      }
     }
     else {
+      isRateLimited.value = false
       errorMessage.value = t('login.loginFailed')
     }
   }
@@ -243,7 +312,28 @@ async function handleLogin() {
           leave-to-class="opacity-0 -translate-y-2"
         >
           <div
-            v-if="errorMessage"
+            v-if="isLockedOut"
+            class="p-3 text-sm text-orange-600 bg-orange-500/10 border border-orange-500/30"
+            :style="{ borderRadius: `calc(var(--radius))` }"
+          >
+            <div class="flex items-center gap-2">
+              <Timer class="w-4 h-4 flex-shrink-0" />
+              <span>{{ t('login.accountLockedCountdown', { time: lockoutCountdownText }) }}</span>
+            </div>
+            <p class="mt-1 pl-6 text-xs text-orange-600/80">
+              {{ t('login.lockedHint') }}
+            </p>
+          </div>
+          <div
+            v-else-if="isRateLimited"
+            class="flex items-center gap-2 p-3 text-sm text-orange-600 bg-orange-500/10 border border-orange-500/30"
+            :style="{ borderRadius: `calc(var(--radius))` }"
+          >
+            <ShieldAlert class="w-4 h-4 flex-shrink-0" />
+            {{ t('login.tooManyAttempts') }}
+          </div>
+          <div
+            v-else-if="errorMessage"
             class="flex items-center gap-2 p-3 text-sm text-destructive bg-destructive/10 border border-destructive/20"
             :style="{ borderRadius: `calc(var(--radius))` }"
           >
@@ -335,7 +425,7 @@ async function handleLogin() {
             type="submit"
             class="w-full h-11 font-medium text-base transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md animate-fade-in-up animation-delay-2"
             :style="{ borderRadius: `calc(var(--radius))` }"
-            :disabled="isLoading"
+            :disabled="isLoading || isLockedOut"
           >
             <span v-if="isLoading" class="flex items-center gap-2">
               <Loader2 class="animate-spin h-4 w-4" />

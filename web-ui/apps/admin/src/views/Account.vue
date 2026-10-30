@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Loader2, Plus, RefreshCw, ShieldCheck, UserPlus, X } from 'lucide-vue-next'
+import { Loader2, LockOpen, Plus, RefreshCw, ShieldCheck, UserPlus, X } from 'lucide-vue-next'
 import { useUserStore } from '@/stores/user'
 import { STORAGE_KEYS } from '@/constants/common'
 import {
@@ -13,7 +13,7 @@ import {
   type PermissionNode,
 } from '@/constants/permissions'
 import { ApiError, authApi, securityApi } from '@/api'
-import type { AppRoleDto, AppUserSummaryDto } from '@/api'
+import type { AppRoleDto, AppUserSummaryDto, RoleTemplateDto } from '@/api'
 import PermissionTree from '@/components/PermissionTree.vue'
 import {
   Badge,
@@ -201,6 +201,14 @@ function toggleStatus(user: AppUserSummaryDto) {
   ))
 }
 
+/** 解除登录锁定：清零失败计数并解锁（防暴力破解运维动作，与停用/启用同级权限）。 */
+function unlockUser(user: AppUserSummaryDto) {
+  return runAction(`unlock:${user.id}`, async () => {
+    await securityApi.unlockUser(user.id)
+    await loadDirectory()
+  }, () => toast.success(t('account.unlockedAt', { code: user.code })))
+}
+
 /* 新建用户 */
 const userDialogOpen = ref(false)
 const userSaving = ref(false)
@@ -240,9 +248,34 @@ const roleFormValid = computed(
   () => roleForm.value.code.trim().length > 0 && roleForm.value.name.trim().length > 0,
 )
 
+/* 内置角色模板（正式权限矩阵）：套用即按模板预填账号口径，创建后后端自动带模板权限。 */
+const roleTemplates = ref<RoleTemplateDto[]>([])
+const appliedTemplate = ref<RoleTemplateDto | null>(null)
+
+async function loadRoleTemplates() {
+  if (!canManageUsers.value || roleTemplates.value.length) return
+  try {
+    roleTemplates.value = await securityApi.listRoleTemplates()
+  }
+  catch {
+    // 模板列表加载失败不阻塞角色创建（仅少了快捷入口）。
+  }
+}
+
+function applyRoleTemplate(template: RoleTemplateDto) {
+  appliedTemplate.value = template
+  roleForm.value = {
+    code: template.code,
+    name: template.name,
+    description: template.description,
+  }
+}
+
 function openRoleDialog() {
   roleForm.value = { code: '', name: '', description: '' }
+  appliedTemplate.value = null
   roleDialogOpen.value = true
+  void loadRoleTemplates()
 }
 
 async function handleCreateRole() {
@@ -256,7 +289,11 @@ async function handleCreateRole() {
       description: roleForm.value.description.trim() || null,
     })
     roleDialogOpen.value = false
-    toast.success(t('account.roleCreated', { code }))
+    toast.success(
+      appliedTemplate.value
+        ? t('account.roleCreatedFromTemplate', { code, name: appliedTemplate.value.name })
+        : t('account.roleCreated', { code }),
+    )
     await loadDirectory()
   }
   catch (err) {
@@ -445,6 +482,14 @@ onMounted(async () => {
                 <p class="mt-0.5 truncate text-[11px] text-muted-foreground" :title="fmt(user.lastLoginAt) || undefined">
                   {{ fmt(user.lastLoginAt) || t('account.never') }}
                 </p>
+                <Badge
+                  v-if="user.lockout?.locked"
+                  variant="outline"
+                  class="mt-0.5 text-[11px] border-orange-500/30 bg-orange-500/10 text-orange-600"
+                  :title="t('account.lockedUntil', { time: fmt(user.lockout.lockedUntil) })"
+                >
+                  {{ t('account.locked') }}
+                </Badge>
               </div>
               <div class="flex min-w-[14rem] flex-1 flex-wrap items-center gap-1.5">
                 <span
@@ -491,16 +536,30 @@ onMounted(async () => {
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                class="shrink-0 gap-1 text-xs"
-                :disabled="!!pendingKey"
-                @click="toggleStatus(user)"
-              >
-                <Loader2 v-if="pendingKey === `status:${user.id}`" class="size-3 animate-spin" />
-                {{ user.status === 'ACTIVE' ? t('account.disable') : t('account.enable') }}
-              </Button>
+              <div class="flex shrink-0 flex-col items-end gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  class="gap-1 text-xs"
+                  :disabled="!!pendingKey"
+                  @click="toggleStatus(user)"
+                >
+                  <Loader2 v-if="pendingKey === `status:${user.id}`" class="size-3 animate-spin" />
+                  {{ user.status === 'ACTIVE' ? t('account.disable') : t('account.enable') }}
+                </Button>
+                <Button
+                  v-if="user.lockout?.locked"
+                  variant="ghost"
+                  size="sm"
+                  class="gap-1 text-xs text-orange-600"
+                  :disabled="!!pendingKey"
+                  @click="unlockUser(user)"
+                >
+                  <Loader2 v-if="pendingKey === `unlock:${user.id}`" class="size-3 animate-spin" />
+                  <LockOpen v-else class="size-3" />
+                  {{ t('account.unlock') }}
+                </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -620,6 +679,29 @@ onMounted(async () => {
           <DialogDescription>{{ t('account.rolesDesc') }}</DialogDescription>
         </DialogHeader>
         <form class="space-y-4" @submit.prevent="handleCreateRole">
+          <div
+            v-if="roleTemplates.length"
+            class="space-y-1.5"
+          >
+            <Label>{{ t('account.roleTemplate') }}</Label>
+            <div class="flex flex-wrap gap-1.5">
+              <button
+                v-for="template in roleTemplates"
+                :key="template.code"
+                type="button"
+                class="cursor-pointer rounded-md border px-2 py-1 text-[11px] transition-colors"
+                :class="appliedTemplate?.code === template.code
+                  ? 'border-primary bg-primary/10 text-primary'
+                  : 'border-border/60 text-muted-foreground hover:border-primary/40 hover:text-foreground'"
+                :title="template.description"
+                @click="applyRoleTemplate(template)"
+              >
+                {{ template.name }}
+                <span class="ml-1 text-[10px] opacity-70">{{ template.permissions.length }}</span>
+              </button>
+            </div>
+            <p class="text-[11px] text-muted-foreground">{{ t('account.roleTemplateHint') }}</p>
+          </div>
           <div class="space-y-2">
             <Label for="new-role-code">{{ t('account.roleCode') }}</Label>
             <Input id="new-role-code" v-model="roleForm.code" placeholder="ROLE_CODER" required />

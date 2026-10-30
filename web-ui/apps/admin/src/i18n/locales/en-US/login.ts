@@ -27,6 +27,11 @@ export default {
   username: 'User Name',
   demoUserDesc: 'Admin admin / admin123',
   forgotPasswordHint: 'Please contact your system administrator to reset your password',
+  accountLockedCountdown: 'Too many failed attempts. Account temporarily locked, retry in {time}',
+  lockedHint: 'An administrator can unlock you in Account Settings meanwhile; double-check your password',
+  countdownMinutesSeconds: '{minutes}m {seconds}s',
+  countdownSeconds: '{seconds}s',
+  tooManyAttempts: 'Too many login attempts, please try again later',
 
   // Footer links
   copyright: '© 2026 TABTAB',

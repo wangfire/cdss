@@ -54,7 +54,7 @@ export interface AppUserDto {
   createdAt: string
 }
 
-/** 后端 AppUserSummaryResponse：用户列表行，附带角色代码。 */
+/** 后端 AppUserSummaryResponse：用户列表行，附带角色代码与登录锁定状态。 */
 export interface AppUserSummaryDto {
   id: string
   code: string
@@ -63,6 +63,24 @@ export interface AppUserSummaryDto {
   createdAt: string
   lastLoginAt?: string | null
   roles: string[]
+  /** 登录锁定状态（防暴力破解）；后端旧版本缺省视为未锁定。 */
+  lockout?: UserLockoutDto | null
+}
+
+/** 登录锁定状态摘要：locked=false 时锁定时间为空。 */
+export interface UserLockoutDto {
+  locked: boolean
+  failedLoginCount: number
+  lockedUntil?: string | null
+  lockoutAt?: string | null
+}
+
+/** 内置角色模板（正式权限矩阵）：创建角色时可整体套用。 */
+export interface RoleTemplateDto {
+  code: string
+  name: string
+  description: string
+  permissions: string[]
 }
 
 export interface AppRoleDto {

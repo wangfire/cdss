@@ -1,4 +1,5 @@
 using HospitalAi.Application.Abstractions;
+using HospitalAi.Application.Security;
 using HospitalAi.Contracts.Security;
 
 namespace HospitalAi.Application.Security;
@@ -48,5 +49,14 @@ public interface ISecurityService
     Task SetRolePermissionsAsync(
         Guid roleId,
         IReadOnlyList<string> permissionCodes,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>解锁登录锁定的用户：清零失败计数并解除锁定（管理员防暴力破解运维动作）。</summary>
+    Task UnlockUserAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>内置角色模板（正式权限矩阵）：创建角色时可整体套用。</summary>
+    Task<IReadOnlyList<RoleTemplateResponse>> ListRoleTemplatesAsync(
         CancellationToken cancellationToken = default);
 }

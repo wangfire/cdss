@@ -86,7 +86,8 @@ public sealed class SqlServerSecurityService(
                     .Select(link => link.Code)
                     .Distinct()
                     .OrderBy(code => code, StringComparer.Ordinal)
-                    .ToList()))
+                    .ToList(),
+                ToLockoutDto(item)))
             .ToList();
     }
 
@@ -120,7 +121,28 @@ public sealed class SqlServerSecurityService(
         };
         dbContext.AppRoles.Add(role);
         await dbContext.SaveChangesAsync(cancellationToken);
-        return ToResponse(role, PermissionsFor(role, []));
+
+        // 套用内置模板：同码内置角色创建即带正式权限矩阵的授权口径（人工可再收敛）。
+        var template = RoleMatrix.Find(role.Code);
+        if (template is not null && !IsAdminRole(role.Code))
+        {
+            foreach (var permission in template.Permissions)
+            {
+                dbContext.AppRolePermissions.Add(new AppRolePermissionRecord
+                {
+                    Id = Guid.NewGuid(),
+                    HospitalId = requestContext.HospitalId,
+                    AppRoleId = role.Id,
+                    PermissionCode = permission,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                });
+            }
+
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        return ToResponse(role, PermissionsFor(role, template?.Permissions ?? []));
     }
 
     public async Task<IReadOnlyList<AppRoleResponse>> ListRolesAsync(
@@ -391,6 +413,69 @@ public sealed class SqlServerSecurityService(
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task UnlockUserAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureHospital();
+
+        var user = await dbContext.AppUsers
+            .SingleOrDefaultAsync(
+                item => item.Id == userId
+                    && item.HospitalId == requestContext.HospitalId,
+                cancellationToken);
+        if (user is null)
+        {
+            throw new ResourceNotFoundException("应用用户不存在。");
+        }
+
+        user.FailedLoginCount = 0;
+        user.LockedUntil = null;
+        user.UpdatedAt = DateTimeOffset.UtcNow;
+
+        // 审计留痕：解锁是绕过登录锁定的运维动作，必须记录操作者与被解锁账号（不记患者数据）。
+        var now = DateTimeOffset.UtcNow;
+        dbContext.AuditLogs.Add(new AuditLogRecord
+        {
+            Id = Guid.NewGuid(),
+            HospitalId = requestContext.HospitalId,
+            ResourceType = "app_user",
+            ResourceId = user.Id,
+            Action = "app_user.unlock",
+            Result = "SUCCESS",
+            RequestId = requestContext.RequestId,
+            ActorId = requestContext.UserId,
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public Task<IReadOnlyList<RoleTemplateResponse>> ListRoleTemplatesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        EnsureHospital();
+        IReadOnlyList<RoleTemplateResponse> templates = RoleMatrix.BuiltIn
+            .Select(template => new RoleTemplateResponse(
+                template.Code,
+                template.Name,
+                template.Description,
+                template.Permissions))
+            .ToList();
+        return Task.FromResult(templates);
+    }
+
+    private static UserLockoutDto ToLockoutDto(AppUserRecord user)
+    {
+        var locked = user.LockedUntil is { } lockedUntil && lockedUntil > DateTimeOffset.UtcNow;
+        return new UserLockoutDto(
+            locked,
+            user.FailedLoginCount,
+            locked ? user.LockedUntil : null,
+            user.LockoutAt);
     }
 
     private async Task<AppRoleRecord> FindRoleAsync(

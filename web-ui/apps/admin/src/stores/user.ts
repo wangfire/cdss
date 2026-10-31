@@ -22,10 +22,34 @@ export const useUserStore = defineStore('user', () => {
   /**
    * 生成默认头像 URL（基于用户名）
    */
+
+
+/**
+ * 本地内联 SVG 头像（WP-E 去外链）：按用户名 hash 取色 + 首字母，
+ * 无任何外部请求（内网部署第三方头像服务不可达会导致头像裂图）。
+ */
+const AVATAR_PALETTE = [
+  'b6e3f4', 'c0aede', 'd1d4f9', 'ffd5dc', 'ffdfbf',
+  'c1e4c1', 'f5d0c5', 'd4d4d4', 'e8d5f4', 'f9e2b8',
+]
+
+function generateLocalAvatar(name: string): string {
+  let hash = 0
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) >>> 0
+  }
+  const bg = AVATAR_PALETTE[hash % AVATAR_PALETTE.length]
+  const initial = name.trim().charAt(0).toUpperCase() || 'U'
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">`
+    + `<rect width="64" height="64" fill="#${bg}"/>`
+    + `<text x="32" y="42" font-family="system-ui,sans-serif" font-size="28" `
+    + `font-weight="600" fill="#333" text-anchor="middle">${initial}</text></svg>`
+  return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`
+}
   const defaultAvatar = computed(() => {
     if (user.value?.avatar) return user.value.avatar
     const name = user.value?.userName || user.value?.displayName || 'Admin'
-    return `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(name)}&backgroundColor=b6e3f4,c0aede,d1d4f9,ffd5dc,ffdfbf`
+    return generateLocalAvatar(name)
   })
 
   const displayName = computed(() => {

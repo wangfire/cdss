@@ -74,4 +74,5 @@ export default {
   statusAccepted: '已接受',
   statusModified: '已修改',
   statusRejected: '已拒绝',
+  searchPlaceholder: '按姓名、病案号查询...',
 }

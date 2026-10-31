@@ -75,24 +75,14 @@ const activeFilter = ref<CodingTaskStatus | ''>('')
 const tasks = ref<WorkbenchTaskResponse[]>([])
 const tasksLoading = ref(false)
 const taskSearch = ref('')
-const filteredTasks = computed(() => {
-  const q = taskSearch.value.trim().toLowerCase()
-  if (!q) return tasks.value
-  return tasks.value.filter(task =>
-    (task.patientName || '').toLowerCase().includes(q)
-    || (task.medicalRecordNo || '').toLowerCase().includes(q)
-    || task.taskId.toLowerCase().includes(q))
-})
+const totalCount = ref(0)
 
-/* ============== 任务列表分页 ============== */
+/* ============== 任务列表分页（WP-B 服务端分页） ============== */
 const pageSize = ref('10')
 const pageNum = ref(1)
 const sizeNum = computed(() => Number(pageSize.value))
-const totalPages = computed(() => Math.max(1, Math.ceil(filteredTasks.value.length / sizeNum.value)))
-const pagedTasks = computed(() => {
-  const start = (pageNum.value - 1) * sizeNum.value
-  return filteredTasks.value.slice(start, start + sizeNum.value)
-})
+const totalPages = computed(() => Math.max(1, Math.ceil(totalCount.value / sizeNum.value)))
+const pagedTasks = computed(() => tasks.value)
 const pageItems = computed<(number | '...')[]>(() => {
   const total = totalPages.value
   const cur = pageNum.value
@@ -106,9 +96,19 @@ const pageItems = computed<(number | '...')[]>(() => {
   items.push(total)
   return items
 })
-watch([taskSearch, pageSize], () => { pageNum.value = 1 })
-watch(filteredTasks, () => {
-  if (pageNum.value > totalPages.value) pageNum.value = totalPages.value
+
+// 搜索防抖 300ms：输入停止后触发服务端查询
+let searchDebounce: ReturnType<typeof setTimeout> | null = null
+watch(taskSearch, () => {
+  if (searchDebounce) clearTimeout(searchDebounce)
+  searchDebounce = setTimeout(() => {
+    pageNum.value = 1
+    void loadTasks()
+  }, 300)
+})
+watch([pageSize, activeFilter], () => {
+  pageNum.value = 1
+  void loadTasks()
 })
 
 /* ============== 任务详情 ============== */
@@ -225,8 +225,16 @@ function diagnosisTypeLabel(rec: CodingRecommendationResponse) {
 async function loadTasks() {
   tasksLoading.value = true
   try {
-    const status = activeFilter.value || undefined
-    tasks.value = await workbenchApi.listTasks(status as CodingTaskStatus | undefined)
+    const status = (activeFilter.value || undefined) as CodingTaskStatus | undefined
+    const keyword = taskSearch.value.trim() || undefined
+    const result = await workbenchApi.listTasksPage({
+      status,
+      keyword,
+      page: pageNum.value,
+      pageSize: sizeNum.value,
+    })
+    tasks.value = result.items
+    totalCount.value = result.total
   }
   catch (err) {
     toast.error(err instanceof ApiError ? err.message : t('common.error'))
@@ -568,7 +576,7 @@ const canSubmitReview = computed(
           <Search class="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             v-model="taskSearch"
-            placeholder="按姓名、病案号查询..."
+            :placeholder="t('workbench.searchPlaceholder')"
             class="h-8 pl-8 pr-8 text-xs"
           />
           <button
@@ -587,7 +595,7 @@ const canSubmitReview = computed(
               <div v-if="tasksLoading" class="flex items-center justify-center py-12">
                 <Loader2 class="h-6 w-6 animate-spin text-muted-foreground" />
               </div>
-              <div v-else-if="filteredTasks.length === 0" class="text-center py-12 text-muted-foreground">
+              <div v-else-if="tasks.length === 0" class="text-center py-12 text-muted-foreground">
                 <ClipboardList class="h-10 w-10 mx-auto mb-3 opacity-40" />
                 <p class="text-sm">{{ t('workbench.noTasks') }}</p>
                 <p class="text-xs mt-1">{{ t('workbench.noTasksDesc') }}</p>
@@ -633,7 +641,7 @@ const canSubmitReview = computed(
                   </SelectItem>
                 </SelectContent>
               </Select>
-              <span class="whitespace-nowrap">共 {{ filteredTasks.length }} 条</span>
+              <span class="whitespace-nowrap">共 {{ totalCount }} 条</span>
             </div>
             <div class="flex items-center shrink-0">
               <Button variant="ghost" size="icon" class="h-6 w-6 shrink-0" :disabled="pageNum <= 1" @click="pageNum--">

@@ -1,4 +1,4 @@
-using System.Text.Json.Serialization;
+﻿using System.Text.Json.Serialization;
 
 namespace HospitalAi.Contracts.CodingRecommendations;
 
@@ -80,3 +80,12 @@ public sealed record WorkbenchTaskResponse(
     [property: JsonPropertyName("medicalRecordNo")] string? MedicalRecordNo,
     [property: JsonPropertyName("admissionCount")] int AdmissionCount,
     [property: JsonPropertyName("dischargeAt")] DateTimeOffset? DischargeAt);
+
+/// <summary>
+/// 工作台任务服务端分页响应（WP-B 前端生产化）：前端不再全量拉取。
+/// </summary>
+public sealed record WorkbenchTasksPageResponse(
+    [property: JsonPropertyName("total")] int Total,
+    [property: JsonPropertyName("page")] int Page,
+    [property: JsonPropertyName("pageSize")] int PageSize,
+    [property: JsonPropertyName("items")] IReadOnlyList<WorkbenchTaskResponse> Items);

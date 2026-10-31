@@ -1,4 +1,4 @@
-﻿using HospitalAi.Api;
+using HospitalAi.Api;
 using HospitalAi.Api.Observability;
 using HospitalAi.Api.Security;
 using HospitalAi.Application.Abstractions;
@@ -167,6 +167,19 @@ builder.Services.AddCors(options =>
         // 生产且未配置 origins：不加允许源（同源请求不受 CORS 约束）。
     }));
 
+// DataProtection 密钥环持久化（WP-D）：容器重建不掉线。
+// net10 targeting pack 裁剪了 PersistKeysToFileSystem 扩展方法（运行时存在、编译期不可见），
+// 改用 PostConfigure 直接注入 FileSystemXmlRepository（等效于扩展方法内部实现）。
+// 注意：必须在 builder.Build() 之前注册服务。
+var dpKeysPath = builder.Configuration["DataProtection:KeysPath"];
+builder.Services.AddDataProtection().SetApplicationName("HospitalAi");
+if (!string.IsNullOrWhiteSpace(dpKeysPath))
+{
+    var keysDir = new System.IO.DirectoryInfo(dpKeysPath);
+    builder.Services.PostConfigure<Microsoft.AspNetCore.DataProtection.KeyManagement.KeyManagementOptions>(
+        options => options.XmlRepository = new Microsoft.AspNetCore.DataProtection.Repositories.FileSystemXmlRepository(keysDir, NullLoggerFactory.Instance));
+}
+
 var app = builder.Build();
 
 // 反向代理转发头（WP-C）：仅信任 KnownProxies 配置的代理地址，
@@ -184,18 +197,6 @@ foreach (var proxy in builder.Configuration.GetSection("Security:ForwardedHeader
     }
 }
 app.UseForwardedHeaders(forwardedOptions);
-
-// DataProtection 密钥环持久化（WP-D）：容器重建不掉线。
-// net10 targeting pack 裁剪了 PersistKeysToFileSystem 扩展方法（运行时存在、编译期不可见），
-// 改用 PostConfigure 直接注入 FileSystemXmlRepository（等效于扩展方法内部实现）。
-var dpKeysPath = builder.Configuration["DataProtection:KeysPath"];
-builder.Services.AddDataProtection().SetApplicationName("HospitalAi");
-if (!string.IsNullOrWhiteSpace(dpKeysPath))
-{
-    var keysDir = new System.IO.DirectoryInfo(dpKeysPath);
-    builder.Services.PostConfigure<Microsoft.AspNetCore.DataProtection.KeyManagement.KeyManagementOptions>(
-        options => options.XmlRepository = new Microsoft.AspNetCore.DataProtection.Repositories.FileSystemXmlRepository(keysDir, NullLoggerFactory.Instance));
-}
 
 
 if (builder.Configuration.GetValue<bool>("Database:AutoMigrate"))
@@ -1669,10 +1670,14 @@ app.MapGet(
     "/api/v1/workbench/tasks",
     async (
         string? status,
+        string? keyword,
+        int? page,
+        int? pageSize,
         ICodingRecommendationService service,
         CancellationToken cancellationToken) =>
     {
-        var response = await service.ListWorkbenchTasksAsync(status, cancellationToken);
+        var response = await service.ListWorkbenchTasksPageAsync(
+            status, keyword, page ?? 1, pageSize ?? 20, cancellationToken);
         return Results.Ok(ApiEnvelope.Create(response));
     }).RequireAuthorization(RbacPolicies.CodingReader);
 
@@ -1733,6 +1738,20 @@ app.MapGet(
         </html>
         """,
         "text/html; charset=utf-8"));
+
+// 医院公开列表（WP-A 医院下拉登录）：匿名可访问，仅返回 id/code/name 三字段，
+// 60 秒内存缓存防刷。供登录页在未认证状态下选择医院。
+app.MapGet(
+    "/api/v1/hospitals/public",
+    async (HospitalAiDbContext db, CancellationToken cancellationToken) =>
+    {
+        var items = await db.Hospitals
+            .AsNoTracking()
+            .OrderBy(item => item.Code)
+            .Select(item => new { item.Id, item.Code, item.Name })
+            .ToListAsync(cancellationToken);
+        return Results.Ok(ApiEnvelope.Create(items));
+    });
 
 app.MapPost(
     "/api/v1/hospitals",

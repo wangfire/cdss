@@ -23,6 +23,8 @@ export default {
   hospitalId: '医院 ID',
   hospitalIdPlaceholder: '请输入医院 GUID',
   hospitalIdInvalid: '医院 ID 必须是合法的 GUID',
+  hospitalSelectPlaceholder: '请选择医院',
+  hospitalManualInput: '手动输入医院 ID…',
   username: '用户名',
   demoUserDesc: '管理员 admin / admin123',
   forgotPasswordHint: '请联系系统管理员重置密码',

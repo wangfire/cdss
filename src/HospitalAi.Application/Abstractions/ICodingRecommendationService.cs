@@ -24,4 +24,12 @@ public interface ICodingRecommendationService
     Task<IReadOnlyList<WorkbenchTaskResponse>> ListWorkbenchTasksAsync(
         string? status,
         CancellationToken cancellationToken = default);
+
+    /// <summary>工作台任务服务端分页（WP-B 前端生产化）：keyword 过滤姓名/病案号。</summary>
+    Task<WorkbenchTasksPageResponse> ListWorkbenchTasksPageAsync(
+        string? status,
+        string? keyword,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken = default);
 }

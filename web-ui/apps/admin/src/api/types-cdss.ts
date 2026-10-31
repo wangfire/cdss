@@ -1,4 +1,4 @@
-﻿/**
+﻿﻿/**
  * CDSS 业务 API 类型定义（Phase 1 + Phase 2）
  */
 
@@ -35,6 +35,14 @@ export interface CodingTaskResponse {
 }
 
 /* ============== 工作台 ============== */
+
+/** 工作台任务服务端分页响应（WP-B 前端生产化）。 */
+export interface WorkbenchTasksPageResponse {
+  total: number
+  page: number
+  pageSize: number
+  items: WorkbenchTaskResponse[]
+}
 
 export interface WorkbenchTaskResponse {
   taskId: string

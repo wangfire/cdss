@@ -55,4 +55,11 @@ export default {
   admissionDateRequired: '请选择入院日期',
   dischargeRequired: '至少录入一条出院诊断',
   submitFailed: '录入失败',
+  notifTaskDoneTitle: '编码推荐完成',
+  notifTaskDoneMsg: '患者「{patient}」的编码推荐已完成，耗时 {seconds} 秒',
+  notifTaskView: '查看任务',
+  notifTaskFailTitle: '编码任务失败',
+  notifTaskFailMsg: '患者「{patient}」的编码任务执行失败，请重试或联系管理员',
+  notifTaskTimeoutTitle: '编码任务超时',
+  notifTaskTimeoutMsg: '患者「{patient}」的编码任务超时未完成，请稍后在任务列表查看',
 }

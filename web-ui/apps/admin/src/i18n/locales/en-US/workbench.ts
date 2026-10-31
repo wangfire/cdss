@@ -74,4 +74,5 @@ export default {
   statusAccepted: 'Accepted',
   statusModified: 'Modified',
   statusRejected: 'Rejected',
+  searchPlaceholder: 'Search by patient name or record no...',
 }

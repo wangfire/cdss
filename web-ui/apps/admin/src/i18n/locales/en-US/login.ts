@@ -24,6 +24,8 @@ export default {
   hospitalId: 'Hospital ID',
   hospitalIdPlaceholder: 'Enter hospital GUID',
   hospitalIdInvalid: 'Hospital ID must be a valid GUID',
+  hospitalSelectPlaceholder: 'Select a hospital',
+  hospitalManualInput: 'Enter hospital ID manually…',
   username: 'User Name',
   demoUserDesc: 'Admin admin / admin123',
   forgotPasswordHint: 'Please contact your system administrator to reset your password',

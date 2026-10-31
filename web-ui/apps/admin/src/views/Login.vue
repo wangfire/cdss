@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useUserStore } from '@/stores/user'
@@ -96,6 +96,46 @@ const lockoutCountdownText = computed(() => {
 onUnmounted(stopLockoutCountdown)
 
 const passwordType = computed(() => (showPassword.value ? 'text' : 'password'))
+
+/* 医院下拉（WP-A 前端生产化）：匿名公开端点拉取，失败时回退手动输入 GUID。 */
+interface HospitalOption {
+  id: string
+  code: string
+  name: string
+}
+const hospitalOptions = ref<HospitalOption[]>([])
+const hospitalsLoading = ref(false)
+const manualHospitalInput = ref(false)
+
+async function loadHospitalOptions() {
+  if (hospitalsLoading.value || hospitalOptions.value.length) return
+  hospitalsLoading.value = true
+  try {
+    const root = await fetch('/api/v1/hospitals/public').then(r => r.json())
+    hospitalOptions.value = (root?.data ?? []) as HospitalOption[]
+  }
+  catch {
+    hospitalOptions.value = []
+  }
+  finally {
+    hospitalsLoading.value = false
+    if (hospitalOptions.value.length === 0) manualHospitalInput.value = true
+  }
+}
+
+function onHospitalSelect(value: string) {
+  if (value === '__manual__') {
+    manualHospitalInput.value = true
+    hospitalId.value = ''
+  }
+  else {
+    hospitalId.value = value
+  }
+}
+
+void onMounted(async () => {
+  await loadHospitalOptions()
+})
 
 const features = computed(() => [
   { icon: BarChart3, text: t('login.features.realtimeAnalytics') },
@@ -363,7 +403,23 @@ async function handleLogin() {
 
           <div class="space-y-2">
             <Label for="hospitalId">{{ t('login.hospitalId') }}</Label>
+            <select
+              v-if="!manualHospitalInput && hospitalOptions.length"
+              id="hospitalId"
+              :value="hospitalId"
+              required
+              autocomplete="off"
+              class="flex h-11 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              @change="onHospitalSelect(($event.target as HTMLSelectElement).value)"
+            >
+              <option value="" disabled>{{ t('login.hospitalSelectPlaceholder') }}</option>
+              <option v-for="h in hospitalOptions" :key="h.id" :value="h.id">
+                {{ h.name }}（{{ h.code }}）
+              </option>
+              <option value="__manual__">{{ t('login.hospitalManualInput') }}</option>
+            </select>
             <Input
+              v-else
               id="hospitalId"
               v-model="hospitalId"
               type="text"

@@ -98,6 +98,7 @@ async function submit() {
       procedures: parseLines(form.procedures),
       additionalDocumentContent: form.additionalDocumentContent.trim() || null,
     })
+    const submitStartAt = Date.now()
     result.value = resp
     toast.success(t('caseEntry.acceptedTitle'))
     processing.value = true
@@ -105,10 +106,29 @@ async function submit() {
       const outcome = await waitForTaskCompletion(resp.codingTaskId)
       if (outcome === 'failed') {
         toast.error(t('caseEntry.taskFailed'))
+        notificationStore.addNotification({
+          title: t('caseEntry.notifTaskFailTitle'),
+          message: t('caseEntry.notifTaskFailMsg', { patient: form.patientName }),
+          type: 'error',
+        })
       } else if (outcome === 'timeout') {
         toast.error(t('caseEntry.taskTimeout'))
+        notificationStore.addNotification({
+          title: t('caseEntry.notifTaskTimeoutTitle'),
+          message: t('caseEntry.notifTaskTimeoutMsg', { patient: form.patientName }),
+          type: 'warning',
+        })
       } else {
         toast.success(t('caseEntry.successTitle'))
+        // WP-C：批量管道任务完成 → 本地会话通知（含耗时）
+        const elapsedSec = Math.round((Date.now() - submitStartAt) / 1000)
+        notificationStore.addNotification({
+          title: t('caseEntry.notifTaskDoneTitle'),
+          message: t('caseEntry.notifTaskDoneMsg', { patient: form.patientName, seconds: elapsedSec }),
+          type: 'success',
+          actionUrl: `/workbench?task=${resp.codingTaskId}`,
+          actionLabel: t('caseEntry.notifTaskView'),
+        })
       }
       loadingRecs.value = true
       try {

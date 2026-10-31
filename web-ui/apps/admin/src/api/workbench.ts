@@ -1,6 +1,7 @@
 import { http } from './http'
 import type {
   WorkbenchTaskResponse,
+  WorkbenchTasksPageResponse,
   CodingTaskResponse,
   CodingTaskRecommendationsResponse,
   ReviewCodingTaskRequest,
@@ -10,8 +11,10 @@ import type {
 } from './types-cdss'
 
 export const workbenchApi = {
-  listTasks: (status?: CodingTaskStatus) =>
-    http.get<WorkbenchTaskResponse[]>('/api/v1/workbench/tasks', status ? { status } : undefined),
+  /** 工作台任务服务端分页（WP-B 前端生产化）：keyword 数据库端过滤姓名/病案号。 */
+  listTasksPage: (
+    params?: { status?: CodingTaskStatus; keyword?: string; page?: number; pageSize?: number },
+  ) => http.get<WorkbenchTasksPageResponse>('/api/v1/workbench/tasks', params),
 
   getTask: (taskId: string) =>
     http.get<CodingTaskResponse>(`/api/v1/coding-tasks/${taskId}`),

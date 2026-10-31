@@ -55,4 +55,11 @@ export default {
   admissionDateRequired: 'Admission date is required',
   dischargeRequired: 'At least one discharge diagnosis is required',
   submitFailed: 'Submit failed',
+  notifTaskDoneTitle: 'Coding recommendation completed',
+  notifTaskDoneMsg: 'Coding recommendation for "{patient}" completed in {seconds}s',
+  notifTaskView: 'View task',
+  notifTaskFailTitle: 'Coding task failed',
+  notifTaskFailMsg: 'Coding task for "{patient}" failed, please retry or contact admin',
+  notifTaskTimeoutTitle: 'Coding task timed out',
+  notifTaskTimeoutMsg: 'Coding task for "{patient}" timed out, check the task list later',
 }

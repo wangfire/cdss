@@ -157,13 +157,13 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                         .HasColumnType("datetimeoffset")
                         .HasColumnName("last_login_at");
 
-                    b.Property<DateTimeOffset?>("LockoutAt")
-                        .HasColumnType("datetimeoffset(7)")
-                        .HasColumnName("lockout_at");
-
                     b.Property<DateTimeOffset?>("LockedUntil")
                         .HasColumnType("datetimeoffset(7)")
                         .HasColumnName("locked_until");
+
+                    b.Property<DateTimeOffset?>("LockoutAt")
+                        .HasColumnType("datetimeoffset(7)")
+                        .HasColumnName("lockout_at");
 
                     b.Property<string>("PasswordHash")
                         .IsRequired()
@@ -672,6 +672,10 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)")
                         .HasColumnName("index_name");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_enabled");
 
                     b.Property<int>("LeadWordStatus")
                         .HasColumnType("int")
@@ -1655,6 +1659,10 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)")
                         .HasColumnName("index_name");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_enabled");
 
                     b.Property<int>("LeadWordStatus")
                         .HasColumnType("int")
@@ -2689,6 +2697,10 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)")
                         .HasColumnName("index_name_en");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_enabled");
 
                     b.Property<int>("JumpKind")
                         .HasColumnType("int")

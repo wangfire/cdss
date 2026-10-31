@@ -18,8 +18,11 @@ export const STORAGE_KEYS = {
  * API 基础配置
  */
 export const API_CONFIG = {
-  /** 后端 API 基础地址（开发环境指向本地 ASP.NET Core） */
-  BASE_URL: 'http://localhost:5080',
+  /**
+   * 后端 API 基础地址：开发指向本地 ASP.NET Core（localhost:5080）；
+   * 生产走同源反代（vite 环境变量 VITE_API_BASE_URL=/api，由 nginx 反代到后端）。
+   */
+  BASE_URL: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:5080',
   /** 请求超时时间（毫秒） */
   TIMEOUT: 15_000,
 } as const

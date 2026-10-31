@@ -36,4 +36,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- 转发头中间件：反向代理场景可信 X-Forwarded-For/Proto（KnownProxies 配置化）。 -->
+  </ItemGroup>
+
 </Project>

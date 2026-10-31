@@ -1,0 +1,206 @@
+# =====================================================================
+# CDSS 生产部署编排（docker-compose.prod.yml）
+# 与 docker-compose.dev.yml 的区别：Production 环境、资源限制、重启策略、
+# ES/Redis 认证、日志轮转、独立数据卷、nginx 反代与 TLS。
+# 用法：见 deploy/deploy.ps1
+# =====================================================================
+
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2019-latest
+    container_name: hospitalai-prod-sqlserver
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: ${HOSPITAL_AI_SQL_PASSWORD:?请在 secrets.env 设置 HOSPITAL_AI_SQL_PASSWORD}
+    volumes:
+      - prod-sqlserver-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$${MSSQL_SA_PASSWORD}\" -Q 'SELECT 1' || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P \"$${MSSQL_SA_PASSWORD}\" -Q 'SELECT 1'"]
+      interval: 15s
+      timeout: 8s
+      retries: 20
+      start_period: 40s
+    networks:
+      - hospitalai-internal
+
+  redis:
+    image: redis:7-alpine
+    container_name: hospitalai-prod-redis
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${HOSPITAL_AI_REDIS_PASSWORD:?请在 secrets.env 设置 HOSPITAL_AI_REDIS_PASSWORD}"]
+    volumes:
+      - prod-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${HOSPITAL_AI_REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - hospitalai-internal
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: hospitalai-prod-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${HOSPITAL_AI_RABBITMQ_USER:?请在 secrets.env 设置 HOSPITAL_AI_RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${HOSPITAL_AI_RABBITMQ_PASSWORD:?请在 secrets.env 设置 HOSPITAL_AI_RABBITMQ_PASSWORD}
+    volumes:
+      - prod-rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 8s
+      retries: 12
+      start_period: 30s
+    networks:
+      - hospitalai-internal
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
+    container_name: hospitalai-prod-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=true
+      - xpack.ml.enabled=false
+      - ELASTIC_PASSWORD=${HOSPITAL_AI_ELASTIC_PASSWORD:?请在 secrets.env 设置 HOSPITAL_AI_ELASTIC_PASSWORD}
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    volumes:
+      - prod-elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -u elastic:$${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health | grep -q '\"status\":\"\\(green\\|yellow\\)\"'"]
+      interval: 20s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+    networks:
+      - hospitalai-internal
+
+  api:
+    build:
+      context: ..
+      dockerfile: src/HospitalAi.Api/Dockerfile
+    container_name: hospitalai-prod-api
+    restart: unless-stopped
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      Database__AutoMigrate: "true"
+      ConnectionStrings__HospitalAi: Server=sqlserver,1433;Database=HospitalAi;User Id=sa;Password=${HOSPITAL_AI_SQL_PASSWORD};TrustServerCertificate=True;Encrypt=False
+      JwtAuth__Key: ${HOSPITAL_AI_JWT_KEY:?请在 secrets.env 设置 HOSPITAL_AI_JWT_KEY}
+      JwtAuth__Issuer: hospitalai
+      JwtAuth__Audience: hospitalai-admin
+      RabbitMq__Enabled: "true"
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__Username: ${HOSPITAL_AI_RABBITMQ_USER}
+      RabbitMq__Password: ${HOSPITAL_AI_RABBITMQ_PASSWORD}
+      Elasticsearch__Enabled: "true"
+      Elasticsearch__Url: http://elasticsearch:9200
+      Elasticsearch__Username: elastic
+      Elasticsearch__Password: ${HOSPITAL_AI_ELASTIC_PASSWORD}
+      ModelGateway__ModelMode: ${HOSPITAL_AI_MODEL_MODE:-openai_compatible}
+      Security__RateLimit__LoginPermitLimit: ${HOSPITAL_AI_LOGIN_PERMIT_LIMIT:-60}
+      Security__RateLimit__LoginWindowSeconds: ${HOSPITAL_AI_LOGIN_WINDOW_SECONDS:-60}
+      Security__CorsOrigins__0: ${HOSPITAL_AI_CORS_ORIGINS:-}
+      DataProtection__KeysPath: /var/hospitalai/dpkeys
+    volumes:
+      - prod-dpkeys:/var/hospitalai/dpkeys
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/api/v1/health/ready || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - hospitalai-internal
+
+  worker:
+    build:
+      context: ..
+      dockerfile: src/HospitalAi.Worker/Dockerfile
+    container_name: hospitalai-prod-worker
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__HospitalAi: Server=sqlserver,1433;Database=HospitalAi;User Id=sa;Password=${HOSPITAL_AI_SQL_PASSWORD};TrustServerCertificate=True;Encrypt=False
+      RabbitMq__Enabled: "true"
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__Username: ${HOSPITAL_AI_RABBITMQ_USER}
+      RabbitMq__Password: ${HOSPITAL_AI_RABBITMQ_PASSWORD}
+      Elasticsearch__Enabled: "true"
+      Elasticsearch__Url: http://elasticsearch:9200
+      Elasticsearch__Username: elastic
+      Elasticsearch__Password: ${HOSPITAL_AI_ELASTIC_PASSWORD}
+      ModelGateway__ModelMode: ${HOSPITAL_AI_MODEL_MODE:-openai_compatible}
+    deploy:
+      resources:
+        limits:
+          memory: 1536m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - hospitalai-internal
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: hospitalai-prod-nginx
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/cdss.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./nginx/frontend-dist:/usr/share/nginx/html:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks:
+      - hospitalai-internal
+      - hospitalai-edge
+
+volumes:
+  prod-sqlserver-data:
+  prod-redis-data:
+  prod-rabbitmq-data:
+  prod-elasticsearch-data:
+  prod-dpkeys:
+
+networks:
+  hospitalai-internal:
+    internal: true
+  hospitalai-edge:

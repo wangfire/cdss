@@ -1,4 +1,4 @@
-using HospitalAi.Domain.CodingTasks;
+﻿﻿﻿﻿using HospitalAi.Domain.CodingTasks;
 
 namespace HospitalAi.Infrastructure.SqlServer;
 
@@ -918,6 +918,9 @@ public sealed class IcdIndexRecord
     /// <summary>Excel「主导词状态」列：0=有效，1=无效。</summary>
     public int LeadWordStatus { get; set; }
 
+    /// <summary>停用开关（WP-C 知识库治理）：1=启用，0=停用（快照与检索过滤停用行）。</summary>
+    public bool IsEnabled { get; set; } = true;
+
     public DateTimeOffset CreatedAt { get; set; }
 
     public DateTimeOffset UpdatedAt { get; set; }
@@ -963,6 +966,9 @@ public sealed class Cm3IndexRecord
     public DateTimeOffset CreatedAt { get; set; }
 
     public DateTimeOffset UpdatedAt { get; set; }
+
+    /// <summary>停用开关（WP-C 知识库治理）：1=启用，0=停用（快照与检索过滤停用行）。</summary>
+    public bool IsEnabled { get; set; } = true;
 
     public byte[] RowVersion { get; set; } = [];
 }
@@ -1016,6 +1022,9 @@ public sealed class TumorIndexRecord
     public DateTimeOffset CreatedAt { get; set; }
 
     public DateTimeOffset UpdatedAt { get; set; }
+
+    /// <summary>停用开关（WP-C 知识库治理）：1=启用，0=停用（快照与检索过滤停用行）。</summary>
+    public bool IsEnabled { get; set; } = true;
 
     public byte[] RowVersion { get; set; } = [];
 }

@@ -1,4 +1,4 @@
-using HospitalAi.Api;
+﻿﻿﻿using HospitalAi.Api;
 using HospitalAi.Api.Observability;
 using HospitalAi.Api.Security;
 using HospitalAi.Application.Abstractions;
@@ -489,6 +489,7 @@ app.MapGet(
                 item.ParentSeqNo,
                 item.FullIndexName,
                 item.LeadWordStatus,
+                item.IsEnabled,
             })
             .ToListAsync(cancellationToken);
 
@@ -529,6 +530,7 @@ app.MapGet(
                 item.ParentSeqNo,
                 item.FullIndexName,
                 item.LeadWordStatus,
+                item.IsEnabled,
             })
             .ToListAsync(cancellationToken);
 
@@ -552,6 +554,7 @@ app.MapGet(
             item.ParentSeqNo,
             item.FullIndexName,
             item.LeadWordStatus,
+            item.IsEnabled,
             hasChildren = parentSet.Contains(item.SeqNo),
         });
 
@@ -667,6 +670,61 @@ app.MapPut(
         await db.SaveChangesAsync(cancellationToken);
         indexSource.Invalidate();
         return Results.Ok(ApiEnvelope.Create(new { id = record.Id, seqNo = record.SeqNo }));
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeIcdUpdate));
+
+// 索引行停用/启用（WP-C 知识库治理）：错行停用而非删除，可回滚；停用动作写审计。
+app.MapPatch(
+    "/api/v1/knowledge/{kind}-index/{id:guid}/enabled",
+    async (
+        string kind,
+        Guid id,
+        UpdateIndexEnabledRequest request,
+        HospitalAiDbContext db,
+        IRequestContext requestContext,
+        CancellationToken cancellationToken) =>
+    {
+        Action invalidate = kind switch
+        {
+            "icd" => () => app.Services.GetRequiredService<HospitalAi.Application.Coding.IcdIndex.IIcdIndexSource>().Invalidate(),
+            "cm3" => () => app.Services.GetRequiredService<HospitalAi.Application.Coding.Cm3Index.ICm3IndexSource>().Invalidate(),
+            "tumor" => () => app.Services.GetRequiredService<HospitalAi.Application.Coding.IcdIndex.ITumorIndexSource>().Invalidate(),
+            _ => throw new ValidationException($"不支持的索引类型：{kind}（icd / cm3 / tumor）")
+        };
+
+        var record = kind switch
+        {
+            "icd" => (object?)await db.IcdIndexes.FirstOrDefaultAsync(item => item.Id == id, cancellationToken),
+            "cm3" => await db.Cm3Indexes.FirstOrDefaultAsync(item => item.Id == id, cancellationToken),
+            _ => await db.TumorIndexes.FirstOrDefaultAsync(item => item.Id == id, cancellationToken)
+        };
+        if (record is null)
+        {
+            return Results.NotFound(ApiEnvelope.Create(new { message = "索引行不存在或已被删除。" }));
+        }
+
+        record.GetType().GetProperty("IsEnabled")!.SetValue(record, request.Enabled);
+        record.GetType().GetProperty("UpdatedAt")!.SetValue(record, DateTimeOffset.UtcNow);
+        await db.SaveChangesAsync(cancellationToken);
+        invalidate();
+
+        // 审计留痕：停用/启用属于绕过默认行为的运维动作。
+        db.AuditLogs.Add(new AuditLogRecord
+        {
+            Id = Guid.NewGuid(),
+            HospitalId = requestContext.HospitalId == Guid.Empty
+                ? Guid.Parse("11111111-1111-1111-1111-111111111111")
+                : requestContext.HospitalId,
+            ResourceType = $"{kind}_index",
+            ResourceId = id,
+            Action = $"{kind}_index." + (request.Enabled ? "enable" : "disable"),
+            Result = "SUCCESS",
+            RequestId = requestContext.RequestId,
+            ActorId = requestContext.UserId,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.Ok(ApiEnvelope.Create(new { id, enabled = request.Enabled }));
     }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeIcdUpdate));
 
 // ICD 索引库单行删除：有子节点时拒绝（避免父链悬空，先删/迁子节点）。
@@ -799,6 +857,7 @@ app.MapGet(
                 item.ParentSeqNo,
                 item.FullIndexName,
                 item.LeadWordStatus,
+                item.IsEnabled,
             })
             .ToListAsync(cancellationToken);
 
@@ -839,6 +898,7 @@ app.MapGet(
                 item.ParentSeqNo,
                 item.FullIndexName,
                 item.LeadWordStatus,
+                item.IsEnabled,
             })
             .ToListAsync(cancellationToken);
 
@@ -862,6 +922,7 @@ app.MapGet(
             item.ParentSeqNo,
             item.FullIndexName,
             item.LeadWordStatus,
+            item.IsEnabled,
             hasChildren = parentSet.Contains(item.SeqNo),
         });
 

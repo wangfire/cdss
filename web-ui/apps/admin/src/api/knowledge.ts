@@ -97,4 +97,11 @@ export const knowledgeApi = {
 
   deleteTumorIndexEntry: (id: string) =>
     http.delete<{ deleted: boolean }>(`/api/v1/knowledge/tumor-index/${id}`),
+
+  /** 停用/启用索引行（WP-C 知识库治理）：错行停用而非删除，可回滚。 */
+  setIndexEnabled: (kind: 'icd' | 'cm3' | 'tumor', id: string, enabled: boolean) =>
+    http.patch<{ id: string; enabled: boolean }>(
+      `/api/v1/knowledge/${kind}-index/${id}/enabled`,
+      { enabled },
+    ),
 }

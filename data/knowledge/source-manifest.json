@@ -1,28 +1,292 @@
 {
-  "generatedAt": "2026-09-18T15:57:11.994644+08:00",
-  "sourceDirectory": "D:\\CDSS智能编码系统\\docs\\superpowers\\konwledge",
-  "files": [
+  "knowledgeVersion": "kb-2026-10-31.1",
+  "generatedAt": "2026-10-31T13:56:23.140429+08:00",
+  "sourceDirectory": "data/knowledge",
+  "sources": [
     {
-      "name": "疾病三库对照表.xlsx",
-      "size": 7129988
+      "file": "icd10-2026.json",
+      "role": "ICD-10 字典",
+      "codes": 36662
     },
     {
-      "name": "手术三库对照表.xlsx",
-      "size": 1975903
+      "file": "icd9cm3-2026.json",
+      "role": "ICD-9-CM-3 字典",
+      "codes": 14388
     },
     {
-      "name": "ICD10索引关键词编码提取结果(20260909).xlsx",
-      "size": 422837
+      "file": "coding-rules-2026.json",
+      "role": "编码规则+同义词",
+      "synonyms": 6134,
+      "rules": 2178
     },
     {
-      "name": "深圳医保规则.xlsx",
-      "size": 289532
+      "file": "tumor-index-seed.sql",
+      "role": "肿瘤索引部位表",
+      "rows": 1533
+    }
+  ],
+  "indexBatches": {
+    "base": [
+      {
+        "file": "batch-0001.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0002.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0003.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0004.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0005.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0006.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0007.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0008.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0009.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0010.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0011.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0012.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0013.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0014.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0015.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0016.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0017.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0018.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0019.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0020.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0021.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0022.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0023.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0024.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0025.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0026.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0027.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0028.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0029.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0030.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0031.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0032.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0033.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0034.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0035.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0036.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0037.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0038.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0039.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0040.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0041.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0042.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0043.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0044.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0045.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0046.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0047.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0048.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0049.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0050.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0051.json",
+        "rows": 1000
+      },
+      {
+        "file": "batch-0052.json",
+        "rows": 268
+      }
+    ],
+    "extra": [
+      {
+        "file": "icd-index-batches-extra/batch-9001.json",
+        "rows": 5000
+      },
+      {
+        "file": "icd-index-batches-extra/batch-9002.json",
+        "rows": 4078
+      }
+    ],
+    "baseRows": 51268,
+    "extraRows": 9078
+  },
+  "patches": [
+    {
+      "file": "icd-index-plastic-site-patch.sql",
+      "role": "整形手术词面 + Z42 族部位行"
+    },
+    {
+      "file": "tumor-index-site-patch.sql",
+      "role": "肿瘤索引 14 条部位词面别名行"
+    },
+    {
+      "file": "icd-index-lost-words-patch-1031-v2.sql",
+      "role": "流失名链路修饰词行"
+    },
+    {
+      "file": "icd-index-lost-words-patch-1031-v3.sql",
+      "role": "流失名链路子树（多级）"
+    },
+    {
+      "file": "icd-index-lost-words-patch-1031-v4.sql",
+      "role": "27 名流失名 0 级带码行"
     }
   ],
   "outputs": {
     "icd10": 36662,
     "icd9cm3": 14388,
     "synonyms": 6134,
-    "rules": 2178
+    "rules": 2178,
+    "icd_index_total": 60346,
+    "tumor_index_total": 1533,
+    "cm3_index_total": 19671
+  },
+  "diffSummary": {
+    "vs": "source-manifest.json (2026-09-18)",
+    "added": [
+      "knowledgeVersion",
+      "indexBatches.extra (9078 行兜底覆盖)",
+      "patches[] 登记"
+    ],
+    "note": "库内 icd_index 60346 行 = 批次 51268 + 增量 9078；replay 幂等验证通过（imported=0 updated=9078）"
   }
 }

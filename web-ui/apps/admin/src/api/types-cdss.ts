@@ -1,4 +1,4 @@
-/**
+﻿/**
  * CDSS 业务 API 类型定义（Phase 1 + Phase 2）
  */
 
@@ -183,6 +183,7 @@ export interface IcdIndexDto {
   parentSeqNo: number
   fullIndexName: string
   leadWordStatus: number
+  isEnabled: boolean
 }
 
 /** ICD 索引库节点树子节点响应。 */
@@ -204,6 +205,7 @@ export interface Cm3IndexDto {
   parentSeqNo: number
   fullIndexName: string
   leadWordStatus: number
+  isEnabled: boolean
 }
 
 /** CM3 索引库节点树子节点响应。 */

@@ -53,6 +53,7 @@ public sealed class EfIcdIndexSnapshotSource(IServiceScopeFactory scopeFactory) 
         var dbContext = scope.ServiceProvider.GetRequiredService<HospitalAiDbContext>();
         var rows = dbContext.IcdIndexes
             .AsNoTracking()
+            .Where(item => item.IsEnabled)
             .Select(item => new IcdIndexRow(
                 item.SeqNo,
                 item.IndexName,
@@ -166,6 +167,7 @@ public sealed class EfTumorIndexSnapshotSource(IServiceScopeFactory scopeFactory
         var dbContext = scope.ServiceProvider.GetRequiredService<HospitalAiDbContext>();
         var rows = dbContext.TumorIndexes
             .AsNoTracking()
+            .Where(item => item.IsEnabled)
             .OrderBy(item => item.SeqNo)
             .Select(item => new TumorIndexRow(
                 item.SeqNo,

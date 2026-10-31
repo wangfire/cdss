@@ -417,6 +417,7 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
         entity.Property(item => item.ParentSeqNo).HasColumnName("parent_seq_no").IsRequired();
         entity.Property(item => item.FullIndexName).HasColumnName("full_index_name").HasMaxLength(300).IsRequired();
         entity.Property(item => item.LeadWordStatus).HasColumnName("lead_word_status").IsRequired();
+        entity.Property(item => item.IsEnabled).HasColumnName("is_enabled").IsRequired();
         entity.HasIndex(item => item.SeqNo)
             .HasDatabaseName("ux_icd_index_seq_no")
             .IsUnique();
@@ -441,6 +442,7 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
         entity.Property(item => item.ParentSeqNo).HasColumnName("parent_seq_no").IsRequired();
         entity.Property(item => item.FullIndexName).HasColumnName("full_index_name").HasMaxLength(300).IsRequired();
         entity.Property(item => item.LeadWordStatus).HasColumnName("lead_word_status").IsRequired();
+        entity.Property(item => item.IsEnabled).HasColumnName("is_enabled").IsRequired();
         entity.HasIndex(item => item.SeqNo)
             .HasDatabaseName("ux_cm3_index_seq_no")
             .IsUnique();
@@ -471,6 +473,7 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
         entity.Property(item => item.CodeUncertain).HasColumnName("code_uncertain").HasMaxLength(20);
         entity.Property(item => item.JumpKind).HasColumnName("jump_kind").IsRequired();
         entity.Property(item => item.JumpTarget).HasColumnName("jump_target").HasMaxLength(200);
+        entity.Property(item => item.IsEnabled).HasColumnName("is_enabled").IsRequired();
         entity.HasIndex(item => item.SeqNo)
             .HasDatabaseName("ux_tumor_index_seq_no")
             .IsUnique();

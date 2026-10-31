@@ -39,6 +39,8 @@ public static class ToolHost
                     return await AccuracyCommand.RunAsync(configuration);
                 case "caliber":
                     return await AccuracyCaliberCommand.RunAsync(configuration);
+                case "kb-doctor":
+                    return await KbDoctorCommand.RunAsync(configuration);
                 case "help":
                 case "--help":
                 case "-h":
@@ -92,6 +94,7 @@ public static class ToolHost
               golden --validate [--golden <dir>]
               evaluate-accuracy --connection "<conn>" --hospital <guid> [--accuracy <json>] [--report <path>]
               caliber --connection "<conn>" [--hospital <guid>] [--attribution <norec.tsv>] [--report <path>] [--excluded <path>]
+              kb-doctor --connection "<conn>" --hospital <guid> [--names <诊断名清单>] [--out <输出目录>]
             """);
     }
 }

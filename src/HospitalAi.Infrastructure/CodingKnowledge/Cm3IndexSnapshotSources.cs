@@ -1,4 +1,4 @@
-using HospitalAi.Application.Coding.Cm3Index;
+﻿using HospitalAi.Application.Coding.Cm3Index;
 using HospitalAi.Infrastructure.SqlServer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -51,6 +51,7 @@ public sealed class EfCm3IndexSnapshotSource(IServiceScopeFactory scopeFactory) 
         var dbContext = scope.ServiceProvider.GetRequiredService<HospitalAiDbContext>();
         var rows = dbContext.Cm3Indexes
             .AsNoTracking()
+            .Where(item => item.IsEnabled)
             .OrderBy(item => item.SeqNo)
             .Select(item => new Cm3IndexRow(
                 item.SeqNo,

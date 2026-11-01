@@ -197,4 +197,5 @@ export default {
   // 加载状态
   loading: '加载中...',
   loadFailed: '数据加载失败',
+  jsonPlaceholder: 'JSON 格式的同义词/规则数据（可点击「加载示例数据」快速填充）',
 }

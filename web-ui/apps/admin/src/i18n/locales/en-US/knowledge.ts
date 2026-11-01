@@ -197,4 +197,5 @@ export default {
   // Loading states
   loading: 'Loading...',
   loadFailed: 'Failed to load data',
+  jsonPlaceholder: 'Synonym/rule data in JSON format (click "Load sample data" to fill)',
 }

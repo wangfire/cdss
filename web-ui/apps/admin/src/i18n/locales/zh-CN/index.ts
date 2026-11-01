@@ -11,6 +11,8 @@ import workbench from './workbench'
 import knowledge from './knowledge'
 import caseEntry from './caseEntry'
 import account from './account'
+import theme from './theme'
+import layout from './layout'
 
 export default {
   common,
@@ -23,4 +25,6 @@ export default {
   knowledge,
   caseEntry,
   account,
+  theme,
+  layout,
 }

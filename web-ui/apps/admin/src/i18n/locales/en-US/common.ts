@@ -148,4 +148,5 @@ export default {
     typeMessage: 'Message',
     typeError: 'Error',
   },
+  mainNav: 'Main navigation',
 }

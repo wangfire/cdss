@@ -358,7 +358,7 @@ function goWorkbench() {
           </div>
           <div v-if="result && !submitting && !processing" class="flex items-center gap-2 text-xs text-muted-foreground pt-1">
             <CheckCircle2 class="h-3.5 w-3.5 text-emerald-500" />
-            <span>{{ form.patientName || result.diagnosisInputs[0]?.originalText }} · 第 {{ result.admissionCount }} 次住院 · {{ result.pipelineVersion }}</span>
+            <span>{{ form.patientName || result.diagnosisInputs[0]?.originalText }} · {{ t('caseEntry.admissionVisit', { count: result.admissionCount }) }} · {{ result.pipelineVersion }}</span>
             <button class="ml-auto text-primary hover:underline flex items-center gap-1" @click="goWorkbench">
               {{ t('caseEntry.goWorkbench') }}
               <ArrowRight class="h-3 w-3" />

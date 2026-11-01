@@ -270,32 +270,34 @@ const traces = ref<PipelineRunResponse[]>([])
 const expandedRun = ref<string | null>(null)
 
 const stageLabels: Record<string, string> = {
-  QUALITY_GATE: '数据质量门',
-  DOCUMENT_VERSION: '文书版本',
-  CHUNK: '文本分段',
-  FACT: '事实抽取',
-  EVIDENCE: '证据生成',
-  EXACT_RETRIEVAL: '精确检索',
-  BM25_RETRIEVAL: '词法检索(BM25)',
-  RULE: '规则引擎',
-  SCORE: '评分',
-  POLICY: '策略判定',
-  PERSIST: '结果落库',
+  QUALITY_GATE: 'workbench.stageQualityGate',
+  DOCUMENT_VERSION: 'workbench.stageDocumentVersion',
+  CHUNK: 'workbench.stageChunk',
+  FACT: 'workbench.stageFact',
+  EVIDENCE: 'workbench.stageEvidence',
+  EXACT_RETRIEVAL: 'workbench.stageExactRetrieval',
+  BM25_RETRIEVAL: 'workbench.stageBm25Retrieval',
+  RULE: 'workbench.stageRule',
+  SCORE: 'workbench.stageScore',
+  POLICY: 'workbench.stagePolicy',
+  PERSIST: 'workbench.stagePersist',
 }
 
 const degradedLabels: Record<string, string> = {
-  'DEGRADED.NO_BM25': '检索引擎不可用',
-  'DEGRADED.NO_VECTOR': '向量检索未接入',
-  'DEGRADED.NO_MODEL': '大模型未接入',
-  'DEGRADED.LLM_OUTPUT_INVALID': '模型输出未通过校验',
+  'DEGRADED.NO_BM25': 'workbench.degradedNoBm25',
+  'DEGRADED.NO_VECTOR': 'workbench.degradedNoVector',
+  'DEGRADED.NO_MODEL': 'workbench.degradedNoModel',
+  'DEGRADED.LLM_OUTPUT_INVALID': 'workbench.degradedLlmInvalid',
 }
 
 function stageLabel(stage: string) {
-  return stageLabels[stage] || stage
+  const key = stageLabels[stage]
+  return key ? t(key) : stage
 }
 
 function degradedLabel(flag: string) {
-  return degradedLabels[flag] || flag
+  const key = degradedLabels[flag]
+  return key ? t(key) : flag
 }
 
 function runStatusClass(status: string) {

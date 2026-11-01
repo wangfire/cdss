@@ -504,7 +504,7 @@ onUnmounted(() => {
     <template v-if="isMixedDouble">
       <LayoutHeader>
         <template #nav>
-          <nav class="flex items-center gap-1" aria-label="主导航">
+          <nav class="flex items-center gap-1" :aria-label="t('layout.mainNav')">
             <Button
               v-for="item in visibleMenuItems"
               :key="item.id"
@@ -616,7 +616,7 @@ onUnmounted(() => {
       <div class="flex flex-col w-full min-h-0 flex-1 overflow-hidden h-full">
         <LayoutHeader>
           <template #nav>
-            <nav class="flex items-center gap-1" aria-label="主导航">
+            <nav class="flex items-center gap-1" :aria-label="t('layout.mainNav')">
               <Button
                 v-for="item in visibleMenuItems"
                 :key="item.id"
@@ -915,7 +915,7 @@ onUnmounted(() => {
             </template>
 
             <template #nav>
-              <nav v-if="showTopNav" class="flex items-center gap-1" aria-label="主导航">
+              <nav v-if="showTopNav" class="flex items-center gap-1" :aria-label="t('layout.mainNav')">
                 <LayoutTopNavItem
                   v-for="item in visibleMenuItems"
                   :key="item.id"

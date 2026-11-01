@@ -62,4 +62,5 @@ export default {
   notifTaskFailMsg: '患者「{patient}」的编码任务执行失败，请重试或联系管理员',
   notifTaskTimeoutTitle: '编码任务超时',
   notifTaskTimeoutMsg: '患者「{patient}」的编码任务超时未完成，请稍后在任务列表查看',
+  admissionVisit: '第 {count} 次住院',
 }

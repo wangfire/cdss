@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Button, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@tabtab/ui'
 import { useThemeStore, type ThemeMode } from '@/stores/theme'
+import { useI18n } from 'vue-i18n'
 import { Sun, Moon, Monitor } from 'lucide-vue-next'
 
 /**
@@ -10,11 +11,12 @@ import { Sun, Moon, Monitor } from 'lucide-vue-next'
  * 使用 View Transitions API 实现圆形扩散动画
  */
 const themeStore = useThemeStore()
+const { t } = useI18n()
 
-const themeOptions: { value: ThemeMode; label: string; icon: string }[] = [
-  { value: 'light', label: '浅色', icon: 'sun' },
-  { value: 'dark', label: '深色', icon: 'moon' },
-  { value: 'system', label: '系统', icon: 'monitor' },
+const themeOptions: { value: ThemeMode; labelKey: string; icon: string }[] = [
+  { value: 'light', labelKey: 'theme.light', icon: 'sun' },
+  { value: 'dark', labelKey: 'theme.dark', icon: 'moon' },
+  { value: 'system', labelKey: 'theme.system', icon: 'monitor' },
 ]
 
 /**
@@ -30,7 +32,7 @@ function getThemeIcon(mode: ThemeMode): string {
  */
 function getThemeLabel(mode: ThemeMode): string {
   const option = themeOptions.find((o) => o.value === mode)
-  return option?.label || '系统'
+  return option ? t(option.labelKey) : t('theme.system')
 }
 
 /**
@@ -54,7 +56,7 @@ function handleToggle(event: MouseEvent) {
         <Button
           variant="ghost"
           size="icon"
-          :aria-label="`切换主题，当前: ${getThemeLabel(themeStore.themeMode)}`"
+          :aria-label="t('theme.switchAriaLabel', { mode: getThemeLabel(themeStore.themeMode) })"
           @click="handleToggle"
         >
           <Transition name="theme-icon" mode="out-in">
@@ -70,11 +72,11 @@ function handleToggle(event: MouseEvent) {
             />
             <Monitor v-else :size="20" />
           </Transition>
-          <span class="sr-only">切换主题</span>
+          <span class="sr-only">{{ t('theme.switchAriaLabel', { mode: getThemeLabel(themeStore.themeMode) }) }}</span>
         </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom">
-        <p>{{ getThemeLabel(themeStore.themeMode) }}模式</p>
+        <p>{{ getThemeLabel(themeStore.themeMode) }}{{ t('theme.modeSuffix') }}</p>
       </TooltipContent>
     </Tooltip>
   </TooltipProvider>

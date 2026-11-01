@@ -62,4 +62,5 @@ export default {
   notifTaskFailMsg: 'Coding task for "{patient}" failed, please retry or contact admin',
   notifTaskTimeoutTitle: 'Coding task timed out',
   notifTaskTimeoutMsg: 'Coding task for "{patient}" timed out, check the task list later',
+  admissionVisit: 'Admission #{count}',
 }

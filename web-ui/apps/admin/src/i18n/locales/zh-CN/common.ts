@@ -148,4 +148,5 @@ export default {
     typeMessage: '消息',
     typeError: '错误',
   },
+  mainNav: '主导航',
 }

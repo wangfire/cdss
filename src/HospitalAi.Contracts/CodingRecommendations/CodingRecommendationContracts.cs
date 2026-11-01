@@ -1,4 +1,4 @@
-﻿using System.Text.Json.Serialization;
+﻿﻿using System.Text.Json.Serialization;
 
 namespace HospitalAi.Contracts.CodingRecommendations;
 
@@ -89,3 +89,14 @@ public sealed record WorkbenchTasksPageResponse(
     [property: JsonPropertyName("page")] int Page,
     [property: JsonPropertyName("pageSize")] int PageSize,
     [property: JsonPropertyName("items")] IReadOnlyList<WorkbenchTaskResponse> Items);
+
+/// <summary>
+/// 工作台任务状态统计（仪表盘统计卡）：按医院隔离的状态分组计数。
+/// </summary>
+public sealed record WorkbenchTaskStatsResponse(
+    [property: JsonPropertyName("total")] int Total,
+    [property: JsonPropertyName("byStatus")] IReadOnlyList<TaskStatusCount> ByStatus);
+
+public sealed record TaskStatusCount(
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("count")] int Count);

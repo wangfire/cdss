@@ -32,4 +32,8 @@ public interface ICodingRecommendationService
         int page,
         int pageSize,
         CancellationToken cancellationToken = default);
+
+    /// <summary>工作台任务状态统计（仪表盘统计卡）：按医院隔离的状态分组计数。</summary>
+    Task<WorkbenchTaskStatsResponse> GetWorkbenchTaskStatsAsync(
+        CancellationToken cancellationToken = default);
 }

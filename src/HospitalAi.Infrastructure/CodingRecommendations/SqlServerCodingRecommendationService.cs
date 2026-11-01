@@ -353,6 +353,27 @@ public sealed class SqlServerCodingRecommendationService(
         return new WorkbenchTasksPageResponse(total, page, pageSize, items);
     }
 
+    /// <summary>
+    /// 工作台任务状态统计（仪表盘统计卡）：数据库端 GROUP BY 状态，避免全量拉取。
+    /// </summary>
+    public async Task<WorkbenchTaskStatsResponse> GetWorkbenchTaskStatsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        EnsureHospital();
+        var grouped = await dbContext.CodingTasks
+            .AsNoTracking()
+            .Where(item => item.HospitalId == requestContext.HospitalId)
+            .GroupBy(item => item.Status)
+            .Select(group => new { Status = group.Key, Count = group.Count() })
+            .ToListAsync(cancellationToken);
+
+        var byStatus = grouped
+            .Select(item => new TaskStatusCount(item.Status.ToWireValue(), item.Count))
+            .ToList();
+
+        return new WorkbenchTaskStatsResponse(byStatus.Sum(item => item.Count), byStatus);
+    }
+
     private static string NormalizeReviewStatus(string status)
     {
         var normalized = status.Trim().ToUpperInvariant();

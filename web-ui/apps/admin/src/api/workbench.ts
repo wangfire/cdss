@@ -2,6 +2,7 @@ import { http } from './http'
 import type {
   WorkbenchTaskResponse,
   WorkbenchTasksPageResponse,
+  WorkbenchTaskStatsResponse,
   CodingTaskResponse,
   CodingTaskRecommendationsResponse,
   ReviewCodingTaskRequest,
@@ -15,6 +16,9 @@ export const workbenchApi = {
   listTasksPage: (
     params?: { status?: CodingTaskStatus; keyword?: string; page?: number; pageSize?: number },
   ) => http.get<WorkbenchTasksPageResponse>('/api/v1/workbench/tasks', params),
+
+  /** 任务状态分组计数（仪表盘统计卡，数据库端 GROUP BY）。 */
+  getTaskStats: () => http.get<WorkbenchTaskStatsResponse>('/api/v1/workbench/tasks/stats'),
 
   getTask: (taskId: string) =>
     http.get<CodingTaskResponse>(`/api/v1/coding-tasks/${taskId}`),

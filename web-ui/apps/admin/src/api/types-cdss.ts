@@ -36,6 +36,12 @@ export interface CodingTaskResponse {
 
 /* ============== 工作台 ============== */
 
+/** 任务状态分组计数（仪表盘统计卡）。 */
+export interface WorkbenchTaskStatsResponse {
+  total: number
+  byStatus: { status: string; count: number }[]
+}
+
 /** 工作台任务服务端分页响应（WP-B 前端生产化）。 */
 export interface WorkbenchTasksPageResponse {
   total: number

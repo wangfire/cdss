@@ -1,4 +1,4 @@
-using HospitalAi.Api;
+﻿using HospitalAi.Api;
 using HospitalAi.Api.Observability;
 using HospitalAi.Api.Security;
 using HospitalAi.Application.Abstractions;
@@ -1678,6 +1678,15 @@ app.MapGet(
     {
         var response = await service.ListWorkbenchTasksPageAsync(
             status, keyword, page ?? 1, pageSize ?? 20, cancellationToken);
+        return Results.Ok(ApiEnvelope.Create(response));
+    }).RequireAuthorization(RbacPolicies.CodingReader);
+
+// 工作台任务状态统计（仪表盘统计卡）：数据库端 GROUP BY，无全量拉取。
+app.MapGet(
+    "/api/v1/workbench/tasks/stats",
+    async (ICodingRecommendationService service, CancellationToken cancellationToken) =>
+    {
+        var response = await service.GetWorkbenchTaskStatsAsync(cancellationToken);
         return Results.Ok(ApiEnvelope.Create(response));
     }).RequireAuthorization(RbacPolicies.CodingReader);
 

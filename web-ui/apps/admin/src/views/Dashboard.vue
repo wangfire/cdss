@@ -161,13 +161,8 @@ const dependencyLabel = (name: string) => {
 }
 const tasks = ref<WorkbenchTaskResponse[]>([])
 
-const statusCounts = computed(() => {
-  const counts: Record<string, number> = {}
-  for (const task of tasks.value) {
-    counts[task.status] = (counts[task.status] || 0) + 1
-  }
-  return counts
-})
+// 状态分布：服务端 stats 端点全量计数（非客户端从 tasks 派生）
+const statusCounts = ref<Record<string, number>>({})
 
 const pendingReviewCount = computed(() =>
   (statusCounts.value['HUMAN_REQUIRED'] || 0) + (statusCounts.value['PENDING_REVIEW'] || 0),
@@ -475,16 +470,26 @@ const canReadCoding = computed(() => userStore.hasAnyPermission(WORKBENCH_PERMIS
 async function loadData() {
   loading.value = true
   try {
-    const [health, taskList] = await Promise.allSettled([
+    const [health, stats, recentPage] = await Promise.allSettled([
       healthApi.readiness(),
-      canReadCoding.value ? workbenchApi.listTasks() : Promise.resolve<WorkbenchTaskResponse[]>([]),
+      canReadCoding.value ? workbenchApi.getTaskStats() : Promise.resolve<WorkbenchTaskStatsResponse | null>(null),
+      canReadCoding.value
+        ? workbenchApi.listTasksPage({ page: 1, pageSize: 100 })
+        : Promise.resolve<WorkbenchTasksPageResponse | null>(null),
     ])
     if (health.status === 'fulfilled') {
       healthStatus.value = health.value.status
       serviceChecks.value = health.value.dependencies || {}
     }
-    if (taskList.status === 'fulfilled') {
-      tasks.value = taskList.value
+    if (stats.status === 'fulfilled' && stats.value) {
+      // 状态分组计数（数据库端 GROUP BY，全量口径）
+      const byStatus: Record<string, number> = {}
+      for (const item of stats.value.byStatus) byStatus[item.status] = item.count
+      statusCounts.value = byStatus
+    }
+    if (recentPage.status === 'fulfilled' && recentPage.value) {
+      // 最近 100 条明细（推荐数合计/近期趋势/列表展示）
+      tasks.value = recentPage.value.items
     }
   }
   finally {

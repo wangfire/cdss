@@ -102,12 +102,16 @@ let searchDebounce: ReturnType<typeof setTimeout> | null = null
 watch(taskSearch, () => {
   if (searchDebounce) clearTimeout(searchDebounce)
   searchDebounce = setTimeout(() => {
-    pageNum.value = 1
-    void loadTasks()
+    // pageNum 已在第 1 页时不触发其 watch，需手动加载；否则交给 pageNum watch，避免双请求
+    if (pageNum.value === 1) void loadTasks()
+    else pageNum.value = 1
   }, 300)
 })
 watch([pageSize, activeFilter], () => {
   pageNum.value = 1
+  void loadTasks()
+})
+watch(pageNum, () => {
   void loadTasks()
 })
 

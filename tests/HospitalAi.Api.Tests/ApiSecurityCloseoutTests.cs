@@ -238,12 +238,28 @@ public sealed class ApiSecurityCloseoutTests
         var target = users.Single(item => item.Code == userName);
         Assert.True(target.Lockout?.Locked, "5 次失败后用户应处于锁定状态");
 
+        // 登录失败与锁定触发也应留痕（暴力破解溯源）：4 次普通失败 + 1 次锁定触发。
+        await using var verifyContext = database.CreateContext();
+        var failAuditCount = await verifyContext.AuditLogs
+            .CountAsync(
+                item => item.ResourceType == "app_user"
+                    && item.ResourceId == target.Id
+                    && (item.Action == "app_user.login_failed" || item.Action == "app_user.lockout_triggered"));
+        Assert.True(failAuditCount >= 5, $"失败+锁定审计应 ≥5 条，实际 {failAuditCount}");
+        var lockoutAudit = await verifyContext.AuditLogs
+            .SingleAsync(
+                item => item.ResourceType == "app_user"
+                    && item.ResourceId == target.Id
+                    && item.Action == "app_user.lockout_triggered");
+        Assert.Equal("LOCKED", lockoutAudit.Result);
+        Assert.Equal("FAILED", (await verifyContext.AuditLogs
+            .FirstAsync(item => item.Action == "app_user.login_failed")).Result);
+
         using var unlockResponse = await adminClient.PostAsync(
             $"/api/v1/users/{target.Id}/unlock", content: null);
         unlockResponse.EnsureSuccessStatusCode();
 
         // 解锁动作必须落审计日志（操作者 + 被解锁账号），可追溯绕过锁定的运维行为。
-        await using var verifyContext = database.CreateContext();
         var audit = await verifyContext.AuditLogs
             .SingleAsync(
                 item => item.ResourceType == "app_user"

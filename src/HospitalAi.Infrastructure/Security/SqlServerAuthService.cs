@@ -126,19 +126,37 @@ public sealed class SqlServerAuthService(
             var tracked = await dbContext.AppUsers.SingleAsync(
                 item => item.Id == user.Id, cancellationToken);
             tracked.FailedLoginCount += 1;
-            if (tracked.FailedLoginCount >= Lockout.MaxFailedAccessAttempts)
+            var triggered = tracked.FailedLoginCount >= Lockout.MaxFailedAccessAttempts;
+            if (triggered)
             {
                 var nowUtc = DateTimeOffset.UtcNow;
                 tracked.LockedUntil = nowUtc.AddMinutes(Lockout.LockoutDurationMinutes);
                 tracked.LockoutAt = nowUtc;
                 tracked.UpdatedAt = nowUtc;
-                await dbContext.SaveChangesAsync(cancellationToken);
-                return true;
+            }
+            else
+            {
+                tracked.UpdatedAt = DateTimeOffset.UtcNow;
             }
 
-            tracked.UpdatedAt = DateTimeOffset.UtcNow;
+            // 审计留痕：锁定触发（达到阈值）与普通失败均记录，便于暴力破解溯源。
+            var auditNow = DateTimeOffset.UtcNow;
+            dbContext.AuditLogs.Add(new AuditLogRecord
+            {
+                Id = Guid.NewGuid(),
+                HospitalId = user.HospitalId,
+                ResourceType = "app_user",
+                ResourceId = user.Id,
+                Action = triggered ? "app_user.lockout_triggered" : "app_user.login_failed",
+                Result = triggered ? "LOCKED" : "FAILED",
+                RequestId = requestContext.RequestId,
+                ActorId = user.Code,
+                CreatedAt = auditNow,
+                UpdatedAt = auditNow
+            });
+
             await dbContext.SaveChangesAsync(cancellationToken);
-            return false;
+            return triggered;
         }
         catch (Exception)
         {

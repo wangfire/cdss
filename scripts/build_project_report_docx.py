@@ -579,6 +579,8 @@ add_table(
         ["前端⑤ i18n 收口", "高频路径硬编码扫描仅 1 处（已收口）；静态布局文案余量低频，列入下期", "✅ 基本解决"],
         ["前端⑥ 去外链头像", "本地 SVG（hash 取色+首字母）；dicebear 引用全清", "✅ 已解决"],
         ["生产部署四包", "prod 编排/nginx conf/deploy.ps1/secrets 模板/DataProtection 卷全部在位；构建 0 错误", "✅ 编码完成（真实环境执行待验证）"],
+        ["RBAC 尚缺三项（JWT 注入/锁定审计/倒计时）", "prod compose JwtAuth__Key 注入链路 + secrets 模板在位；SqlServerAuthService 写 app_user.login_failed / lockout_triggered 审计；Login.vue 423 倒计时完整链路；测试断言（失败 ≥5 + LOCKED + FAILED）14/14 绿", "✅ 已解决（10-31 补齐）"],
+        ["前端 i18n 静态文案收口", "管道阶段/降级标记映射 15 key、主题切换 5 key（新建 theme.ts）、aria-label（新建 layout.ts）、第X次住院；复扫剩余 10 行全部为知识库示例数据（领域数据非 UI 文案）", "✅ 已解决（10-31，5f1a98c）"],
     ],
     widths=[4.6, 7.6, 3.8],
     first_col_bold=True,

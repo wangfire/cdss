@@ -126,8 +126,8 @@ para("CDSS 智能编码系统", bold=True, size=30, color=ACCENT, align=WD_ALIGN
 para("项目分析汇报", bold=True, size=20, color=ACCENT, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=30)
 para("—— 设计功能清单 · 已完成交付 · 待完成规划 ——", size=12, color=GRAY, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=40)
 doc.add_paragraph()
-for label, value in (("汇报日期", "2026 年 10 月 30 日"), ("汇报人", "王飞"),
-                     ("代码分支", "codex-phase2-coding-mvp（最近提交 2026-10-28）"),
+for label, value in (("汇报日期", "2026 年 11 月 1 日"), ("汇报人", "王飞"),
+                     ("代码分支", "codex-phase2-coding-mvp（最近提交 2026-11-01）"),
                      ("项目定位", "面向病案编码员的 ICD-10 / ICD-9-CM-3 智能编码推荐与人工审核系统")):
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -168,11 +168,11 @@ doc.add_heading("1.2 技术栈与总体架构", level=2)
 add_table(
     ["层次", "技术选型", "说明"],
     [
-        ["后端 API", ".NET 10（HospitalAi.Api，Minimal API）", "约 70 个 REST 端点：编码任务、推荐查询、人工审核、知识库、认证、权限、工作台"],
+        ["后端 API", ".NET 10（HospitalAi.Api，Minimal API）", "75 个 REST 端点：编码任务、推荐查询、人工审核、知识库、认证、权限、工作台"],
         ["推荐流水线", ".NET 10（HospitalAi.Worker，V2.2-Lite）", "12 阶段流水线：质量门 → 输入解析 → 事实抽取 → 证据链 → 精确/索引/全文/向量检索 → 规则 → 精排 → 评分 → 落库"],
-        ["数据库", "SQL Server（EF Core，21 个迁移）", "任务、输入、候选、推荐、证据、规则、审核结论、索引库（icd_index / tumor_index / cm3_index）等全量持久化"],
-        ["检索引擎", "Elasticsearch 8.14.3 + IK 中文分词", "约 5.3 万条 ICD-10 / ICD-9 编码知识库，BM25 词法检索 + dense_vector 向量检索"],
-        ["AI 模型", "本地 CPU 推理", "bge-small-zh-v1.5（语义向量）、bge-reranker-base（重排）、Ollama qwen2.5:3b-instruct（LLM 一致性校验，GPU 推理），向量/重排为 ONNX/CPU 小模型"],
+        ["数据库", "SQL Server（EF Core，23 个迁移）", "任务、输入、候选、推荐、证据、规则、审核结论、索引库（icd_index / tumor_index / cm3_index）等全量持久化"],
+        ["检索引擎", "Elasticsearch 8.14.3 + IK 中文分词", "约 5.3 万条 ICD-10 / ICD-9 编码知识库，BM25 词法检索 + dense_vector 向量检索；生产启用 xpack.security 认证"],
+        ["AI 模型", "本地推理（GPU + ONNX/CPU 混合）", "bge-small-zh-v1.5（语义向量）、bge-reranker-base（重排）、Ollama qwen2.5:3b-instruct（LLM 一致性校验，GPU 推理），向量/重排为 ONNX/CPU 小模型"],
         ["消息与缓存", "RabbitMQ（MassTransit）+ Redis + Outbox", "异步任务分发、失败重试、中断恢复；写路径统一“落任务 + Outbox → MQ → Worker”"],
         ["前端", "Vue 3 + Vite + Pinia（web-ui/apps/admin）", "登录、仪表盘、编码工作台、病例录入、知识库管理、账户与三级权限配置六大页面"],
         ["多租户", "医院级数据隔离", "所有业务接口按 HospitalId 隔离；JWT Bearer 认证"],
@@ -255,7 +255,7 @@ add_table(
         ["向量语义检索", "bge-small-zh ONNX CPU 灌库 + 查询侧语义召回，与索引/Exact 混合去重", "●", "Top1 增量最大单项（+798/万条）；ES dense_vector"],
         ["Rerank 精排", "bge-reranker-base 对候选池前 8 条交叉编码重排", "●", "推理线程配额限核（与 LLM 同机不抢核）"],
         ["规则引擎", "糖尿病星码、部位冲突、病程互斥、极性（阳性/阴性）、(+)/(-) 改写等临床规则", "●", "内置规则集持续扩充中（见待办）"],
-        ["LLM 一致性校验", "逐候选解释 + supported JSON Schema 校验 + 2 次重试；回显码在池内核验", "●", "本地 qwen2.5:0.5b；证据引用维受 0.5B 模型能力限制（诚实降级）"],
+        ["LLM 一致性校验", "逐候选解释 + supported JSON Schema 校验 + 2 次重试；回显码在池内核验", "●", "本地 qwen2.5:3b-instruct（GPU）；证据引用维已恢复可得分（10-31 升级）"],
         ["七维评分", "Exact .15 / Semantic .15 / Retrieval .10 / Rerank .10 / Rule .15 / Evidence .20 / LLM .15，缺失维重归一", "●", "score_profile 记录参与口径，跨口径不比较"],
         ["置信度策略", "HIGH_CONFIDENCE / NEED_REVIEW / NO_SAFE_RECOMMENDATION 三档", "●", "总分≥0.85 且证据≥0.75 且 Margin≥0.10 才给高置信"],
         ["候选控制", "每输入 ≤3 候选、一族一席、同族名次上限、推荐版本化与软失效（STALE）", "●", "精度优先、可回溯版本链"],
@@ -472,9 +472,9 @@ add_table(
 )
 
 doc.add_heading("6.3 交付物与文档", level=2)
-bullet("代码：分支 codex-phase2-coding-mvp，最近提交 2026-10-28；工作区当前仅余 12 个未跟踪文件（多为评测台账与报告），主体成果已全部入库。")
-bullet("数据库迁移：21 个 EF Core 迁移（InitialCreate → 登录锁定 20261030090000 / 权限矩阵种子 20261030091000），迁移链完整、可从空库重建。")
-bullet("文档：14 份阶段方案/汇报/口径规范（docs/，含 2026-10-30 RBAC 收口交付说明），验证报告归档（docs/superpowers/reports/），面向病案室的流程讲解稿与可视化流程图（智能编码推荐流程说明.md / 流程图.html）。")
+bullet("代码：分支 codex-phase2-coding-mvp，最近提交 2026-11-01；本期新增 16 个 commit（RBAC 收口/LLM 3B/CAP 对比/知识库治理/生产部署/前端生产化），主体成果已全部入库。")
+bullet("数据库迁移：23 个 EF Core 迁移（InitialCreate → 登录锁定 20261030090000 / 权限矩阵种子 20261030091000 / 索引表停用开关 20261031140000），迁移链完整、可从空库重建。")
+bullet("文档：17 份阶段方案/汇报/口径规范（docs/，含 RBAC 收口交付说明、LLM 3B A/B 报告、CAP 对比报告、生产部署/前端生产化/知识库治理三份方案），验证报告归档（docs/superpowers/reports/），面向病案室的流程讲解稿与可视化流程图（智能编码推荐流程说明.md / 流程图.html）。")
 bullet("汇报材料：三大业务与架构流程 PPT（仓库根目录）。")
 doc.add_page_break()
 
@@ -483,7 +483,7 @@ doc.add_heading("七、风险与建议", level=1)
 add_table(
     ["风险", "说明", "建议对策"],
     [
-        ["向量通道正确性依赖词面近似", "向量补位推荐无法引用索引链路证据（0.5B 模型给不出证据链），2767 条 Top1 中仅 1877 条可沿证据链回溯", "把向量补位的 487 条列进人工抽检范围；对外同时公布“证据可回溯率”"],
+        ["向量通道正确性依赖词面近似", "旧模型（0.5B）时代向量补位无法引用索引链路证据；3B 升级后 LLM 维恢复完整（向量通道本身不产证据链引用）", "把向量补位的 487 条列进人工抽检范围；对外同时公布“证据可回溯率”"],
         ["知识库覆盖缺口", "E3 类 1,603 名无锚点（其中 1,216 名非 Z 章属必须补词）；手术侧约 90 条族缺口", "数据侧补词专项 + 版本化治理流程"],
         ["同机 CPU 推理资源竞争", "ONNX 与 Ollama 抢核曾致单请求中位耗时 9.9 秒", "线程配额机制已修复（限 4 核）；生产部署沿用“同机核数预算”配置"],
         ["长跑批静默停摆", "历史上曾因未捕获 AbortError 静默死亡 12 小时", "四层监控已固化（超时重试/幂等续跑/终态标记/心跳看门狗），新批任务复用"],
@@ -576,7 +576,7 @@ add_table(
         ["前端② 医院下拉登录", "匿名 GET /hospitals/public 端点 + Login.vue 下拉（含手动回退）", "✅ 已解决"],
         ["前端③ 工作台服务端分页", "page/pageSize/keyword 数据库端下推 + 前端防抖搜索；typecheck 通过", "✅ 已解决"],
         ["前端④ 通知中心去 mock", "store 空初始化（mock 残留 0）；管道完成/失败/超时三态本地会话推送（含耗时）", "✅ 已解决"],
-        ["前端⑤ i18n 收口", "高频路径硬编码扫描仅 1 处（已收口）；静态布局文案余量低频，列入下期", "✅ 基本解决"],
+        ["前端⑤ i18n 收口", "高频路径硬编码扫描仅 1 处（已收口）；静态布局文案已于 10-31 收口（复扫 0 行）", "✅ 基本解决"],
         ["前端⑥ 去外链头像", "本地 SVG（hash 取色+首字母）；dicebear 引用全清", "✅ 已解决"],
         ["生产部署四包", "prod 编排/nginx conf/deploy.ps1/secrets 模板/DataProtection 卷全部在位；构建 0 错误", "✅ 编码完成（真实环境执行待验证）"],
         ["RBAC 尚缺三项（JWT 注入/锁定审计/倒计时）", "prod compose JwtAuth__Key 注入链路 + secrets 模板在位；SqlServerAuthService 写 app_user.login_failed / lockout_triggered 审计；Login.vue 423 倒计时完整链路；测试断言（失败 ≥5 + LOCKED + FAILED）14/14 绿", "✅ 已解决（10-31 补齐）"],

@@ -49,6 +49,7 @@ export default {
   sourceDictionary: 'Dictionary direct',
   sourceIndex: 'Index path',
   sourceFallback: 'Fallback',
+  indexCodeWarning: 'Index code (not in dictionary)',
   leadWordLabel: 'Lead term',
   saveAsCase: 'Save as case',
   saveDialogTitle: 'Save as case',

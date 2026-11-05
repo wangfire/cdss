@@ -1213,6 +1213,24 @@ public sealed class IcdIndexTests
     }
 
     [Fact]
+    public void Expand_加星组合_字典有联合码时返回联合码()
+    {
+        // 索引编码 "E11.3† H28.0*" 在字典中有联合码时，应返回联合码而非回退。
+        var parsed = ParsedIndexCode.Parse("E11.3† H28.0*");
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("E11.302+H28.0*", "2 型糖尿病性白内障"),
+        ]);
+
+        var results = IndexCodeExpander.Expand(
+            parsed, dictionary, "2 型糖尿病性白内障",
+            TextMatch.NormalizeKey("白内障糖尿病性"), maxResults: 3);
+
+        var only = Assert.Single(results);
+        Assert.Equal("E11.302+H28.0*", only.Code);
+        Assert.False(only.IsIndexFallback);
+    }
+
+    [Fact]
     public void Expand_替代编码组全部无法判定_回退索引编码本身()
     {
         var parsed = ParsedIndexCode.Parse("E10.3† H28.0*;E11.3† H28.0*");

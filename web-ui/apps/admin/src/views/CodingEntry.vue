@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CheckCircle2, ClipboardList, Loader2, Plus, Sparkles, Star, Trash2 } from 'lucide-vue-next'
+import { AlertTriangle, CheckCircle2, ClipboardList, Loader2, Plus, Sparkles, Star, Trash2 } from 'lucide-vue-next'
 import { computed, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ApiError, codingEntryApi, workbenchApi } from '@/api'
@@ -467,12 +467,14 @@ async function saveAsCase() {
                     v-for="code in path.codes"
                     :key="code.code"
                     class="flex items-center justify-between gap-2"
+                    :class="code.isIndexFallback ? 'rounded bg-amber-50/50 px-1.5 py-0.5' : ''"
                   >
                     <span>
                       <span class="font-mono text-primary">{{ code.code }}</span>
                       <span class="ml-1.5">{{ code.title }}</span>
-                      <Badge v-if="code.isIndexFallback" variant="secondary" class="ml-1">
-                        {{ t('codingEntry.sourceFallback') }}
+                      <Badge v-if="code.isIndexFallback" variant="secondary" class="ml-1 bg-amber-100 text-amber-800 border-amber-300">
+                        <AlertTriangle class="h-3 w-3 mr-1" />
+                        {{ t('codingEntry.indexCodeWarning') }}
                       </Badge>
                     </span>
                   </div>
@@ -492,18 +494,23 @@ async function saveAsCase() {
                 v-for="(recommendation, index) in activeEntry.lookup.recommendations"
                 :key="recommendation.code"
                 class="flex items-start justify-between gap-3 rounded-md border p-3"
+                :class="recommendation.isIndexFallback ? 'border-amber-300 bg-amber-50/50' : ''"
               >
                 <div class="min-w-0">
                   <div class="flex flex-wrap items-center gap-1.5">
                     <span class="font-mono text-sm font-semibold text-primary">{{ recommendation.code }}</span>
                     <Badge v-if="recommendation.dictionaryDirect">{{ t('codingEntry.sourceDictionary') }}</Badge>
-                    <Badge v-else-if="recommendation.isIndexFallback" variant="secondary">
-                      {{ t('codingEntry.sourceFallback') }}
+                    <Badge v-else-if="recommendation.isIndexFallback" variant="secondary" class="bg-amber-100 text-amber-800 border-amber-300">
+                      <AlertTriangle class="h-3 w-3 mr-1" />
+                      {{ t('codingEntry.indexCodeWarning') }}
                     </Badge>
                     <Badge v-else variant="outline">{{ t('codingEntry.sourceIndex') }}</Badge>
                   </div>
                   <p class="mt-1 truncate text-sm">{{ recommendation.title }}</p>
-                  <p v-if="recommendation.path.length > 0" class="mt-0.5 text-xs text-muted-foreground">
+                  <p v-if="recommendation.note" class="mt-0.5 text-xs text-amber-700">
+                    {{ recommendation.note }}
+                  </p>
+                  <p v-else-if="recommendation.path.length > 0" class="mt-0.5 text-xs text-muted-foreground">
                     {{ t('codingEntry.leadWordLabel') }}: {{ recommendation.leadTerm }} ·
                     {{ recommendation.path.join(' → ') }}
                   </p>

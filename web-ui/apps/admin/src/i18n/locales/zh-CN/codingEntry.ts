@@ -49,6 +49,7 @@ export default {
   sourceDictionary: '字典直达',
   sourceIndex: '索引链路',
   sourceFallback: '回退码',
+  indexCodeWarning: '索引编码（字典库无此码）',
   leadWordLabel: '主导词',
   saveAsCase: '保存为病例',
   saveDialogTitle: '保存为病例',

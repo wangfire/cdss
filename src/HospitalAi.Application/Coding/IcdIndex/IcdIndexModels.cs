@@ -98,6 +98,9 @@ public sealed record IcdIndexAlias(string Key, decimal Weight, string MatchKey, 
     public bool CommaTail { get; init; }
 
     public bool ParenTail { get; init; }
+
+    /// <summary>本键是第一个括号前的头段词残段（"脑(脊)膜瘤" 的 脑），不是本行完整的词。</summary>
+    public bool HeadWord { get; init; }
 }
 
 /// <summary>
@@ -523,9 +526,9 @@ public static class IcdIndexSnapshotBuilder
     /// </summary>
     public static IReadOnlyList<IcdIndexAlias> ParseAliases(string text)
     {
-        var result = new Dictionary<string, (decimal Weight, string MatchKey, bool HuoTail, bool CommaTail, bool ParenTail)>(StringComparer.Ordinal);
+        var result = new Dictionary<string, (decimal Weight, string MatchKey, bool HuoTail, bool CommaTail, bool ParenTail, bool HeadWord)>(StringComparer.Ordinal);
 
-        void Add(string value, decimal weight, bool huoTail, bool commaTail, bool parenTail)
+        void Add(string value, decimal weight, bool huoTail, bool commaTail, bool parenTail, bool headWord = false)
         {
             var key = TextMatch.NormalizeKey(value);
             if (key.Length < 1)
@@ -542,7 +545,7 @@ public static class IcdIndexSnapshotBuilder
 
             if (!result.TryGetValue(key, out var existing) || weight > existing.Weight)
             {
-                result[key] = (weight, matchKey, huoTail && weight < 1.0m, commaTail, parenTail);
+                result[key] = (weight, matchKey, huoTail && weight < 1.0m, commaTail, parenTail, headWord);
             }
         }
 
@@ -623,10 +626,13 @@ public static class IcdIndexSnapshotBuilder
             // 头段词别名：第一个括号/方括号前的纯文本（"艾滋病 (相关复合征)…" → "艾滋病"）。
             // ParenthesisRegex 无法处理嵌套括号（"(另见 人 (类)…)"），导致 stripped 仍含尾部噪声，
             // 归一化别名键不是头段词，输入"艾滋病性脑炎"无法召回该主导词。
+            // 单字头段（"成(神经)胶质细胞瘤" 的 成）照旧登记：输入以它收尾时是合法锚点（尾重心口径），
+            // 但它只是残段、不是本行的词，HeadWord 标记让召回层收回它的形态学豁免
+            // （脑(脊)膜瘤 的 脑 否则能锚上任何含 脑 的输入）。
             var headWord = HeadWordRegex.Replace(segment, string.Empty).Trim();
             if (headWord.Length >= 1 && headWord != segment && headWord != stripped)
             {
-                Add(headWord, weight, huoTail, commaTail, parenTail);
+                Add(headWord, weight, huoTail, commaTail, parenTail, headWord: true);
             }
         }
 
@@ -640,6 +646,7 @@ public static class IcdIndexSnapshotBuilder
             {
                 CommaTail = pair.Value.CommaTail,
                 ParenTail = pair.Value.ParenTail,
+                HeadWord = pair.Value.HeadWord,
             })
             .ToList();
     }

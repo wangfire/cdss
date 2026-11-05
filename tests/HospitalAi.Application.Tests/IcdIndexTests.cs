@@ -2830,4 +2830,82 @@ public sealed class IcdIndexTests
         Assert.Equal("M10.000", legacy[0].Code);
         Assert.True(legacy[0].IsIndexFallback);
     }
+
+    /// <summary>
+    /// 真实索引行：脑膜炎 25387 的病因子层（放线菌病性 25395）与
+    /// 白内障 746 → 糖尿病性 792（库内以 病性 收尾的 83 行取两种代表）。
+    /// </summary>
+    private static IcdIndexSnapshot EtiologyTailSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(25387, "脑膜炎(基底)(大脑)(脊髓)", "G03.9"),
+        ChildRow(25388, 25387, "－艾柯病毒", "A87.0? G02.0*"),
+        ChildRow(25390, 25387, "－病毒性 NEC", "A87.9"),
+        ChildRow(25395, 25387, "－放线菌病性", "A42.8? G01*"),
+        ChildRow(25406, 25387, "－化脓性", "G00.9"),
+        LeadRow(746, "白内障(皮质性)(未熟)(初期)", "H26.9"),
+        ChildRow(792, 746, "－糖尿病性(另见E10-E14伴有第四位数.3)", "E14.3? H28.0*"),
+    ]);
+
+    private static IcdDictionarySnapshot EtiologyTailDictionary() => new([
+        Dict("G03.900", "脑膜炎"),
+        Dict("A42.800", "放线菌病"),
+        Dict("E14.300+H28.0*", "糖尿病性白内障"),
+    ]);
+
+    [Fact]
+    public void 病性构词残段不得把病因子层带进链路()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        // 艾滋病性脑膜炎 的 病性 = 艾滋病 的尾字 + 形容词后缀，跨词边界的 2 字不是病因证据。
+        // 下钻不回溯，一旦选进 放线菌病性 子层，整条 脑膜炎 链路只能交付 A42.8† G01*。
+        var results = resolver.Resolve(EtiologyTailSnapshot(), EtiologyTailDictionary(), "艾滋病性脑膜炎");
+
+        Assert.DoesNotContain(results, item => item.Code.StartsWith("A42", StringComparison.Ordinal));
+        Assert.Contains(results, item => item.Code == "G03.900");
+    }
+
+    [Fact]
+    public void 真写出病种头段时病因子层照常下钻()
+    {
+        var resolver = new IcdIndexDiagnosisResolver(8, 3, "ICD-10");
+
+        // 控制组：输入逐字写出 糖尿病性（4 个新字、左侧字也在别名内），门控不得误伤。
+        var results = resolver.Resolve(EtiologyTailSnapshot(), EtiologyTailDictionary(), "糖尿病性白内障");
+
+        Assert.Contains(results, item => item.EvidencePath.Contains("糖尿病性", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ParseNode_头段残段带HeadWord标记而单字形态学入口不带()
+    {
+        // 脑(脊)膜瘤 的头段 脑 是括号前的残段（本行的词是 脑膜瘤），标出来给召回层收回形态学豁免。
+        var meningioma = IcdIndexSnapshotBuilder.ParseNode(
+            LeadRow(25199, "脑(脊)膜瘤(M9530/0) - 另见 肿瘤，脑脊膜，良性", "M9530/0"));
+        Assert.Contains(meningioma.Aliases, alias => alias.Key == "脑" && alias.HeadWord);
+        Assert.Contains(meningioma.Aliases, alias => alias.Key == "脑膜瘤" && !alias.HeadWord);
+
+        // 癌(M8010/3) 的本行词就是一个字：它是肿瘤形态学树的唯一入口（M19 保底席位为它而设），
+        // 不能被当成残段一起拦掉。
+        var cancer = IcdIndexSnapshotBuilder.ParseNode(
+            LeadRow(143, "癌(M8010/3) - 见 肿瘤，恶性", "M8010/3"));
+        Assert.Contains(cancer.Aliases, alias => alias.Key == "癌" && !alias.HeadWord);
+    }
+
+    [Fact]
+    public void 头段残段不得借形态学豁免锚定_结尾时仍按尾重心放行()
+    {
+        var meningioma = IcdIndexSnapshotBuilder.ParseNode(
+            LeadRow(25199, "脑(脊)膜瘤(M9530/0) - 另见 肿瘤，脑脊膜，良性", "M9530/0"));
+        var brainFragment = meningioma.Aliases.Single(alias => alias.Key == "脑");
+
+        // 脑 落在输入中段（…脑膜炎）：形态学豁免收回，脑膜炎 与 脑膜瘤 是两个主导词。
+        Assert.False(IcdIndexMatcher.NameLookupAnchorAllowed(meningioma, brainFragment, "艾滋病性脑膜炎"));
+
+        var glioma = IcdIndexSnapshotBuilder.ParseNode(
+            LeadRow(5020, "成(神经)胶质细胞瘤(多形性)[胶质母细胞瘤](M9440/3)", "M9440/3"));
+        var tailFragment = glioma.Aliases.Single(alias => alias.Key == "成");
+
+        // 成 是输入的结尾核心词（冠脉肌桥形成）：尾重心口径照旧放行，残段门控不碰它。
+        Assert.True(IcdIndexMatcher.NameLookupAnchorAllowed(glioma, tailFragment, "冠脉肌桥形成"));
+    }
 }

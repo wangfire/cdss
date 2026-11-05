@@ -163,6 +163,16 @@ public static class IcdIndexMatcher
         => lead.Code is { Length: > 0 } code && MorphologyCodeRegex.IsMatch(code);
 
     /// <summary>
+    /// 单字别名能否享用形态学主导词的豁免。索引按惯例把 癌(M8010/3)、瘤(M8000/1) 立成单字
+    /// 主导词，拦住它们等于关掉整棵肿瘤形态学树（M19 的保底席位就是为它们设的）。
+    /// 但豁免只该给"本行的词就是一个字"：脑(脊)膜瘤(M9530/0) 的 脑、成(神经)胶质细胞瘤(M9440/3)
+    /// 的 成 是括号前的头段残段，全库只有这 2 行——放开时 艾滋病性脑膜炎 会锚上 脑(脊)膜瘤，
+    /// 而 脑膜炎 与 脑膜瘤 是两个主导词。残段仍按尾重心口径放行（形成 的 成 收尾照样能锚）。
+    /// </summary>
+    private static bool IsMorphologyEntry(IcdIndexNode lead, IcdIndexAlias alias)
+        => alias.Key.Length >= 2 || IsMorphologyLead(lead) && !alias.HeadWord;
+
+    /// <summary>
     /// 单字主导词的尾重心门控。中文诊断名是"修饰语 + 核心名词"结构，编码员取的主导词
     /// 就是末尾那个核心名词（手术后尿道会阴瘘 → 瘘、内痔 → 痔、马蹄肾 → 肾）。
     /// 索引里 60 条 0 级单字主导词（瘘 194 子行/189 带码、痛 86、疹 9、痔、龋、疮、肾、
@@ -370,7 +380,7 @@ public static class IcdIndexMatcher
                 || alias.Weight >= 1.0m
                     && !NameLookupGradingSuffixKeys.Contains(alias.Key)
                     && (alias.Key.Length == 2
-                        || IsMorphologyLead(lead)
+                        || IsMorphologyEntry(lead, alias)
                         || IsTailCoreWord(alias.Key, inputKey)))
             && !IsAttributeTailOnlyAnchor(lead, alias, inputKey);
 
@@ -406,7 +416,7 @@ public static class IcdIndexMatcher
                 // 心/汗/红 这类单字行只在收尾时锚定，出现在中部（心肌梗死）照旧拦住。
                 if (!alias.RecallAnchor || GenericModifierKeys.Contains(alias.Key)
                     || IsGenericSurgeryAliasOutsideTail(alias.Key, inputKey)
-                    || (alias.Key.Length < 2 && !IsMorphologyLead(lead) && !IsTailCoreWord(alias.Key, inputKey))
+                    || (alias.Key.Length < 2 && !IsMorphologyEntry(lead, alias) && !IsTailCoreWord(alias.Key, inputKey))
                     || IsAttributeTailOnlyAnchor(lead, alias, inputKey))
                 {
                     continue;
@@ -894,7 +904,7 @@ public static class IcdIndexMatcher
         var newPositions = TextMatch.CoveredTextPositions(matchKey, inputKey)
             .Except(pathPositions)
             .ToList();
-        if (newPositions.Count >= 2)
+        if (newPositions.Count >= 2 && !IsEtiologyTailResidue(newPositions, matchKey, inputKey))
         {
             return true;
         }
@@ -905,6 +915,33 @@ public static class IcdIndexMatcher
         // （见 MorphologicalPrefixes），其余别名内含部位字的形态
         // （腹壁、颞骨、舟骨）与方位前缀的过细分（耳瘢痕→中耳）实测都是正误各半，不放开。
         return SiteAbbrevWord(matchKey, inputKey, pathPositions) is not null;
+    }
+
+    /// <summary>
+    /// 新增内容是否只是 "…病 + 性" 的跨词残段。索引的病因修饰行把病种写在头段
+    /// （放线菌病性 的 放线菌、糖尿病性 的 糖尿），"病性" 只是形容词后缀的构词产物；
+    /// 输入 "艾滋病性脑膜炎" 的 病性 = 艾滋病 的尾字 + 后缀，零病因证据却能过 ≥2 新字门槛，
+    /// 而选层不回溯，整条 脑膜炎 子树因此停在 放线菌病性（A42.8? G01*）上。
+    /// 只拦"残段就是全部新内容"这一种：真写出 糖尿病性 时新字有 4 个，左侧字也在别名内。
+    /// 库内 83 行以 病性 收尾（糖尿病性 25 行、淋病性/性病性/神经病性/精神病性/佝偻病性…），
+    /// 任何写了 "X病性" 的输入都可能被其中一行按 2 字残段劫走。
+    /// </summary>
+    private static bool IsEtiologyTailResidue(List<int> newPositions, string matchKey, string inputKey)
+    {
+        if (newPositions.Count != 2 || !matchKey.EndsWith("病性", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var start = Math.Min(newPositions[0], newPositions[1]);
+        if (Math.Abs(newPositions[0] - newPositions[1]) != 1
+            || start + 2 > inputKey.Length
+            || inputKey[start] != '病' || inputKey[start + 1] != '性')
+        {
+            return false;
+        }
+
+        return start == 0 || !matchKey.Contains(inputKey[start - 1]);
     }
 
     /// <summary>

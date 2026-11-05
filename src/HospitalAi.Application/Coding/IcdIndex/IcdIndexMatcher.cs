@@ -238,6 +238,142 @@ public static class IcdIndexMatcher
     public static bool IsGenericConditionLeadKey(string aliasKey)
         => aliasKey is "病" or "疾病" or "情况" or "疾患" or "综合征";
 
+    /// <summary>主导词节点级门控（"编码录入"名称拆分复用）：部位限定词须为输入已声明子集，病程/否定极不相反。</summary>
+    public static bool LeadNodeAllows(IcdIndexNode lead, string inputKey)
+        => NodeAllows(lead, TextMatch.ExtractQualifiers(inputKey), inputKey);
+
+    /// <summary>
+    /// 分型/分期/分级的构词后缀字：它们是修饰词词尾（霍乱中型、糖尿病2型、活动期），
+    /// 不是疾病核心名词（瘘/痔/疝/癌）——索引里以 "…，型" 逗号尾段别名存在
+    /// （弗雷德里克森高脂蛋白血症，型），输入收尾沾上即被尾重心放行，产生噪声主导词。
+    /// 只关"编码录入"拆分门控；流水线共用的 <see cref="IsTailCoreWord"/> 不动，零回归。
+    /// </summary>
+    private static readonly HashSet<string> NameLookupGradingSuffixKeys =
+    [
+        "型", "性", "期", "级", "度", "类",
+    ];
+
+    /// <summary>
+    /// 次因编码导语行："病原体，作为分类于他处疾病的原因"（B96/B97 章，全库 17 行）。
+    /// 只有当该病原体是**分类于他处疾病**的原因时才编 B96/B97——输入未逐字写明
+    /// "分类于他处"用途时（如 肠毒性大肠杆菌感染 是本源感染，编 A04.1），
+    /// 该行不得作主导词锚。命中词面（大肠杆菌）沾边不代表要编他处原因码。
+    /// </summary>
+    private static bool IsSecondaryCauseLead(IcdIndexNode lead)
+    {
+        var commaIndex = lead.Term.IndexOfAny(['，', ',']);
+        if (commaIndex < 0)
+        {
+            return false;
+        }
+
+        return TextMatch.NormalizeKey(lead.Term[(commaIndex + 1)..])
+            .Contains("分类于他处", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// "主导词，修饰" 行的修饰段声明核对（"编码录入"专用）：
+    /// 头段(≥2字)+修饰段(≥2字) 的逗号/顿号行，修饰段必须在输入中有 ≥2 字连续词面——
+    /// 头段单独沾边而修饰段未声明，是跨语义噪声（伤寒并发肠出血 沾
+    /// "出血，经间期 NEC(规则)" 的 出血、出血、凝血或凝血酶原时间延长 的 出血）。
+    /// 与既有部位限定词纪律同思路：部位类修饰段（视网膜/胃）由 NodeAllows 把关，
+    /// 本核对补上非部位类修饰段（经间期/凝血酶原时间延长）的声明要求。
+    /// 豁免：头段单字的同义族行（炎，炎症(性)…，由单字尾锚规则把关）、
+    /// 修饰段单字（疝，膈）。流水线不动。
+    /// </summary>
+    private static bool CommaTailDeclaredInInput(IcdIndexNode lead, string inputKey)
+    {
+        // 找第一个不在括号/方括号内的逗号（排除「另见 人(类)，免疫缺陷病毒」这类指针内的逗号）
+        var commaIndex = -1;
+        var depth = 0;
+        for (var i = 0; i < lead.Term.Length; i++)
+        {
+            var c = lead.Term[i];
+            if (c is '(' or '（' or '[' or '［')
+            {
+                depth++;
+            }
+            else if (c is ')' or '）' or ']' or '］')
+            {
+                depth--;
+            }
+            else if (depth == 0 && (c == '，' || c == ',' || c == '、'))
+            {
+                commaIndex = i;
+                break;
+            }
+        }
+        
+        if (commaIndex < 0)
+        {
+            return true;
+        }
+
+        var head = TextMatch.NormalizeKey(lead.Term[..commaIndex]);
+        var tail = TextMatch.NormalizeKey(lead.Term[(commaIndex + 1)..]);
+        if (head.Length < 2 || tail.Length < 2)
+        {
+            return true;
+        }
+
+        // 同义族行豁免：尾段与头段同义（"梗死，梗塞" 共首字 梗、"炎，炎症(性)…" 字根 炎）
+        // ——尾段是头段的同义变体，不是未声明的修饰语。
+        if (TextMatch.IsSynonymousCommaTail(head, tail))
+        {
+            return true;
+        }
+
+        if (inputKey.Contains(tail, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        for (var length = Math.Min(tail.Length, inputKey.Length); length >= 2; length--)
+        {
+            for (var start = 0; start + length <= tail.Length; start++)
+            {
+                if (inputKey.Contains(tail.Substring(start, length), StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// "编码录入"名称拆分（<c>IcdNameLeadTermSplitter</c>）复用的别名锚点门控：
+    /// 与 <see cref="RecallLeads"/> 同一套噪声防线（或 尾段锚、泛化修饰词、短别名首尾锚、
+    /// 泛术式 手术、属性尾段复合别名），只把 MatchesInput 的模糊覆盖判定换成调用方的
+    /// 全量匹配（严格子串）判定——本方法不判"是否命中"，只判"命中了能不能当主导词锚"。
+    /// 纯连接词别名（由于/见于/继发于…）不得作锚：输入写完整索引路径（霍乱，由于O1群…所致）时，
+    /// 连接词是霍乱修饰链的接续符，不是主导词（"密螺旋体病，由于" 的逗号尾段别名同理）。
+    /// 部位逗号尾段（CommaTail，"小梁形成，膀胱" 的 膀胱）与分型/分期后缀字
+    /// （型/性/期/级/度/类）即便收尾也不作锚。
+    /// 次因导语行（"…，作为分类于他处疾病的原因"）在输入未写明该用途时不作锚。
+    /// 单字收尾锚只认主导词本名（权重 1.0 主别名，方括号/或/逗号派生的单字变体
+    /// 如 "瘙痒[症]" 的 症 除外）；2 字别名（含中段命中）交由 NameLeadTermSplitter
+    /// 的中段碎片终结规则裁决（结核性肺炎 的 肺炎 保留，淋巴瘤 的 淋巴 剔除）。
+    /// </summary>
+    public static bool NameLookupAnchorAllowed(IcdIndexNode lead, IcdIndexAlias alias, string inputKey)
+        => alias.RecallAnchor
+            && !alias.CommaTail
+            && !alias.ParenTail
+            && !GenericModifierKeys.Contains(alias.Key)
+            && !ConnectorCoreTerms.Contains(alias.Key)
+            && !IsGenericSurgeryAliasOutsideTail(alias.Key, inputKey)
+            && (!IsSecondaryCauseLead(lead)
+                || inputKey.Contains("分类于他处", StringComparison.Ordinal))
+            && CommaTailDeclaredInInput(lead, inputKey)
+            && (alias.Key.Length >= 3
+                || alias.Weight >= 1.0m
+                    && !NameLookupGradingSuffixKeys.Contains(alias.Key)
+                    && (alias.Key.Length == 2
+                        || IsMorphologyLead(lead)
+                        || IsTailCoreWord(alias.Key, inputKey)))
+            && !IsAttributeTailOnlyAnchor(lead, alias, inputKey);
+
     public static IReadOnlyList<LeadWordHit> RecallLeads(
         IcdIndexSnapshot snapshot,
         string inputKey,
@@ -620,6 +756,14 @@ public static class IcdIndexMatcher
         // "本行" 必须是链路真正停住的那一行：pendingSeeAlsoJump 只记录层内第一个挣到增益的 另见 兄弟，
         // 不加这层等值判断时 腘动脉闭塞 会拿 动脉 的兄弟 冠状(另见 梗死，心肌) 出题，
         // 把 心肌梗死 I21.9 塞进外周动脉闭塞的候选里。
+        // 码相同但链路更详细时也允许提示（矮小→身材 NEC E34.3 vs 侏儒症→先天性 E34.3）。
+        // 另见-1（本行带编码）：病案信息简单时直接采用本行编码，Top1 不动；
+        // 但索引在 另见 处明示了"推荐主导词下才有细码"（分娩，剖宫产 → 瘢痕 → 子宫 O34.2），
+        // 输入里写出更详细情况时把细码作为并列提示交给调用方——这是发现"诊断漏填修饰词"的唯一途径。
+        // "本行" 必须是链路真正停住的那一行：pendingSeeAlsoJump 只记录层内第一个挣到增益的 另见 兄弟，
+        // 不加这层等值判断时 腘动脉闭塞 会拿 动脉 的兄弟 冠状(另见 梗死，心肌) 出题，
+        // 把 心肌梗死 I21.9 塞进外周动脉闭塞的候选里。
+        // 码相同但链路更详细时也允许提示（矮小→身材 NEC E34.3 vs 侏儒症→先天性 E34.3）。
         if (pendingSeeAlsoJump is { } hintChild
             && ReferenceEquals(current, hintChild)
             && local is { CodeFromAncestorFallback: false }
@@ -631,8 +775,7 @@ public static class IcdIndexMatcher
                 hops + 1, maxHops, [.. visited, hintLead.SeqNo],
                 [$"{hintChild.Term} ⇢ {hintChild.JumpTarget}"], genericJumps: null) is { } alt
             && alt.Path.Count > 1
-            && !alt.CodeFromAncestorFallback
-            && alt.CodeNode.Code != local.CodeNode.Code)
+            && !alt.CodeFromAncestorFallback)
         {
             return local with { SeeAlsoHints = [alt] };
         }
@@ -690,8 +833,9 @@ public static class IcdIndexMatcher
     /// Aliases[0] 常是带澄清括号的整词（"栓塞(脓毒性)" 的 栓塞脓毒性），
     /// 把它拼进命中路径会让字典展开的"路径词被标题完整覆盖"放行判定失效，
     /// 只能回退推荐索引码本身（I74.9 展不开 I74.902 动脉栓塞）。
+    /// public：编码录入门面板（NameCodingLookupEngine）挂主导词行自身的 另见-1 提示时同口径复用。
     /// </summary>
-    private static string JumpSeedKey(IcdIndexNode lead, string inputKey)
+    public static string JumpSeedKey(IcdIndexNode lead, string inputKey)
     {
         var best = string.Empty;
         var bestChars = -1;

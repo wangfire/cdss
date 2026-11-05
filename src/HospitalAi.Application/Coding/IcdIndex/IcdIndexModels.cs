@@ -83,12 +83,21 @@ public sealed class IcdIndexNode
 /// 匹配别名：Key 为完整归一化键；MatchKey 为剥离泛化修饰括号（慢性/急性/亚急性）后的键，
 /// 下钻增益必须来自 MatchKey，防止 "(慢性)" 把下钻带进与输入无关的子树。
 /// HuoTail 标记该键是否来自 "A或B" 式并列的 或 尾段（解析期事实）。
+/// CommaTail 标记该键是否来自 "A，B" 式并列的 逗号/顿号 尾段（索引 "主导词，部位" 惯例的
+/// 部位/限定段，如 "小梁形成，膀胱" 的 膀胱、"断裂，视网膜" 的 视网膜）——它不是核心词，
+/// "编码录入"拆分不得以它作主导词锚（流水线召回不受影响：部位段仍作限定词参与门控）。
+/// ParenTail 标记该键是否来自括注内的切段（"尿道结石病(伴有绞痛或感染)" 的 感染）——
+/// 流水线照旧作召回锚（校准口径），"编码录入"拆分排除。
 /// RecallAnchor 由快照构建期判定（见 IcdIndexSnapshotBuilder.Build），false 表示该键
 /// 只是本行的一个并列尾段而非主导词，不得单独作召回锚点；下钻与链路覆盖度照旧使用它。
 /// </summary>
 public sealed record IcdIndexAlias(string Key, decimal Weight, string MatchKey, bool HuoTail = false)
 {
     public bool RecallAnchor { get; set; } = true;
+
+    public bool CommaTail { get; init; }
+
+    public bool ParenTail { get; init; }
 }
 
 /// <summary>
@@ -508,14 +517,15 @@ public static class IcdIndexSnapshotBuilder
 
     /// <summary>
     /// 别名生成：方括号内容并入主词、圆括号生成含/不含两变体、
-    /// "或/，、"拆分并列别名（首别名权重 1.0，其余 0.85）。
+    /// "或/，、"拆分并列别名（首别名权重 1.0，其余 0.85），并记录每段的来源分隔符
+    /// （或 尾段 → HuoTail；逗号/顿号 尾段 → CommaTail，索引 "主导词，部位" 惯例的部位段）。
     /// NEC/NOS 为索引控制标记（未分类/不可另分类），剥离后保留主体词别名。
     /// </summary>
     public static IReadOnlyList<IcdIndexAlias> ParseAliases(string text)
     {
-        var result = new Dictionary<string, (decimal Weight, string MatchKey, bool HuoTail)>(StringComparer.Ordinal);
+        var result = new Dictionary<string, (decimal Weight, string MatchKey, bool HuoTail, bool CommaTail, bool ParenTail)>(StringComparer.Ordinal);
 
-        void Add(string value, decimal weight, bool huoTail)
+        void Add(string value, decimal weight, bool huoTail, bool commaTail, bool parenTail)
         {
             var key = TextMatch.NormalizeKey(value);
             if (key.Length < 1)
@@ -532,7 +542,7 @@ public static class IcdIndexSnapshotBuilder
 
             if (!result.TryGetValue(key, out var existing) || weight > existing.Weight)
             {
-                result[key] = (weight, matchKey, huoTail && weight < 1.0m);
+                result[key] = (weight, matchKey, huoTail && weight < 1.0m, commaTail, parenTail);
             }
         }
 
@@ -541,10 +551,14 @@ public static class IcdIndexSnapshotBuilder
         // 切段口径与权重保持原样（[或，、] 都切、非首段 0.85），只是记住每段前面那个分隔符
         // 是不是**顶层** 或：顶层 或 的尾段继承头段的人名限定（"施莫尔病或结节" 的 结节），
         // 括号内的 或（"NEC(胎儿或婴儿)"）只是括注并列，不改变该段的别名地位。
-        var mainSegments = new List<(string Value, bool HuoTail)>();
+        // 括注切段标 ParenTail：段起点在括号内（"尿道结石病(伴有绞痛或感染)" 的 感染）。
+        // 流水线照旧把它们作召回锚（校准口径："NEC(胎儿或婴儿)" 的 婴儿 是合法锚点）；
+        // "编码录入"拆分经 NameLookupAnchorAllowed 排除（任何含 感染 的输入都不该锚上结石行）。
+        var mainSegments = new List<(string Value, bool HuoTail, bool CommaTail, bool ParenTail)>();
         var precedingText = string.Empty;
         var parenDepth = 0;
         var topLevelHuoCount = 0;
+        var pendingCommaTail = false;
         var parts = SegmentSeparatorRegex.Split(withoutBrackets.Trim());
         for (var index = 0; index < parts.Length; index++)
         {
@@ -556,17 +570,22 @@ public static class IcdIndexSnapshotBuilder
                     topLevelHuoCount++;
                 }
 
+                pendingCommaTail = parenDepth == 0 && parts[index] is "，" or "、";
                 continue;
             }
 
+            // 括注段：段起点在未闭合括号内（本段文本嵌在上一段开启的括号里）。
+            var parenTail = parenDepth > 0;
             var segment = NecTokenRegex.Replace(parts[index], string.Empty).Trim();
             if (segment.Length > 0)
             {
                 // 尾段词在 precedingText 里已经出现过（"蒙克贝格动脉硬化、变性、病或硬化" 的 硬化）
                 // 说明本行的核心名词就是它，仍是合法锚点；没出现过（"施莫尔病或结节" 的 结节、
                 // "杰克逊癫癎或发作" 的 发作）才是继承头段人名的第二名词。
-                mainSegments.Add((segment, topLevelHuoCount > 0
-                    && !precedingText.Contains(segment, StringComparison.Ordinal)));
+                mainSegments.Add((segment,
+                    topLevelHuoCount > 0 && !precedingText.Contains(segment, StringComparison.Ordinal),
+                    index > 0 && pendingCommaTail,
+                    parenTail));
             }
 
             precedingText += parts[index];
@@ -585,30 +604,43 @@ public static class IcdIndexSnapshotBuilder
 
         if (mainSegments.Count == 0)
         {
-            mainSegments.Add((NecTokenRegex.Replace(withoutBrackets, string.Empty).Trim(), false));
+            mainSegments.Add((NecTokenRegex.Replace(withoutBrackets, string.Empty).Trim(), false, false, false));
         }
 
         for (var index = 0; index < mainSegments.Count; index++)
         {
-            var (segment, huoTail) = mainSegments[index];
+            var (segment, huoTail, commaTail, parenTail) = mainSegments[index];
             var weight = index == 0 ? 1.0m : 0.85m;
-            Add(segment, weight, huoTail);
+            Add(segment, weight, huoTail, commaTail, parenTail);
             var stripped = ParenthesisRegex.Replace(segment, string.Empty).Trim();
             // 核心词长度可为 1："－肺(活动性)(感染后)" 的裸部位词 肺 是索引 "主导词→部位" 
             // 下钻的合法目标，丢掉它会让 "右肺…钙化" 这类输入无处下钻。
             if (stripped.Length >= 1 && stripped != segment)
             {
-                Add(stripped, weight, huoTail);
+                Add(stripped, weight, huoTail, commaTail, parenTail);
+            }
+
+            // 头段词别名：第一个括号/方括号前的纯文本（"艾滋病 (相关复合征)…" → "艾滋病"）。
+            // ParenthesisRegex 无法处理嵌套括号（"(另见 人 (类)…)"），导致 stripped 仍含尾部噪声，
+            // 归一化别名键不是头段词，输入"艾滋病性脑炎"无法召回该主导词。
+            var headWord = HeadWordRegex.Replace(segment, string.Empty).Trim();
+            if (headWord.Length >= 1 && headWord != segment && headWord != stripped)
+            {
+                Add(headWord, weight, huoTail, commaTail, parenTail);
             }
         }
 
         foreach (var content in bracketContent)
         {
-            Add(content, 0.85m, false);
+            Add(content, 0.85m, false, false, false);
         }
 
         return result
-            .Select(pair => new IcdIndexAlias(pair.Key, pair.Value.Weight, pair.Value.MatchKey, pair.Value.HuoTail))
+            .Select(pair => new IcdIndexAlias(pair.Key, pair.Value.Weight, pair.Value.MatchKey, pair.Value.HuoTail)
+            {
+                CommaTail = pair.Value.CommaTail,
+                ParenTail = pair.Value.ParenTail,
+            })
             .ToList();
     }
 
@@ -635,6 +667,13 @@ public static class IcdIndexSnapshotBuilder
 
     public static readonly System.Text.RegularExpressions.Regex ParenthesisRegex =
         new(@"[（(][^（()）]*[）)]", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// 头段词提取：匹配从第一个括号/方括号开始到末尾的全部内容。
+    /// "艾滋病 (相关复合征)[获得性免疫缺陷综合征](另见 人 (类)，免疫缺陷病毒 [HIV] 病)" → 移除后剩 "艾滋病"。
+    /// </summary>
+    private static readonly System.Text.RegularExpressions.Regex HeadWordRegex =
+        new(@"[\[（(].*$", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     private static readonly System.Text.RegularExpressions.Regex ParenthesisedDirectiveRegex =
         new(@"[（(][^（()）]*(?:另?见)[^（()）]*[）)]", System.Text.RegularExpressions.RegexOptions.Compiled);

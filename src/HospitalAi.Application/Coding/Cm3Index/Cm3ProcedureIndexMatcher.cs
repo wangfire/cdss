@@ -139,6 +139,72 @@ public static class Cm3ProcedureIndexMatcher
             && node.JumpKind == Cm3JumpKind.None
             && ConnectorCoreTerms.Contains(node.CoreTerm);
 
+    /// <summary>主导词节点级门控（"编码录入"名称拆分复用）：部位限定词须为输入已声明子集，病程/否定极不相反。</summary>
+    public static bool LeadNodeAllows(Cm3IndexNode lead, string inputKey)
+        => NodeAllows(lead, Cm3SiteQualifiers.Extract(inputKey), inputKey);
+
+    /// <summary>
+    /// "编码录入"名称拆分（<c>Cm3NameLeadTermSplitter</c>）复用的别名锚点门控：
+    /// 与 <see cref="RecallLeads"/> 同一套噪声防线（或 尾段锚、惯例泛词、单字别名不锚），
+    /// 只把 MatchesInput 的模糊覆盖判定换成调用方的全量匹配（严格子串）判定——
+    /// 本方法不判"是否命中"，只判"命中了能不能当主导词锚"。词头部位串门控不需要：
+    /// 严格子串命中时词头必然已写在输入里。纯连接词别名（伴/与）不得作锚：
+    /// 它们是术式修饰链的接续符（修补术→伴结膜瓣），不是主导词。
+    /// </summary>
+    /// <summary>
+    /// "主导词，修饰" 行的修饰段声明核对（"编码录入"专用，口径同诊断侧）：
+    /// 头段(≥2字)+修饰段(≥2字) 的逗号行，修饰段必须在输入中有 ≥2 字连续词面。
+    /// 豁免：头段单字的同义族行与修饰段单字。流水线不动。
+    /// </summary>
+    private static bool CommaTailDeclaredInInput(Cm3IndexNode lead, string inputKey)
+    {
+        var commaIndex = lead.Term.IndexOfAny(['，', ',', '、']);
+        if (commaIndex < 0)
+        {
+            return true;
+        }
+
+        var head = TextMatch.NormalizeKey(lead.Term[..commaIndex]);
+        var tail = TextMatch.NormalizeKey(lead.Term[(commaIndex + 1)..]);
+        if (head.Length < 2 || tail.Length < 2)
+        {
+            return true;
+        }
+
+        // 同义族行豁免（判定口径同诊断侧：TextMatch.IsSynonymousCommaTail）。
+        if (TextMatch.IsSynonymousCommaTail(head, tail))
+        {
+            return true;
+        }
+
+        if (inputKey.Contains(tail, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        for (var length = Math.Min(tail.Length, inputKey.Length); length >= 2; length--)
+        {
+            for (var start = 0; start + length <= tail.Length; start++)
+            {
+                if (inputKey.Contains(tail.Substring(start, length), StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public static bool NameLookupAnchorAllowed(Cm3IndexNode lead, Cm3IndexAlias alias, string inputKey)
+        => alias.RecallAnchor
+            && !alias.CommaTail
+            && !alias.ParenTail
+            && !GenericLeadKeys.Contains(alias.Key)
+            && !ConnectorCoreTerms.Contains(alias.Key)
+            && alias.Key.Length >= 2
+            && CommaTailDeclaredInInput(lead, inputKey);
+
     public static IReadOnlyList<Cm3LeadWordHit> RecallLeads(
         Cm3IndexSnapshot snapshot,
         string inputKey,

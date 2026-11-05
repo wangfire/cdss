@@ -136,10 +136,17 @@ public sealed class Cm3IndexNode
 /// <summary>
 /// 匹配别名。MatchKey 为剥离泛化修饰括号后的键，下钻增益按它计算（口径同诊断侧）。
 /// RecallAnchor=false 表示该键来自方括号注解或 或 尾段，不得单独作召回锚点，仍参与下钻。
+/// CommaTail 标记该键是否来自 "A，B" 式并列的 逗号 尾段（索引 "主导词，部位" 惯例的
+/// 部位/限定段）——不是核心词，"编码录入"拆分不得以它作主导词锚。
+/// ParenTail 标记该键是否来自括注内的切段——流水线照旧作召回锚，"编码录入"拆分排除。
 /// </summary>
 public sealed record Cm3IndexAlias(string Key, decimal Weight, string MatchKey)
 {
     public bool RecallAnchor { get; set; } = true;
+
+    public bool CommaTail { get; init; }
+
+    public bool ParenTail { get; init; }
 }
 
 /// <summary>
@@ -370,16 +377,17 @@ public static class Cm3IndexSnapshotBuilder
 
     /// <summary>
     /// 别名生成（口径同诊断侧 <c>ParseAliases</c>，去掉 CM3 库中为 0 条的形态）：
-    /// 并列段按 [或，,、] 切，首段 1.0、其余 0.85；圆括号生成含/不含两变体；
+    /// 并列段按 [或，,、] 切（捕获组记录分隔符），首段 1.0、其余 0.85；圆括号生成含/不含两变体；
     /// 方括号内容（`[TGS]`、`[重组人活化蛋白 C]` 这类英文缩写注释）另存为 0.85 别名，
     /// 但禁止单独作召回锚点——它不是主导词，只是同一事物的另一种写法。
+    /// 逗号/顿号 尾段标 CommaTail（索引 "主导词，部位" 惯例的部位段，不作编码录入主导词锚）。
     /// NEC/NOS 是索引控制标记（未分类），剥离后保留主体词别名。
     /// </summary>
     public static IReadOnlyList<Cm3IndexAlias> ParseAliases(string text)
     {
-        var result = new Dictionary<string, (decimal Weight, string MatchKey, bool Bracket)>();
+        var result = new Dictionary<string, (decimal Weight, string MatchKey, bool Bracket, bool CommaTail, bool ParenTail)>();
 
-        void Add(string value, decimal weight, bool bracket)
+        void Add(string value, decimal weight, bool bracket, bool commaTail, bool parenTail)
         {
             var key = TextMatch.NormalizeKey(value);
             if (key.Length < 1)
@@ -395,44 +403,76 @@ public static class Cm3IndexSnapshotBuilder
 
             if (!result.TryGetValue(key, out var existing) || weight > existing.Weight)
             {
-                result[key] = (weight, matchKey, bracket);
+                result[key] = (weight, matchKey, bracket, commaTail, parenTail);
             }
         }
 
         var (withoutBrackets, bracketContent) = StripBrackets(text);
-        var segments = SegmentSeparatorRegex.Split(withoutBrackets.Trim())
-            .Where(segment => segment.Length > 0)
-            .Select(segment => NecTokenRegex.Replace(segment, string.Empty).Trim())
-            .Where(segment => segment.Length > 0)
-            .ToList();
+        // 切段口径同诊断侧（[或，,、] 都切、非首段 0.85）。括注切段标 ParenTail：段起点在
+        // 括号内（"尿道结石病(伴有绞痛或感染)" 的 感染）——流水线照旧作召回锚（校准口径），
+        // "编码录入"拆分经 NameLookupAnchorAllowed 排除。逗号/顿号 尾段标 CommaTail（部位段）。
+        var parenDepth = 0;
+        var pendingCommaTail = false;
+        var parts = SegmentSeparatorRegex.Split(withoutBrackets.Trim());
+        var segments = new List<(string Value, bool CommaTail, bool ParenTail)>();
+        for (var index = 0; index < parts.Length; index++)
+        {
+            if (index % 2 == 1)
+            {
+                pendingCommaTail = parenDepth == 0 && parts[index] is "，" or "、";
+                continue;
+            }
+
+            var parenTail = parenDepth > 0;
+            var segment = NecTokenRegex.Replace(parts[index], string.Empty).Trim();
+            if (segment.Length > 0)
+            {
+                segments.Add((segment, index > 0 && pendingCommaTail, parenTail));
+            }
+
+            foreach (var character in parts[index])
+            {
+                if (character is '（' or '(')
+                {
+                    parenDepth++;
+                }
+                else if (character is '）' or ')' && parenDepth > 0)
+                {
+                    parenDepth--;
+                }
+            }
+        }
+
         if (segments.Count == 0)
         {
-            segments.Add(NecTokenRegex.Replace(withoutBrackets, string.Empty).Trim());
+            segments.Add((NecTokenRegex.Replace(withoutBrackets, string.Empty).Trim(), false, false));
         }
 
         for (var index = 0; index < segments.Count; index++)
         {
-            var segment = segments[index];
+            var (segment, commaTail, parenTail) = segments[index];
             var weight = index == 0 ? 1.0m : 0.85m;
-            Add(segment, weight, false);
+            Add(segment, weight, false, commaTail, parenTail);
             var stripped = ParenthesisRegex.Replace(segment, string.Empty).Trim();
             // 核心词长度可为 1："―胆囊" 去括号后仍是整词，而 "鼻（外）（内的）" 剥完只剩 鼻，
             // 单字部位词是索引 "主导词 → 部位" 下钻的合法目标，不能丢。
             if (stripped.Length >= 1 && stripped != segment)
             {
-                Add(stripped, weight, false);
+                Add(stripped, weight, false, commaTail, parenTail);
             }
         }
 
         foreach (var content in bracketContent)
         {
-            Add(content, 0.85m, true);
+            Add(content, 0.85m, true, false, false);
         }
 
         return result
             .Select(pair => new Cm3IndexAlias(pair.Key, pair.Value.Weight, pair.Value.MatchKey)
             {
                 RecallAnchor = !pair.Value.Bracket,
+                CommaTail = pair.Value.CommaTail,
+                ParenTail = pair.Value.ParenTail,
             })
             .ToList();
     }
@@ -485,7 +525,8 @@ public static class Cm3IndexSnapshotBuilder
     public static readonly System.Text.RegularExpressions.Regex ParenthesisRegex =
         new(@"[（(][^（()）]*[）)]", System.Text.RegularExpressions.RegexOptions.Compiled);
 
-    /// <summary>并列分隔符：CM3 词面同时用半角逗号（"―肠,肠 NEC"）与全角逗号。</summary>
+    /// <summary>并列分隔符（带捕获组，Split 保留分隔符本身以区分 或/逗号 尾段）：
+    /// CM3 词面同时用半角逗号（"―肠,肠 NEC"）与全角逗号。</summary>
     private static readonly System.Text.RegularExpressions.Regex SegmentSeparatorRegex =
-        new(@"[或，,、]", System.Text.RegularExpressions.RegexOptions.Compiled);
+        new(@"([或，,、])", System.Text.RegularExpressions.RegexOptions.Compiled);
 }

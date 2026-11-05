@@ -51,15 +51,29 @@ public sealed class OpenAiCompatibleModelGateway : IModelGateway, IEmbeddingGate
             return UnavailableGeneration(request.ModelCode);
         }
 
+        // Schema 随请求到达时必须注入提示：响应约束（response_format）只保证"是 JSON"，
+        // 不保证字段名与结构——模型不知道 Schema 就只能猜字段（实测猜成 result/reason）。
+        // 小模型（3B）在仅提示约束下会把 Schema 原样复读，故有 Schema 时改用
+        // json_schema 结构化输出（Ollama 受约束解码），保证字段名与类型逐字合规。
+        object responseFormat = string.IsNullOrWhiteSpace(request.ResponseSchemaJson)
+            ? new { type = "json_object" }
+            : new
+            {
+                type = "json_schema",
+                json_schema = new
+                {
+                    name = "response",
+                    schema = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(
+                        request.ResponseSchemaJson)
+                }
+            };
         var payload = new
         {
             model,
             temperature = request.Temperature,
             max_tokens = request.MaxTokens,
-            // Schema 随请求到达时必须注入提示：响应约束（response_format）只保证"是 JSON"，
-            // 不保证字段名与结构——模型不知道 Schema 就只能猜字段（实测猜成 result/reason）。
             messages = BuildMessages(request, request.ResponseSchemaJson),
-            response_format = new { type = "json_object" }
+            response_format = responseFormat
         };
 
         var stopwatch = Stopwatch.StartNew();

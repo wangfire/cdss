@@ -45,7 +45,7 @@ public static class RabbitMqWorkerRegistration
                         // 队列持久化，避免 RabbitMQ 重启后丢失待处理任务。
                         endpoint.Durable = true;
                         endpoint.AutoDelete = false;
-                        endpoint.PrefetchCount = 8;
+                        endpoint.PrefetchCount = 4;
                         endpoint.BindDeadLetterQueue(
                             "coding.task.created.dead",
                             "coding.task.created.dead");

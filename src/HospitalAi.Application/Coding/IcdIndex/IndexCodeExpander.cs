@@ -777,11 +777,18 @@ public static class IndexCodeExpander
         string fallbackCodeSystem,
         bool titleReverseEnabled)
     {
+        // 联合编码（†/*）：字典无联合展开时，直接返回索引原始编码（如 E72.0† N16.3*），
+        // 不合成假联合码（E72.007+N16.3*），也不拆成两个独立码——编码员口径要求成对出现。
+        if (parsed.Kind == IndexCodeFormatKind.DaggerPair)
+        {
+            return [new ExpandedItem(
+                fallbackCodeSystem, parsed.Raw, parsed.Raw, FallbackScore, parsed.Kind,
+                IsIndexFallback: true, IsConditionalAddOn: false,
+                Note: "字典库无此联合编码")];
+        }
+
         var components = parsed.Kind switch
         {
-            IndexCodeFormatKind.DaggerPair
-                when parsed.DaggerCode is { Length: > 0 } dagger && parsed.AsteriskCode is { Length: > 0 } asterisk
-                => [dagger, asterisk],
             IndexCodeFormatKind.Morphology when parsed.SiteCode is { Length: > 0 } site => [site],
             IndexCodeFormatKind.Alternatives
                 when parsed.Alternatives is { } alternatives => alternatives.Select(item => item.Raw).ToList(),

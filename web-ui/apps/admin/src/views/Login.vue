@@ -15,11 +15,17 @@ import {
   Input,
   Label,
   Checkbox,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from '@tabtab/ui'
 import { ApiError } from '@/api/http'
 import {
   ArrowRight,
   BarChart3,
+  Building2,
   CheckCircle2,
   Eye,
   EyeOff,
@@ -403,21 +409,25 @@ async function handleLogin() {
 
           <div class="space-y-2">
             <Label for="hospitalId">{{ t('login.hospitalId') }}</Label>
-            <select
-              v-if="!manualHospitalInput && hospitalOptions.length"
-              id="hospitalId"
-              :value="hospitalId"
-              required
-              autocomplete="off"
-              class="flex h-11 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              @change="onHospitalSelect(($event.target as HTMLSelectElement).value)"
-            >
-              <option value="" disabled>{{ t('login.hospitalSelectPlaceholder') }}</option>
-              <option v-for="h in hospitalOptions" :key="h.id" :value="h.id">
-                {{ h.name }}（{{ h.code }}）
-              </option>
-              <option value="__manual__">{{ t('login.hospitalManualInput') }}</option>
-            </select>
+            <div v-if="!manualHospitalInput && hospitalOptions.length" class="relative">
+              <Building2
+                class="absolute left-3 top-1/2 z-10 h-4 w-4 -translate-y-1/2 pointer-events-none text-muted-foreground"
+              />
+              <Select
+                :model-value="hospitalId"
+                @update:model-value="onHospitalSelect(String($event))"
+              >
+                <SelectTrigger id="hospitalId" class="w-full !h-11 pl-10">
+                  <SelectValue :placeholder="t('login.hospitalSelectPlaceholder')" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem v-for="h in hospitalOptions" :key="h.id" :value="h.id">
+                    {{ h.name }}（{{ h.code }}）
+                  </SelectItem>
+                  <SelectItem value="__manual__">{{ t('login.hospitalManualInput') }}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <Input
               v-else
               id="hospitalId"

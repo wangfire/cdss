@@ -304,7 +304,7 @@ function handleViewAll() {
                     {{ formatTime(notification.createdAt) }}
                   </span>
                 </div>
-                <p class="text-xs text-muted-foreground line-clamp-2 mt-1 leading-relaxed">
+                <p class="text-xs text-muted-foreground line-clamp-6 whitespace-pre-line mt-1 leading-relaxed">
                   {{ notification.message }}
                 </p>
               </div>
@@ -369,7 +369,7 @@ function handleViewAll() {
                     {{ formatTime(notification.createdAt) }}
                   </span>
                 </div>
-                <p class="text-xs text-muted-foreground line-clamp-2 mt-0.5 leading-relaxed">
+                <p class="text-xs text-muted-foreground line-clamp-6 whitespace-pre-line mt-0.5 leading-relaxed">
                   {{ notification.message }}
                 </p>
               </div>
@@ -431,7 +431,7 @@ function handleViewAll() {
                     {{ formatTime(notification.createdAt) }}
                   </span>
                 </div>
-                <p class="text-xs text-muted-foreground/80 line-clamp-2 mt-0.5 leading-relaxed">
+                <p class="text-xs text-muted-foreground/80 line-clamp-6 whitespace-pre-line mt-0.5 leading-relaxed">
                   {{ notification.message }}
                 </p>
               </div>
@@ -493,7 +493,7 @@ function handleViewAll() {
                     {{ formatTime(notification.createdAt) }}
                   </span>
                 </div>
-                <p class="text-xs text-muted-foreground/70 line-clamp-2 mt-0.5 leading-relaxed">
+                <p class="text-xs text-muted-foreground/70 line-clamp-6 whitespace-pre-line mt-0.5 leading-relaxed">
                   {{ notification.message }}
                 </p>
               </div>

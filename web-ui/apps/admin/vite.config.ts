@@ -20,7 +20,7 @@ export default defineConfig({
     // 生产环境由 nginx 承担同样的反代角色（deploy/nginx/cdss.conf）。
     proxy: {
       '/api': {
-        target: process.env.VITE_API_PROXY_TARGET || 'http://localhost:5081',
+        target: process.env.VITE_API_PROXY_TARGET || 'http://localhost:5080',
         changeOrigin: true,
       },
     },

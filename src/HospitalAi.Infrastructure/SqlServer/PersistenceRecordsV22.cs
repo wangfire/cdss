@@ -294,3 +294,20 @@ public sealed class QualityIssueRecord
 
     public byte[] RowVersion { get; set; } = [];
 }
+
+
+/// <summary>
+/// 流水线运行时配置（WP-A 前端生产化：工作台设置抽屉）。
+/// 单行键值：config_key='v22lite'，config_json 为 V22PipelineOptions 的覆盖项 JSON。
+/// API 更新后 Worker 在下一次任务执行时读取生效（无缓存，任务级新鲜度）。
+/// </summary>
+public sealed class PipelineRuntimeConfigRecord
+{
+    public Guid Id { get; set; }
+
+    public string ConfigKey { get; set; } = string.Empty;
+
+    public string ConfigJson { get; set; } = "{}";
+
+    public DateTimeOffset UpdatedAt { get; set; }
+}

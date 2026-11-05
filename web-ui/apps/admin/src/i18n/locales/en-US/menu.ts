@@ -6,6 +6,7 @@ export default {
   workbench: 'Coding Workbench',
   knowledge: 'Knowledge Base',
   caseEntry: 'Case Entry',
+  codingEntry: 'Coding Entry',
   // Error pages
   login: 'Login',
   unauthorized: 'Unauthorized',

@@ -97,4 +97,19 @@ public sealed class V22PipelineOptions
 
     /// <summary>LlmScore 校验用的解释 Prompt 版本。</summary>
     public string PromptVersion { get; set; } = "v22-explanation-v2";
+
+    /// <summary>
+    /// 复制到另一实例（运行时覆盖基线用）：逐字段拷贝，新增开关字段时同步维护。
+    /// </summary>
+    public void CopyTo(V22PipelineOptions target)
+    {
+        target.IcdIndexEnabled = IcdIndexEnabled;
+        target.IcdTitleDirectEnabled = IcdTitleDirectEnabled;
+        target.IcdTitleReverseEnabled = IcdTitleReverseEnabled;
+        target.Cm3IndexEnabled = Cm3IndexEnabled;
+        target.Cm3TitleDirectEnabled = Cm3TitleDirectEnabled;
+        target.VectorEnabled = VectorEnabled;
+        target.RerankEnabled = RerankEnabled;
+        target.RuleEngineEnabled = RuleEngineEnabled;
+    }
 }

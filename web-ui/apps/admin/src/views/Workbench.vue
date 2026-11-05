@@ -8,6 +8,7 @@ import {
   History,
   Loader2,
   Search,
+  Settings,
   ShieldCheck,
   Sparkles,
   XCircle,
@@ -15,6 +16,7 @@ import {
 import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, onUpdated, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
+import { useNotificationStore } from '@/stores/notification'
 import { useUserStore } from '@/stores/user'
 import { ApiError, workbenchApi } from '@/api'
 import type {
@@ -33,6 +35,7 @@ import {
   CardTitle,
   Input,
   Label,
+  Progress,
   ScrollArea,
   Select,
   SelectContent,
@@ -45,6 +48,7 @@ import {
   SheetDescription,
   SheetHeader,
   SheetTitle,
+  Switch,
   Tabs,
   TabsContent,
   TabsList,
@@ -297,6 +301,236 @@ const degradedLabels: Record<string, string> = {
 function stageLabel(stage: string) {
   const key = stageLabels[stage]
   return key ? t(key) : stage
+}
+
+/* ============== 流水线设置抽屉（运行时配置 + 批量重跑，user.manage） ============== */
+const settingsOpen = ref(false)
+const pipelineLoading = ref(false)
+const pipelineSaving = ref(false)
+const rerunning = ref(false)
+const rerunConfirm = ref(false)
+let rerunConfirmTimer: ReturnType<typeof setTimeout> | null = null
+const pcIcdTitleDirect = ref(false)
+const pcCm3TitleDirect = ref(false)
+const pcIcdTitleReverse = ref(false)
+const pcUpdatedAt = ref<string | null>(null)
+
+/* 重跑进度（每 5 秒轮询工作台统计）：inFlight>0 视为重跑进行中，禁用重跑按钮 */
+const rerunProgress = ref<{ total: number; done: number; inFlight: number } | null>(null)
+let progressTimer: ReturnType<typeof setInterval> | null = null
+/* 重跑会话：触发重跑时登记，轮询到 inFlight 归零即完成并发送通知中心。
+   持久化到 localStorage——页面刷新/HMR/路由切换后恢复会话并续跑轮询，完成通知不丢。 */
+interface RerunSession {
+  total: number
+  startedAt: Date
+  observedInFlight: boolean
+}
+
+const RERUN_SESSION_KEY = 'workbench:rerun-session'
+
+function loadRerunSession(): RerunSession | null {
+  try {
+    const raw = localStorage.getItem(RERUN_SESSION_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { total: number; startedAt: string; observedInFlight: boolean }
+    const startedAt = new Date(parsed.startedAt)
+    // 超过 24 小时的残留会话视为过期丢弃
+    if (Number.isNaN(startedAt.getTime()) || Date.now() - startedAt.getTime() > 24 * 3_600_000) {
+      localStorage.removeItem(RERUN_SESSION_KEY)
+      return null
+    }
+    return { total: parsed.total, startedAt, observedInFlight: parsed.observedInFlight }
+  }
+  catch {
+    return null
+  }
+}
+
+const rerunSession = ref<RerunSession | null>(loadRerunSession())
+
+watch(rerunSession, (value) => {
+  if (value) {
+    localStorage.setItem(RERUN_SESSION_KEY, JSON.stringify({
+      total: value.total,
+      startedAt: value.startedAt.toISOString(),
+      observedInFlight: value.observedInFlight,
+    }))
+  }
+  else {
+    localStorage.removeItem(RERUN_SESSION_KEY)
+  }
+}, { deep: true })
+
+const notificationStore = useNotificationStore()
+
+function formatDuration(ms: number) {
+  const totalSeconds = Math.round(ms / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return minutes > 0 ? `${minutes}分${seconds}秒` : `${seconds}秒`
+}
+
+function formatClock(date: Date) {
+  return date.toLocaleTimeString('zh-CN', { hour12: false })
+}
+
+const rerunPercent = computed(() => {
+  const p = rerunProgress.value
+  if (!p || p.total <= 0) return 0
+  return Math.min(100, Math.round((p.done / p.total) * 100))
+})
+
+const rerunInProgress = computed(() => (rerunProgress.value?.inFlight ?? 0) > 0)
+
+async function refreshRerunProgress() {
+  try {
+    const stats = await workbenchApi.getTaskStats()
+    const count = (status: string) => stats.byStatus.find(item => item.status === status)?.count ?? 0
+    const inFlight = count('PENDING') + count('RUNNING')
+    rerunProgress.value = {
+      total: stats.total,
+      done: Math.max(0, stats.total - inFlight),
+      inFlight,
+    }
+
+    const session = rerunSession.value
+    if (session) {
+      if (inFlight > 0) {
+        session.observedInFlight = true
+      }
+      else if (session.observedInFlight) {
+        // 重跑会话完成：PENDING/RUNNING 全部清零
+        const endedAt = new Date()
+        const elapsedMs = endedAt.getTime() - session.startedAt.getTime()
+        const perMinute = elapsedMs > 0 ? (session.total / (elapsedMs / 60000)).toFixed(1) : '-'
+        notificationStore.addNotification({
+          title: '批量重跑完成',
+          // 通知面板已支持 whitespace-pre-line（clamp-6），五行明细完整展示
+          message: [
+            `总任务数：${session.total}`,
+            `开始时间：${formatClock(session.startedAt)}`,
+            `结束时间：${formatClock(endedAt)}`,
+            `总耗时：${formatDuration(elapsedMs)}`,
+            `平均速率：${perMinute} 条/分钟`,
+          ].join('\n'),
+          type: 'success',
+          actionUrl: '/workbench',
+          actionLabel: '查看工作台',
+        })
+        rerunSession.value = null
+        if (!settingsOpen.value) stopProgressPolling()
+      }
+    }
+  }
+  catch {
+    // 保留上次快照，下一轮再试
+  }
+}
+
+watch(settingsOpen, (open) => {
+  if (open) {
+    void refreshRerunProgress()
+    startProgressPolling()
+  }
+  else if (!rerunSession.value) {
+    // 抽屉关闭且无进行中的重跑会话才停轮询；重跑期间保持轮询以便发送完成通知
+    stopProgressPolling()
+  }
+})
+
+function stopProgressPolling() {
+  if (progressTimer) {
+    clearInterval(progressTimer)
+    progressTimer = null
+  }
+}
+
+function startProgressPolling() {
+  if (!progressTimer) progressTimer = setInterval(() => void refreshRerunProgress(), 5_000)
+}
+
+onBeforeUnmount(stopProgressPolling)
+
+// 恢复未完成的重跑会话后立即续跑轮询（页面刷新/HMR 后完成通知不丢）
+onMounted(() => {
+  if (rerunSession.value) {
+    void refreshRerunProgress()
+    startProgressPolling()
+  }
+})
+
+function formatUpdatedAt(value: string | null) {
+  if (!value) return ''
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString()
+}
+
+async function openPipelineSettings() {
+  settingsOpen.value = true
+  pipelineLoading.value = true
+  try {
+    const cfg = await workbenchApi.getPipelineConfig()
+    pcIcdTitleDirect.value = cfg.icdTitleDirect
+    pcCm3TitleDirect.value = cfg.cm3TitleDirect
+    pcIcdTitleReverse.value = cfg.icdTitleReverse
+    pcUpdatedAt.value = cfg.updatedAt
+  }
+  catch (err) {
+    toast.error(err instanceof ApiError ? err.message : t('common.error'))
+    settingsOpen.value = false
+  }
+  finally {
+    pipelineLoading.value = false
+  }
+}
+
+async function savePipelineConfig() {
+  pipelineSaving.value = true
+  try {
+    const cfg = await workbenchApi.updatePipelineConfig({
+      icdTitleDirect: pcIcdTitleDirect.value,
+      cm3TitleDirect: pcCm3TitleDirect.value,
+      icdTitleReverse: pcIcdTitleReverse.value,
+    })
+    pcUpdatedAt.value = cfg.updatedAt
+    toast.success('配置已保存，下一个任务执行起生效')
+  }
+  catch (err) {
+    toast.error(err instanceof ApiError ? err.message : t('common.error'))
+  }
+  finally {
+    pipelineSaving.value = false
+  }
+}
+
+async function rerunPipeline() {
+  if (!rerunConfirm.value) {
+    rerunConfirm.value = true
+    if (rerunConfirmTimer) clearTimeout(rerunConfirmTimer)
+    rerunConfirmTimer = setTimeout(() => {
+      rerunConfirm.value = false
+    }, 5000)
+    return
+  }
+  if (rerunConfirmTimer) clearTimeout(rerunConfirmTimer)
+  rerunConfirm.value = false
+  rerunning.value = true
+  try {
+    const res = await workbenchApi.rerunPipeline()
+    toast.success(`已重新入队 ${res.rerunCount} 个任务`)
+    if (res.rerunCount > 0) {
+      rerunSession.value = { total: res.rerunCount, startedAt: new Date(), observedInFlight: false }
+      // 重跑会话期间保持轮询（即使抽屉关闭），完成时发通知中心
+      startProgressPolling()
+    }
+    void refreshRerunProgress()
+  }
+  catch (err) {
+    toast.error(err instanceof ApiError ? err.message : t('common.error'))
+  }
+  finally {
+    rerunning.value = false
+  }
 }
 
 function degradedLabel(flag: string) {
@@ -871,6 +1105,110 @@ const canSubmitReview = computed(
       </div>
     </div>
   </div>
+
+  <!-- 流水线设置悬浮按钮（右侧居中，user.manage 可见） -->
+  <Button
+    v-if="userStore.hasAnyPermission(['user.manage'])"
+    size="icon"
+    class="fixed right-3 top-1/2 -translate-y-1/2 z-40 h-10 w-10 rounded-full shadow-lg border border-border/60 bg-background hover:bg-muted"
+    title="流水线设置"
+    @click="openPipelineSettings"
+  >
+    <Settings class="h-5 w-5 text-muted-foreground" />
+  </Button>
+
+  <!-- 流水线设置抽屉（运行时配置 + 批量重跑） -->
+  <Sheet v-model:open="settingsOpen">
+    <SheetContent side="right" class="w-[400px] sm:max-w-[400px] p-0 gap-0 flex flex-col">
+      <SheetHeader class="px-4 py-3 border-b border-border/40">
+        <SheetTitle class="flex items-center gap-2 text-base">
+          <Settings class="h-4 w-4 text-violet-500" />
+          流水线设置
+        </SheetTitle>
+        <SheetDescription class="text-xs">
+          匹配通道开关实时生效于下一个执行的任务；修改后可手动批量重跑历史数据
+        </SheetDescription>
+      </SheetHeader>
+
+      <ScrollArea class="flex-1 min-h-0">
+        <div class="p-4 space-y-4">
+          <div v-if="pipelineLoading" class="flex items-center justify-center py-8 text-sm text-muted-foreground">
+            <Loader2 class="h-4 w-4 animate-spin mr-2" />加载中...
+          </div>
+          <template v-else>
+            <!-- 通道开关 -->
+            <div class="space-y-3">
+              <div class="flex items-center justify-between gap-3 rounded-md border border-border/50 px-3 py-2.5">
+                <div class="min-w-0">
+                  <p class="text-sm font-medium">诊断侧字典标题直达</p>
+                  <p class="text-xs text-muted-foreground mt-0.5">诊断名逐字命中字典标题时直接产出编码</p>
+                </div>
+                <Switch v-model="pcIcdTitleDirect" />
+              </div>
+              <div class="flex items-center justify-between gap-3 rounded-md border border-border/50 px-3 py-2.5">
+                <div class="min-w-0">
+                  <p class="text-sm font-medium">手术侧字典标题直达</p>
+                  <p class="text-xs text-muted-foreground mt-0.5">手术名逐字命中 CM3 字典标题时直接产出编码</p>
+                </div>
+                <Switch v-model="pcCm3TitleDirect" />
+              </div>
+              <div class="flex items-center justify-between gap-3 rounded-md border border-border/50 px-3 py-2.5">
+                <div class="min-w-0">
+                  <p class="text-sm font-medium">同族标题反查</p>
+                  <p class="text-xs text-muted-foreground mt-0.5">标题未直击时按同族近义标题反查候选编码</p>
+                </div>
+                <Switch v-model="pcIcdTitleReverse" />
+              </div>
+            </div>
+
+            <div class="flex items-center gap-2">
+              <Button size="sm" :disabled="pipelineSaving" @click="savePipelineConfig">
+                <Loader2 v-if="pipelineSaving" class="h-3.5 w-3.5 mr-1 animate-spin" />
+                保存配置
+              </Button>
+              <span v-if="pcUpdatedAt" class="text-[11px] text-muted-foreground">
+                更新于 {{ formatUpdatedAt(pcUpdatedAt) }}
+              </span>
+            </div>
+
+            <Separator />
+
+            <!-- 批量重跑 -->
+            <div class="space-y-2">
+              <p class="text-sm font-medium">批量重跑</p>
+              <p class="text-xs text-muted-foreground">
+                将本院全部终态任务（待审核/已接受/已修改/已拒绝/失败）置回队列重新执行；
+                旧推荐不删除，新版本落库后自动标记 STALE。大库重跑耗时较长，请谨慎操作。
+              </p>
+              <Button
+                size="sm"
+                variant="destructive"
+                :disabled="rerunning || pipelineSaving || rerunInProgress"
+                @click="rerunPipeline"
+              >
+                <Loader2 v-if="rerunning" class="h-3.5 w-3.5 mr-1 animate-spin" />
+                {{ rerunInProgress ? '重跑进行中...' : rerunConfirm ? '再次点击确认重跑' : '开始批量重跑' }}
+              </Button>
+
+              <!-- 重跑进度（每 5 秒自动刷新） -->
+              <!-- 进度条只在重跑会话激活（点击开始重跑）后显示 -->
+              <div v-if="rerunSession && rerunProgress" class="space-y-1.5 pt-1">
+                <div class="flex items-center justify-between text-xs">
+                  <span>
+                    任务总数 <span class="font-medium text-foreground">{{ rerunProgress.total }}</span>
+                    · 已跑 <span class="font-medium text-foreground">{{ rerunProgress.done }}</span>
+                    <span v-if="rerunProgress.inFlight > 0" class="text-amber-600">· 进行中 {{ rerunProgress.inFlight }}</span>
+                  </span>
+                  <span class="text-muted-foreground tabular-nums">{{ rerunPercent }}%</span>
+                </div>
+                <Progress :model-value="rerunPercent" />
+              </div>
+            </div>
+          </template>
+        </div>
+      </ScrollArea>
+    </SheetContent>
+  </Sheet>
 
   <!-- 流水线运行记录（Trace 审计）抽屉 -->
   <Sheet v-model:open="tracesOpen">

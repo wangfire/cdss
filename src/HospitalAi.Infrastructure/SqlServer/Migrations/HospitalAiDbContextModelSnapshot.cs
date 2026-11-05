@@ -2163,6 +2163,36 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                     b.ToTable("patient", (string)null);
                 });
 
+            modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.PipelineRuntimeConfigRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ConfigJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("config_json");
+
+                    b.Property<string>("ConfigKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("config_key");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConfigKey")
+                        .IsUnique();
+
+                    b.ToTable("pipeline_runtime_config", (string)null);
+                });
+
             modelBuilder.Entity("HospitalAi.Infrastructure.SqlServer.PipelineTraceRecord", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3229,7 +3259,6 @@ namespace HospitalAi.Infrastructure.SqlServer.Migrations
                     b.Navigation("CodingTasks");
                 });
 #pragma warning restore 612, 618
-
         }
     }
 }

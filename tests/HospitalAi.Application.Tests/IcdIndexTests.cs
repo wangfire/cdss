@@ -1192,9 +1192,10 @@ public sealed class IcdIndexTests
     }
 
     [Fact]
-    public void Expand_加星组合回退拆成病因与表现两码()
+    public void Expand_加星组合回退合成联合编码()
     {
-        // 索引编码 "E85.4† K93.8*" 不是一个编码，旧口径整串回退会产出一个查不到的码。
+        // 索引编码 "E85.4† K93.8*" 在字典中无联合码时，直接返回索引原始编码，
+        // 不合成假联合码（E85.400+K93.8*），也不拆成两个独立码——编码员口径要求成对出现。
         var parsed = ParsedIndexCode.Parse("E85.4† K93.8*");
         var dictionary = new IcdDictionarySnapshot([
             Dict("E85.400", "限定于器官的淀粉样变"),
@@ -1205,9 +1206,10 @@ public sealed class IcdIndexTests
             parsed, dictionary, "直肠隆起病变性质待定",
             TextMatch.NormalizeKey("直肠隆起病变性质待定"), maxResults: 3);
 
-        Assert.Equal(2, results.Count);
-        Assert.Contains("E85.400", results.Select(item => item.Code));
-        Assert.Contains("K93.8*", results.Select(item => item.Code));
+        var only = Assert.Single(results);
+        Assert.Equal("E85.4† K93.8*", only.Code);
+        Assert.True(only.IsIndexFallback);
+        Assert.Contains("字典库无此联合编码", only.Note);
     }
 
     [Fact]

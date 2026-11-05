@@ -9,6 +9,8 @@ import type {
   CodingReviewResponse,
   CodingTaskStatus,
   PipelineRunResponse,
+  PipelineConfigResponse,
+  PipelineRerunResponse,
 } from './types-cdss'
 
 export const workbenchApi = {
@@ -35,4 +37,16 @@ export const workbenchApi = {
 
   submitReview: (taskId: string, data: ReviewCodingTaskRequest) =>
     http.post<CodingReviewResponse>(`/api/v1/coding-tasks/${taskId}/review`, data),
+
+  /** 流水线运行时配置（工作台设置抽屉），读/写均需 user.manage 权限。 */
+  getPipelineConfig: () => http.get<PipelineConfigResponse>('/api/v1/admin/pipeline-config'),
+
+  updatePipelineConfig: (data: {
+    icdTitleDirect: boolean
+    cm3TitleDirect: boolean
+    icdTitleReverse: boolean
+  }) => http.put<PipelineConfigResponse>('/api/v1/admin/pipeline-config', data),
+
+  /** 批量重跑：当前医院全部终态任务置回 Pending 重新入队，返回重跑任务数。 */
+  rerunPipeline: () => http.post<PipelineRerunResponse>('/api/v1/admin/pipeline/rerun'),
 }

@@ -3,6 +3,7 @@ import { CheckCircle2, FilePlus2, Loader2, ArrowRight, Sparkles } from 'lucide-v
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
+import { useNotificationStore } from '@/stores/notification'
 import { ApiError, caseEntryApi, workbenchApi } from '@/api'
 import type { CaseEntryResponse, CodingRecommendationResponse } from '@/api'
 import {
@@ -20,6 +21,7 @@ import {
 
 const { t } = useI18n()
 const router = useRouter()
+const notificationStore = useNotificationStore()
 
 const today = new Date().toISOString().slice(0, 10)
 

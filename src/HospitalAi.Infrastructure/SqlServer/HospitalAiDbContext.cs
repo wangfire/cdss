@@ -69,6 +69,8 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
 
     public DbSet<ClinicalFactRecord> ClinicalFacts => Set<ClinicalFactRecord>();
 
+    public DbSet<PipelineRuntimeConfigRecord> PipelineRuntimeConfigs => Set<PipelineRuntimeConfigRecord>();
+
     public DbSet<ClinicalEvidenceRecord> ClinicalEvidences => Set<ClinicalEvidenceRecord>();
 
     public DbSet<ClinicalFactEvidenceRecord> ClinicalFactEvidences => Set<ClinicalFactEvidenceRecord>();
@@ -105,6 +107,7 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
         ConfigureClinicalEntity(modelBuilder);
         ConfigureClinicalFact(modelBuilder);
         ConfigureClinicalEvidence(modelBuilder);
+        ConfigurePipelineRuntimeConfig(modelBuilder);
         ConfigureClinicalFactEvidence(modelBuilder);
         ConfigureCodingDiagnosisInput(modelBuilder);
         ConfigureCodingCandidate(modelBuilder);
@@ -618,6 +621,7 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
         var entity = modelBuilder.Entity<ClinicalFactRecord>();
 
         entity.ToTable("clinical_fact");
+
         ConfigureCommonProperties(entity);
         entity.Property(item => item.HospitalId).HasColumnName("hospital_id").IsRequired();
         entity.Property(item => item.VisitId).HasColumnName("visit_id").IsRequired();
@@ -641,6 +645,19 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
             .HasDatabaseName("ix_clinical_fact_hospital_visit");
         entity.HasIndex(item => new { item.CodingTaskId, item.PipelineRunId })
             .HasDatabaseName("ix_clinical_fact_task_run");
+    }
+
+    private static void ConfigurePipelineRuntimeConfig(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PipelineRuntimeConfigRecord>();
+
+        entity.ToTable("pipeline_runtime_config");
+
+        entity.Property(item => item.Id).HasColumnName("id");
+        entity.Property(item => item.ConfigKey).HasColumnName("config_key").HasMaxLength(64).IsRequired();
+        entity.Property(item => item.ConfigJson).HasColumnName("config_json").IsRequired();
+        entity.Property(item => item.UpdatedAt).HasColumnName("updated_at");
+        entity.HasIndex(item => item.ConfigKey).IsUnique();
     }
 
     private static void ConfigureClinicalEvidence(ModelBuilder modelBuilder)

@@ -10,6 +10,7 @@ import error from './error'
 import workbench from './workbench'
 import knowledge from './knowledge'
 import caseEntry from './caseEntry'
+import codingEntry from './codingEntry'
 import account from './account'
 import theme from './theme'
 import layout from './layout'
@@ -24,6 +25,7 @@ export default {
   workbench,
   knowledge,
   caseEntry,
+  codingEntry,
   account,
   theme,
   layout,

@@ -1,8 +1,12 @@
-﻿using HospitalAi.Api;
+using HospitalAi.Api;
+using HospitalAi.Domain.CodingTasks;
+using HospitalAi.Worker.Pipeline;
+using HospitalAi.Infrastructure.Outbox;
 using HospitalAi.Api.Observability;
 using HospitalAi.Api.Security;
 using HospitalAi.Application.Abstractions;
 using HospitalAi.Application.Common;
+using HospitalAi.Application.Coding.NameLookup;
 using HospitalAi.Application.Security;
 using HospitalAi.Contracts.CodingTasks;
 using HospitalAi.Contracts.CodingKnowledge;
@@ -13,6 +17,7 @@ using HospitalAi.Contracts.Patients;
 using HospitalAi.Contracts.Security;
 using HospitalAi.Contracts.Visits;
 using HospitalAi.Infrastructure.CodingKnowledge;
+using HospitalAi.Infrastructure.CodingLookup;
 using HospitalAi.Infrastructure.CodingRecommendations;
 using HospitalAi.Infrastructure.CodingTasks;
 using HospitalAi.Infrastructure.Observability;
@@ -66,6 +71,7 @@ var connectionString = !string.IsNullOrWhiteSpace(configuredConnectionString)
 
 builder.Services.AddDbContext<HospitalAiDbContext>(options =>
     options.UseSqlServer(connectionString));
+builder.Services.AddScoped<OutboxStore>();
 builder.Services.AddScoped<RequestContext>();
 builder.Services.AddScoped<IRequestContext>(
     serviceProvider => serviceProvider.GetRequiredService<RequestContext>());
@@ -76,6 +82,12 @@ builder.Services.AddScoped<ICodingTaskService, SqlServerCodingTaskService>();
 builder.Services.AddScoped<ICodingKnowledgeService, SqlServerCodingKnowledgeService>();
 builder.Services.AddScoped<ICodingRecommendationService, SqlServerCodingRecommendationService>();
 builder.Services.AddScoped<IV22CodingService, SqlServerV22CodingService>();
+// "编码录入"名称解析：复用平台级索引/字典快照（AddCodingTaskPipeline 已注册），无状态即时解析。
+builder.Services.AddScoped<INameCodingLookupService, NameCodingLookupService>();
+// 标题通道开关与流水线运行时配置同源（pipeline_runtime_config "v22lite"，基线 V22PipelineOptions）。
+builder.Services.AddScoped<
+    HospitalAi.Application.Coding.NameLookup.ITitleChannelConfigSource,
+    RuntimeTitleChannelConfigSource>();
 builder.Services.AddScoped<IReferenceDataService, SqlServerReferenceDataService>();
 builder.Services.AddScoped<ITraceQueryService, SqlServerTraceQueryService>();
 builder.Services.AddScoped<ISecurityService, SqlServerSecurityService>();
@@ -359,7 +371,15 @@ app.MapGet(
         string? keyword,
         CancellationToken cancellationToken) =>
     {
-        var query = db.MedicalCodes.AsQueryable();
+        // 字典展示去重：多医院各导入一份相同字典副本时，同 code_system+code+title 存在多行
+        // （实测 102100 行 = 51050 条 × 2 院），弹窗与知识库页面只应展示一条。
+        // 保留每组最小 Id 行；同一编码不同标题（差异副本）仍各自展示。
+        // 运行时字典快照按医院隔离加载（EfIcdDictionarySource），不受此展示层去重影响。
+        var dedupedIds = db.MedicalCodes
+            .GroupBy(code => new { code.CodeSystemCode, code.Code, code.Title })
+            .Select(group => (Guid?)group.Min(code => code.Id));
+        IQueryable<MedicalCodeRecord> query = db.MedicalCodes
+            .Where(code => dedupedIds.Contains(code.Id));
         if (!string.IsNullOrEmpty(codeSystem))
             query = query.Where(c => c.CodeSystemCode == codeSystem);
         if (!string.IsNullOrEmpty(keyword))
@@ -1681,6 +1701,146 @@ app.MapGet(
         return Results.Ok(ApiEnvelope.Create(response));
     }).RequireAuthorization(RbacPolicies.CodingReader);
 
+// ===== 流水线运行时配置（工作台设置抽屉，WP-A 前端生产化） =====
+
+// 流水线配置响应：三个开关 + 最近更新时间。
+
+
+// 读取当前运行时覆盖配置（无行时返回 appsettings 基线）。
+app.MapGet(
+    "/api/v1/admin/pipeline-config",
+    async (HospitalAiDbContext db, IOptions<V22PipelineOptions> options, CancellationToken cancellationToken) =>
+    {
+        var row = await db.PipelineRuntimeConfigs
+            .AsNoTracking()
+            .SingleOrDefaultAsync(item => item.ConfigKey == "v22lite", cancellationToken);
+        if (row is null)
+        {
+            var baseline = options.Value;
+            return Results.Ok(ApiEnvelope.Create(new PipelineConfigResponse(
+                baseline.IcdTitleDirectEnabled,
+                baseline.Cm3TitleDirectEnabled,
+                baseline.IcdTitleReverseEnabled,
+                baseline.VectorEnabled,
+                baseline.RerankEnabled,
+                baseline.RuleEngineEnabled,
+                null)));
+        }
+
+        using var doc = System.Text.Json.JsonDocument.Parse(row.ConfigJson);
+        var root = doc.RootElement;
+        var settings = options.Value;
+        return Results.Ok(ApiEnvelope.Create(new PipelineConfigResponse(
+            root.TryGetProperty("IcdTitleDirectEnabled", out var v1) ? v1.GetBoolean() : settings.IcdTitleDirectEnabled,
+            root.TryGetProperty("Cm3TitleDirectEnabled", out var v2) ? v2.GetBoolean() : settings.Cm3TitleDirectEnabled,
+            root.TryGetProperty("IcdTitleReverseEnabled", out var v3) ? v3.GetBoolean() : settings.IcdTitleReverseEnabled,
+            root.TryGetProperty("VectorEnabled", out var v4) ? v4.GetBoolean() : settings.VectorEnabled,
+            root.TryGetProperty("RerankEnabled", out var v5) ? v5.GetBoolean() : settings.RerankEnabled,
+            root.TryGetProperty("RuleEngineEnabled", out var v6) ? v6.GetBoolean() : settings.RuleEngineEnabled,
+            row.UpdatedAt)));
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.UserManage));
+
+// 更新运行时覆盖配置：整行 upsert，下一次任务执行即生效（Worker 每任务读一次）。
+app.MapPut(
+    "/api/v1/admin/pipeline-config",
+    async (
+        UpdatePipelineConfigRequest request,
+        HospitalAiDbContext db,
+        IOptions<V22PipelineOptions> options,
+        CancellationToken cancellationToken) =>
+    {
+        var baseline = options.Value;
+        var configJson = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            IcdTitleDirectEnabled = request.IcdTitleDirect,
+            Cm3TitleDirectEnabled = request.Cm3TitleDirect,
+            IcdTitleReverseEnabled = request.IcdTitleReverse,
+            VectorEnabled = request.VectorEnabled ?? baseline.VectorEnabled,
+            RerankEnabled = request.RerankEnabled ?? baseline.RerankEnabled,
+            RuleEngineEnabled = request.RuleEngineEnabled ?? baseline.RuleEngineEnabled,
+        });
+        var now = DateTimeOffset.UtcNow;
+        var row = await db.PipelineRuntimeConfigs
+            .SingleOrDefaultAsync(item => item.ConfigKey == "v22lite", cancellationToken);
+        if (row is null)
+        {
+            row = new PipelineRuntimeConfigRecord
+            {
+                Id = Guid.NewGuid(),
+                ConfigKey = "v22lite",
+                ConfigJson = configJson,
+                UpdatedAt = now
+            };
+            db.PipelineRuntimeConfigs.Add(row);
+        }
+        else
+        {
+            row.ConfigJson = configJson;
+            row.UpdatedAt = now;
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.Ok(ApiEnvelope.Create(new PipelineConfigResponse(
+            request.IcdTitleDirect,
+            request.Cm3TitleDirect,
+            request.IcdTitleReverse,
+            request.VectorEnabled ?? baseline.VectorEnabled,
+            request.RerankEnabled ?? baseline.RerankEnabled,
+            request.RuleEngineEnabled ?? baseline.RuleEngineEnabled,
+            row.UpdatedAt)));
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.UserManage));
+
+// 批量重跑：医院全部终态任务（含待审核/已接受/已修改/已拒绝/失败）置回 Pending 并重新入队。
+// 返回重跑任务数；旧推荐不删（新版本推荐落库后旧版自然 STALE）。
+
+app.MapPost(
+    "/api/v1/admin/pipeline/rerun",
+    async (
+        [Microsoft.AspNetCore.Mvc.FromServices] HospitalAiDbContext db,
+        [Microsoft.AspNetCore.Mvc.FromServices] OutboxStore outbox,
+        [Microsoft.AspNetCore.Mvc.FromServices] IRequestContext requestContext,
+        CancellationToken cancellationToken) =>
+    {
+        var terminal = new[]
+        {
+            CodingTaskStatus.PendingReview, CodingTaskStatus.Accepted, CodingTaskStatus.Modified,
+            CodingTaskStatus.Rejected, CodingTaskStatus.Failed
+        };
+        var tasks = await db.CodingTasks
+            .Where(item => item.HospitalId == requestContext.HospitalId && terminal.Contains(item.Status))
+            .ToListAsync(cancellationToken);
+        var now = DateTimeOffset.UtcNow;
+        foreach (var task in tasks)
+        {
+            task.Status = CodingTaskStatus.Pending;
+            task.ErrorCode = string.Empty;
+            task.UpdatedAt = now;
+            // 复用任务原 TraceId：Consumer 按 hospital_id + task_id + trace_id 定位既有
+            // PipelineTrace，新 GUID 会导致"编码任务缺少 Pipeline Trace"异常而空转。
+            var originalTraceId = await db.PipelineTraces
+                .Where(item => item.CodingTaskId == task.Id && item.HospitalId == task.HospitalId)
+                .OrderBy(item => item.CreatedAt)
+                .Select(item => item.TraceId)
+                .FirstOrDefaultAsync(cancellationToken) ?? Guid.NewGuid().ToString("N");
+            var message = new CodingTaskCreatedMessage(
+                Guid.NewGuid(),
+                task.HospitalId,
+                task.Id,
+                task.VisitId,
+                task.PipelineVersion,
+                originalTraceId,
+                requestContext.IdempotencyKey);
+            outbox.Add(OutboxMessage.Create(
+                message.MessageId,
+                task.HospitalId,
+                "coding.task.created",
+                System.Text.Json.JsonSerializer.Serialize(message, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))));
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.Ok(ApiEnvelope.Create(new PipelineRerunResponse(tasks.Count)));
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.UserManage));
+
 // 工作台任务状态统计（仪表盘统计卡）：数据库端 GROUP BY，无全量拉取。
 app.MapGet(
     "/api/v1/workbench/tasks/stats",
@@ -2061,6 +2221,31 @@ app.MapPost(
         return Results.Ok(ApiEnvelope.Create(response));
     }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.CodingCaseEntry));
 
+// ===== "编码录入"：诊断/手术名称 → 主导词全量匹配拆分 → 修饰词下钻 → 有效编码推荐 =====
+app.MapPost(
+    "/api/v1/coding/name-lookup",
+    async (
+        NameLookupRequest request,
+        INameCodingLookupService service,
+        CancellationToken cancellationToken) =>
+    {
+        var kind = request.Kind?.Trim().ToLowerInvariant();
+        if (kind is not (NameCodingLookupEngine.DiagnosisKind or NameCodingLookupEngine.ProcedureKind))
+        {
+            return Results.BadRequest(ApiEnvelope.Create<object>(new { error = "INVALID_KIND" }));
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Text))
+        {
+            return Results.BadRequest(ApiEnvelope.Create<object>(new { error = "EMPTY_TEXT" }));
+        }
+
+        var response = await service.LookupAsync(
+            request with { Kind = kind, Text = request.Text.Trim() },
+            cancellationToken);
+        return Results.Ok(ApiEnvelope.Create(response));
+    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.CodingCaseEntry));
+
 app.MapPost(
     "/api/v1/coding/tasks/{taskId:guid}/diagnoses:batch",
     async (
@@ -2246,3 +2431,23 @@ app.Run();
 public partial class Program
 {
 }
+
+public sealed record PipelineConfigResponse(
+    bool IcdTitleDirect,
+    bool Cm3TitleDirect,
+    bool IcdTitleReverse,
+    bool VectorEnabled,
+    bool RerankEnabled,
+    bool RuleEngineEnabled,
+    DateTimeOffset? UpdatedAt);
+
+public sealed record UpdatePipelineConfigRequest(
+    bool IcdTitleDirect,
+    bool Cm3TitleDirect,
+    bool IcdTitleReverse,
+    bool? VectorEnabled,
+    bool? RerankEnabled,
+    bool? RuleEngineEnabled);
+
+public sealed record PipelineRerunResponse(
+    int RerunCount);

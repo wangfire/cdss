@@ -1,4 +1,4 @@
-﻿﻿/**
+/**
  * CDSS 业务 API 类型定义（Phase 1 + Phase 2）
  */
 
@@ -434,4 +434,124 @@ export interface DependencyStatusInfo {
 export interface ReadinessResponse {
   status: 'healthy' | 'degraded' | 'unhealthy'
   dependencies: Record<string, DependencyStatusInfo>
+}
+
+/* ============== 流水线运行时配置（工作台设置抽屉，user.manage 权限） ============== */
+
+export interface PipelineConfigResponse {
+  icdTitleDirect: boolean
+  cm3TitleDirect: boolean
+  icdTitleReverse: boolean
+  vectorEnabled: boolean
+  rerankEnabled: boolean
+  ruleEngineEnabled: boolean
+  updatedAt: string | null
+}
+
+export interface PipelineRerunResponse {
+  rerunCount: number
+}
+
+/* ============== 编码录入：诊断/手术名称解析（主导词全量匹配 → 修饰词 → 有效编码） ============== */
+
+export interface NameLookupRequest {
+  kind: 'diagnosis' | 'procedure'
+  text: string
+  topK?: number | null
+}
+
+/** 字典标题直达命中（标题与输入逐字相等或被完整包含）。 */
+export interface NameLookupDictionaryDirect {
+  codeSystem: string
+  code: string
+  title: string
+  depth: number
+}
+
+/** 全量匹配主导词：term 为索引原始行名（如 梗死，梗塞），displayTerm 非空时为同义族行的
+ *  直观显示词面（梗死）；redirectKey 非空表示经失效主导词转示行锚定（阿米巴 → 阿米巴病）。 */
+export interface NameLookupLeadTerm {
+  seqNo: number
+  term: string
+  displayTerm: string | null
+  hitAlias: string
+  coveredChars: number
+  position: number
+  tailHit: boolean
+  modifierPaths: NameLookupModifierPath[]
+  redirectKey: string | null
+}
+
+/** 一个主导词下按输入走出的修饰词链路（path[0] 恒为主导词）。 */
+export interface NameLookupModifierPath {
+  path: string[]
+  pathKey: string
+  indexCode: string | null
+  fromAncestorFallback: boolean
+  jumps: string[]
+  seeAlsoHint: boolean
+  codes: NameLookupCodeItem[]
+}
+
+/** 链路展开出的候选码（来自字典展开或显式索引回退）。 */
+export interface NameLookupCodeItem {
+  codeSystem: string
+  code: string
+  title: string
+  score: number
+  isIndexFallback: boolean
+  note: string | null
+}
+
+/** 合并后的最终推荐（跨主导词去重；dictionaryDirect=true 表示来自字典标题直达）。 */
+export interface NameLookupRecommendation {
+  codeSystem: string
+  code: string
+  title: string
+  score: number
+  isIndexFallback: boolean
+  dictionaryDirect: boolean
+  leadTerm: string | null
+  path: string[]
+  note: string | null
+}
+
+/** 标题通道开关（与流水线运行时配置 pipeline_runtime_config "v22lite" 同源，随解析响应回显）。 */
+export interface NameLookupTitleChannelsInfo {
+  icdTitleDirect: boolean
+  cm3TitleDirect: boolean
+  icdTitleReverse: boolean
+}
+
+export interface NameLookupResponse {
+  kind: string
+  requestText: string
+  normalizedText: string
+  codeSystem: string
+  titleChannels: NameLookupTitleChannelsInfo
+  dictionaryDirects: NameLookupDictionaryDirect[]
+  leadTerms: NameLookupLeadTerm[]
+  recommendations: NameLookupRecommendation[]
+  degradedFlags: string[]
+}
+
+/** 最终编码提交（保存为病例后回填已确认编码用）。 */
+export interface FinalResultItem {
+  resultType: string
+  codeSystem: string
+  code: string
+  title: string
+  sourceRecommendationId?: string | null
+}
+
+export interface FinalResultSubmitRequest {
+  codingTaskId?: string | null
+  diagnosisInputId?: string | null
+  items: FinalResultItem[]
+}
+
+export interface FinalResultSubmitResponse {
+  codingTaskId: string
+  finalCodingCount: number
+  confirmedAt: string
 }

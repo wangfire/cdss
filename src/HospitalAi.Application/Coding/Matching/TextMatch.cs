@@ -174,6 +174,32 @@ public static class TextMatch
     }
 
     /// <summary>
+    /// 逗号/顿号行的尾段是否与头段同义（"编码录入"显示词面与修饰段声明核对共用）：
+    /// 全部尾段以头段首字开头，或与头段互为包含——"梗死，梗塞"（共首字 梗）、
+    /// "炎，炎症(性)，发炎(伴有渗出)"（字根 炎）是真同义族；
+    /// "出血，经间期"、"出血、凝血或凝血酶原时间延长"（仅共尾字 血）不是——
+    /// 尾段是独立语义的修饰语，须按声明核对处理。
+    /// </summary>
+    public static bool IsSynonymousCommaTail(string head, string tail)
+    {
+        var segments = tail.Split(['，', ',', '、', '或']);
+        if (segments.Length == 0 || head.Length == 0)
+        {
+            return true;
+        }
+
+        var firstCharacter = head[0];
+        return segments.All(segment =>
+        {
+            var value = segment.Trim();
+            return value.Length > 0
+                && (value.StartsWith(firstCharacter)
+                    || value.Contains(head, StringComparison.Ordinal)
+                    || head.StartsWith(value, StringComparison.Ordinal));
+        });
+    }
+
+    /// <summary>
     /// fragment 通过 ≥2 连续公共片段在 text 中占住的字符位置集合（反复取 LCS 并把已占位掩掉）。
     /// 下钻"新内容"判定用：位置口径才能区分 "先兆流产→伴有随后性流产"（流产 已被路径占过）
     /// 与 "阻塞性→慢性"（慢性 是输入里的新片段）。

@@ -171,7 +171,7 @@ public static class NameCodingLookupEngine
         if (drill is not null
             && PathOverlapRatio(drill.Path, variantKey) >= MinPathOverlap
             && drill.Path.Skip(1).Where(node => !IcdIndexMatcher.IsConnectorNode(node))
-                .All(node => ModifierNodeAllowed(node, variantKey))
+                .All(node => ModifierNodeAllowed(node, variantKey, snapshot, drill.Path))
             && drill.Path.Skip(1).All(node => ChildNotCoveredByPathLiteral(node, drill.Path, variantKey)))
         {
             paths.Add(BuildIcdPath(hit, text, drill, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: false));
@@ -183,7 +183,7 @@ public static class NameCodingLookupEngine
                 foreach (var hint in drill.SeeAlsoHints.Take(2))
                 {
                     if (!hint.Path.Skip(1).Where(node => !IcdIndexMatcher.IsConnectorNode(node))
-                            .All(node => ModifierNodeAllowed(node, variantKey)))
+                            .All(node => ModifierNodeAllowed(node, variantKey, snapshot, hint.Path)))
                     {
                         continue;
                     }
@@ -205,7 +205,7 @@ public static class NameCodingLookupEngine
             var conflictIndex = drill.Path
                 .Select((node, idx) => (node, idx))
                 .Skip(1)
-                .Where(entry => !ModifierNodeAllowed(entry.node, variantKey)
+                .Where(entry => !ModifierNodeAllowed(entry.node, variantKey, snapshot, drill.Path)
                     || !ChildNotCoveredByPathLiteral(entry.node, drill.Path, variantKey))
                 .Select(entry => (int?)entry.idx)
                 .FirstOrDefault();
@@ -264,7 +264,7 @@ public static class NameCodingLookupEngine
                 && !alsoDrill.CodeFromAncestorFallback
                 && alsoDrill.CodeNode.Code != leadOwnCode
                 && alsoDrill.Path.Skip(1).Where(node => !IcdIndexMatcher.IsConnectorNode(node))
-                    .All(node => ModifierNodeAllowed(node, variantKey))
+                    .All(node => ModifierNodeAllowed(node, variantKey, snapshot, alsoDrill.Path))
                 && alsoDrill.Path.Skip(1).All(node => ChildNotCoveredByPathLiteral(node, alsoDrill.Path, variantKey)))
             {
                 paths.Add(BuildIcdPath(hit, text, alsoDrill, dictionary, tumor, candidates, channels, variantKey,
@@ -301,9 +301,15 @@ public static class NameCodingLookupEngine
                     snapshot,
                     new LeadWordHit(child, childAlias, 1m, childAlias.Key.Length),
                     variantKey);
-                if (childDrill is null
-                    || !childDrill.Path.Skip(1).Where(node => !IcdIndexMatcher.IsConnectorNode(node))
-                        .All(node => ModifierNodeAllowed(node, variantKey)))
+                if (childDrill is null)
+                {
+                    continue;
+                }
+
+                var childPathNodes = new List<IcdIndexNode>(childDrill.Path.Count + 1) { hit.Node };
+                childPathNodes.AddRange(childDrill.Path);
+                if (!childDrill.Path.Skip(1).Where(node => !IcdIndexMatcher.IsConnectorNode(node))
+                        .All(node => ModifierNodeAllowed(node, variantKey, snapshot, childPathNodes)))
                 {
                     continue;
                 }
@@ -371,9 +377,15 @@ public static class NameCodingLookupEngine
                         snapshot,
                         new LeadWordHit(grandchild, grandAlias, 1m, grandAlias.Key.Length),
                         variantKey);
-                    if (grandDrill is null
-                        || !grandDrill.Path.Skip(1).Where(node => !IcdIndexMatcher.IsConnectorNode(node))
-                            .All(node => ModifierNodeAllowed(node, variantKey)))
+                    if (grandDrill is null)
+                    {
+                        continue;
+                    }
+
+                    var grandPathNodes = new List<IcdIndexNode>(grandDrill.Path.Count + 2) { hit.Node, connector };
+                    grandPathNodes.AddRange(grandDrill.Path);
+                    if (!grandDrill.Path.Skip(1).Where(node => !IcdIndexMatcher.IsConnectorNode(node))
+                            .All(node => ModifierNodeAllowed(node, variantKey, snapshot, grandPathNodes)))
                     {
                         continue;
                     }
@@ -939,10 +951,152 @@ public static class NameCodingLookupEngine
     /// 只放宽**已选链路的事后核对**，不参与召回与选层；与 <see cref="ChildNotCoveredByPathLiteral"/>
     /// 的 ③ 共用"枚举段是否逐字入文"这同一条判据：入文→有解释力，未入文→字面借道照旧拦。
     /// </summary>
-    private static bool ModifierNodeAllowed(IcdIndexNode node, string inputKey)
+    private static bool ModifierNodeAllowed(
+        IcdIndexNode node,
+        string inputKey,
+        IcdIndexSnapshot snapshot,
+        IReadOnlyList<IcdIndexNode> pathNodes)
         => ModifierNodeMatchesInput(node.CoreTerm, inputKey)
-            || EnumerationSegments(node).Any(segment => inputKey.Contains(segment, StringComparison.Ordinal));
+            || EnumerationSegments(node).Any(segment => inputKey.Contains(segment, StringComparison.Ordinal))
+            || EquivalenceAnnotationAllowed(node, inputKey, snapshot, pathNodes);
 
+    /// <summary>
+    /// 单括号组**等价写法**豁免（诊断侧"编码录入"）：索引把修饰词的同义叫法写进单组圆括号
+    /// （"早期发病(早老性)"——资料口径：主词 → 下位限定 → 同义叫法，早老性 不是再叠一层修饰），
+    /// 输入写 早老性阿尔茨海默病 时核心词 早期发病 不在词面，仅凭 (早老性) 入文即可解释，
+    /// 与 早期发病阿尔茨海默病 应同码（G30.0）。与 ≥2 括号组的枚举豁免
+    /// （沙门菌(亚利桑那)(猪霍乱)…）是两条路。护栏（全部实测噪声换来的，缺一不可）：
+    /// ① 只认单组括号——多组归 <see cref="EnumerationSegments"/> 的枚举口径；
+    /// ② 内容含 或/，/、 是同一槽位的并列写法（肠系膜(淋巴腺或淋巴结)），放行后
+    ///    淋巴结结核四名的正牌 A18.200X006 被 A18.316+K93.0* 顶掉——拦；
+    /// ③ 内容必须**顶格在输入词首**：等价别名替代核心词、天然出现在输入头部
+    ///    （早老性|阿尔茨海默病、婴儿型|多囊肾）；而澄清注解的括号内容多在输入中段
+    ///    （瞳孔|括约肌|麻痹 不拿 肛门(括约肌) 的 K62.5）——拦；
+    /// ④ 内容被**更强的正牌主导词锚点**覆盖时拦：索引里存在包含内容的更长主导词别名、
+    ///    且该别名与输入剩余段有 ≥2 字连续交集——输入其实已（部分）锚住那个主导词，
+    ///    正牌直达链路在场（肾小球硬化 的 肾小球 ⊂ 肾小球硬化症，剩余段 硬化 交集 2 字，
+    ///    35237 N26 链路），硬化(的)→局灶性和节段性(肾小球) 的括号影子链只会在名额里
+    ///    顶掉正牌（N26.X01→N04.101）——拦。反之没有这样的锚点（早老性 主导词是
+    ///    另见死端、子层 痴呆/过早老年 锚不住输入），等价解释是唯一通道——放行。
+    /// ⑤ 内容必须**本身是索引承认的主导词**（LeadByExactKey 命中）：真正的等价叫法
+    ///    （早老性≡早期发病、婴儿型≡常染色体隐性）在索引里立得住正牌主导词行；而
+    ///    澄清属性词（先天性/后天性/创伤性/手术后/特发性）不立主导词，顶格入文的输入
+    ///    （先天性膀胱憩室、创伤性膈疝、手术后肝外胆管狭窄）会撞上 心脏憩室(先天性)、
+    ///    虹膜疝(创伤性)、输尿管(手术后) 这类病名行，把精确 Top1 顶掉或端上回退码
+    ///    （万名实测 7 名 Top1 回归 + 7 名错码补出）——拦。
+    /// ⑥ **输入剩余段必须被链路前缀词完整覆盖**：等价别名只等价替换括号里那一个词，
+    ///    输入其余词面必须仍由本链路解释（早老性|阿尔茨海默病 的剩余段 阿尔茨海默病
+    ///    就是链路主导词本身；婴儿型|多囊肾 的 多囊肾 被路径 多囊→肾 完整覆盖）。
+    ///    澄清属性词行（虹膜(创伤性)、四肢(后天性)、纵隔(特发性)、输尿管(手术后)）与
+    ///    输入剩余段（膈疝/唇缺失/肺间质纤维化/肝外胆管狭窄）无词面关联——拦。
+    ///    ⑤单靠不够：先天性/后天性 是索引自带的泛词兜底主导词行（41907/14972），
+    ///    创伤性/特发性 是"阉割[睾丸切除术]，创伤性，男性"这类 0 级行的逗号尾段别名——
+    ///    都在 LeadByExactKey 里，与正牌 早老性/婴儿型 结构上不可区分（词面赌不了）；
+    ///    剩余段覆盖是唯一能分开两族的语义判据。
+    /// 注意与普查口径（括号内容命中 level-0 强别名=等价注解候选）刻意相反：普查按"索引认识
+    /// 这个词"圈等价面，这里按"输入自己有没有更正的直达链路"放行——判据反着用才保得住精度。
+    /// </summary>
+    private static bool EquivalenceAnnotationAllowed(
+        IcdIndexNode node,
+        string inputKey,
+        IcdIndexSnapshot snapshot,
+        IReadOnlyList<IcdIndexNode> pathNodes)
+    {
+        var groups = NonPointerParenGroups(node.Term);
+        if (groups.Count != 1)
+        {
+            return false;
+        }
+
+        var key = TextMatch.NormalizeKey(groups[0]);
+        if (key.Length < 2
+            || key.Any(char.IsAsciiLetterOrDigit)
+            || key.IndexOfAny(EnumerationSeparators) >= 0
+            || GenericAttributeSegmentKeys.Contains(key)
+            || !snapshot.LeadByExactKey.ContainsKey(key))
+        {
+            return false;
+        }
+
+        if (!inputKey.StartsWith(key, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var rest = inputKey[key.Length..];
+        if (rest.Length == 0)
+        {
+            return false;
+        }
+
+        // 护栏⑥：等价替换后的剩余词面必须被链路前缀（本节点之前的非连接行）完整解释。
+        var nodeIndex = -1;
+        for (var index = 0; index < pathNodes.Count; index++)
+        {
+            if (ReferenceEquals(pathNodes[index], node))
+            {
+                nodeIndex = index;
+                break;
+            }
+        }
+
+        if (nodeIndex < 0)
+        {
+            return false;
+        }
+
+        var pathKeyBuilder = new System.Text.StringBuilder();
+        for (var index = 0; index < nodeIndex; index++)
+        {
+            var prefixNode = pathNodes[index];
+            if (IcdIndexMatcher.IsConnectorNode(prefixNode))
+            {
+                continue;
+            }
+
+            var word = TextMatch.NormalizeKey(prefixNode.CoreTerm);
+            if (word.Length > 0)
+            {
+                pathKeyBuilder.Append(word);
+            }
+        }
+
+        var pathKey = pathKeyBuilder.ToString();
+        if (pathKey.Length == 0)
+        {
+            return false;
+        }
+
+        return TextMatch.CoverageOf(rest, pathKey, countSingleCharSegments: true).Ratio >= 1.0m
+            && !HasStrongerLeadAnchor(snapshot, key, inputKey);
+    }
+
+    /// <summary>是否存在包含括号内容的更长主导词别名、且与输入剩余段（内容之后的词面）
+    /// 有 ≥2 字连续交集——有 → 输入已直接锚住那个主导词、正牌链路在场，括号影子链拦；
+    /// 无 → 内容是死端词，等价豁免放行。</summary>
+    private static bool HasStrongerLeadAnchor(IcdIndexSnapshot snapshot, string key, string inputKey)
+    {
+        var rest = inputKey[key.Length..];
+        if (rest.Length < 2)
+        {
+            return false;
+        }
+
+        foreach (var lead in snapshot.Leads)
+        {
+            foreach (var alias in lead.Aliases)
+            {
+                if (alias.Key.Length > key.Length
+                    && alias.Key.Contains(key, StringComparison.Ordinal)
+                    && LongestCommonSegment(alias.Key, rest) >= 2)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
     /// <summary>
     /// 圆括号里的并列枚举段（已归一化、≥3 字）。三档排除，全部是实测噪声换来的：
     /// ① **只在 ≥2 个非指针括号组时启用**——索引把"同一槽位的并列写法"写成紧邻的多组括号；
@@ -956,18 +1110,7 @@ public static class NameCodingLookupEngine
     /// </summary>
     private static IReadOnlyList<string> EnumerationSegments(IcdIndexNode node)
     {
-        var groups = new List<string>();
-        foreach (System.Text.RegularExpressions.Match match in ParenthesisContentRegex.Matches(node.Term))
-        {
-            var raw = match.Groups[1].Value;
-            if (raw.Contains('见') || raw.Contains("又称") || raw.Contains("译名"))
-            {
-                continue;
-            }
-
-            groups.Add(raw);
-        }
-
+        var groups = NonPointerParenGroups(node.Term).ToList();
         if (groups.Count < 2)
         {
             return [];
@@ -999,6 +1142,23 @@ public static class NameCodingLookupEngine
         }
 
         return segments;
+    }
+
+    private static IReadOnlyList<string> NonPointerParenGroups(string term)
+    {
+        var groups = new List<string>();
+        foreach (System.Text.RegularExpressions.Match match in ParenthesisContentRegex.Matches(term))
+        {
+            var raw = match.Groups[1].Value;
+            if (raw.Contains('见') || raw.Contains("又称") || raw.Contains("译名"))
+            {
+                continue;
+            }
+
+            groups.Add(raw);
+        }
+
+        return groups;
     }
 
     private static readonly System.Text.RegularExpressions.Regex ParenthesisContentRegex =

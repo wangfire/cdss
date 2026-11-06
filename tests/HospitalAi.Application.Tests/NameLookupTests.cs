@@ -797,18 +797,80 @@ public sealed class NameLookupTests
     }
 
     [Fact]
-    public void 括号枚举段准入_单组括号等价写法为已知代价()
+    public void 单组括号等价写法_内容顶格入文时交付同码()
     {
-        // 真库形态（多囊(病) 7837 → 肾 7836 → 常染色体隐性(婴儿型) 7838 Q61.1）。
-        // (婴儿型) 确实是 常染色体隐性 的等价写法、输入也逐字写了 婴儿型，但词面上与
-        // 肛门(括约肌)、肠系膜(淋巴腺或淋巴结) 这类"头段部位词的澄清注解"不可区分
-        // （索引圆括号同时承担两种语义，见技能纪律 5：不要在匹配器里赌括号语义）。
-        // 万名实测：按"≥2 组"放行会让 淋巴结结核/腹腔/腮腺/纵隔 四名的正牌码换位，
-        // 按"≥1 组"只多救回 婴儿型多囊肾 一名 → 记为已知代价，要治归数据侧补主导词行。
+        // 用户口径（11-06）：索引"早期发病(早老性)"里 (早老性) 是 早期发病 的**同义叫法**——
+        // 主词 → 下位限定 → 同义叫法，不是再叠一层修饰；输入 早老性阿尔茨海默病 与
+        // 早期发病阿尔茨海默病 应同码（真库 G30.0 → G30.000）。改前面板 0 推荐
+        // （ModifierNodeAllowed 不认单组括号），流水线/共享匹配器早已走通（IcdIndexDiag 实测）。
+        // 护栏：内容顶格在输入词首（等价别名替代核心词）；内容没被更强的召回锚点包含
+        // （真库 早老性 主导词 47870 单独锚、子层锚不住输入，drill=null 死端 → 放行）；
+        // 内容本身立得住主导词（护栏⑤）——夹具按真库形态补 早老性 另见死端行。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(1, "阿尔茨海默病或硬化"),
+            ChildRow(2, 1, "－早期发病(早老性)", "G30.0"),
+            LeadRow(3, "早老性"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("ICD-10", "G30.000", "阿尔茨海默病伴有早期发病"),
+        ]);
+
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "早老性阿尔茨海默病", topK: 8,
+            icdSnapshot: snapshot, tumorSnapshot: null, icdDictionary: dictionary,
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true));
+
+        var dump = string.Join(" | ", response.Recommendations.Select(item => item.Code + "(" + item.Title + ")"));
+        Assert.True(
+            response.Recommendations.Any(item => item.Code.StartsWith("G30.0", StringComparison.Ordinal)),
+            $"等价写法应与标准写法同码: [{dump}]");
+    }
+
+    [Fact]
+    public void 单组括号等价写法_内容被更强主导词锚点覆盖时不放影子链()
+    {
+        // 护栏 ④ 回归（真库形态 seq 35237/47231）：括号内容 肾小球 被更强的主导词别名
+        // 肾小球硬化症（另见行、N26 正牌链）包含，且该别名与输入剩余段 硬化 有 ≥2 字交集
+        // ——输入已（部分）锚住那个主导词，硬化(性) 下的 局灶性和节段性(肾小球) 影子链
+        // 只会在名额里顶掉正牌（万名实测 肾小球硬化 N26.X01→N04.101）→ 必须仍拦。
+        // 对照：等价内容没有这样的锚点（早老性/婴儿型）才放行。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(1, "肾小球(病)"),
+            ChildRow(2, 1, "－硬化", "N26.1"),
+            LeadRow(3, "肾小球硬化症(另见 硬化，肾)", "N26"),
+            LeadRow(5, "硬化(性)"),
+            ChildRow(6, 5, "－局灶性和节段性(肾小球)", "N04.1"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("ICD-10", "N26.101", "肾小球硬化"),
+            Dict("ICD-10", "N04.101", "局灶性和节段性肾小球硬化"),
+        ]);
+
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "肾小球硬化", topK: 8,
+            icdSnapshot: snapshot, tumorSnapshot: null, icdDictionary: dictionary,
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true));
+
+        var dump = string.Join(" | ", response.Recommendations.Select(item => item.Code + "(" + item.Title + ")"));
+        Assert.True(
+            response.Recommendations.Any(item => item.Code.StartsWith("N26.1", StringComparison.Ordinal)),
+            $"正牌直达链路应交付: [{dump}]");
+        Assert.DoesNotContain(response.Recommendations, item => item.Code.StartsWith("N04.1", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void 单组括号等价写法_内容顶格时补回合法等价面()
+    {
+        // 原为"已知代价"用例（多囊(病) → 肾 → 常染色体隐性(婴儿型) Q61.1）：等价内容 婴儿型
+        // 顶格入文且立不成主导词，按用户口径补回——与 早老性 同一条豁免通道。
+        // 护栏⑤：内容本身是主导词——真库有 婴儿型，婴儿期 主导词行，夹具按真库形态补。
         var snapshot = IcdIndexSnapshotBuilder.Build([
             LeadRow(1, "多囊(病)"),
             ChildRow(2, 1, "－肾", null),
             ChildRow(3, 2, "－－常染色体隐性(婴儿型)", "Q61.1"),
+            LeadRow(4, "婴儿型，婴儿期"),
         ]);
         var dictionary = new IcdDictionarySnapshot([
             Dict("ICD-10", "Q61.101", "婴儿型多囊肾"),
@@ -820,7 +882,39 @@ public sealed class NameLookupTests
             cm3Snapshot: null, cm3Dictionary: null,
             new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true));
 
-        Assert.DoesNotContain(response.Recommendations, item => item.Code == "Q61.101");
+        var dump = string.Join(" | ", response.Recommendations.Select(item => item.Code + "(" + item.Title + ")"));
+        Assert.True(
+            response.Recommendations.Any(item => item.Code.StartsWith("Q61.1", StringComparison.Ordinal)),
+            $"等价写法 婴儿型多囊肾 应拿到多囊肾码: [{dump}]");
+    }
+
+    [Fact]
+    public void 单组括号等价写法_内容不是主导词时不豁免()
+    {
+        // 护栏⑤ 回归：澄清属性词（创伤性）不立主导词，顶格入文的输入（创伤性膈疝）会撞上
+        // 病名行 虹膜疝(创伤性) S05.2——真库万名实测把精确 Top1 K44.9 顶成 S05.207；
+        // 等价豁免只对"内容本身是正牌主导词"的括号（早老性/婴儿型）放行。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(1, "疝(后天性)(复发性)"),
+            ChildRow(2, 1, "－虹膜疝(创伤性)", "S05.2"),
+            LeadRow(3, "膈(疝)", "K44.9"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("ICD-10", "K44.900X001", "膈疝"),
+            Dict("ICD-10", "S05.207", "创伤性虹膜疝"),
+        ]);
+
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "创伤性膈疝", topK: 8,
+            icdSnapshot: snapshot, tumorSnapshot: null, icdDictionary: dictionary,
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true));
+
+        var dump = string.Join(" | ", response.Recommendations.Select(item => item.Code + "(" + item.Title + ")"));
+        Assert.True(
+            response.Recommendations.Any(item => item.Code.StartsWith("K44.9", StringComparison.Ordinal)),
+            $"正牌膈疝链路应交付: [{dump}]");
+        Assert.DoesNotContain(response.Recommendations, item => item.Code.StartsWith("S05.2", StringComparison.Ordinal));
     }
 
     [Fact]

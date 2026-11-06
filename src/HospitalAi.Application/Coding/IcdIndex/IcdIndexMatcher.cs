@@ -169,7 +169,7 @@ public static class IcdIndexMatcher
     /// 的 成 是括号前的头段残段，全库只有这 2 行——放开时 艾滋病性脑膜炎 会锚上 脑(脊)膜瘤，
     /// 而 脑膜炎 与 脑膜瘤 是两个主导词。残段仍按尾重心口径放行（形成 的 成 收尾照样能锚）。
     /// </summary>
-    private static bool IsMorphologyEntry(IcdIndexNode lead, IcdIndexAlias alias)
+    public static bool IsMorphologyEntry(IcdIndexNode lead, IcdIndexAlias alias)
         => alias.Key.Length >= 2 || IsMorphologyLead(lead) && !alias.HeadWord;
 
     /// <summary>

@@ -154,6 +154,46 @@ public static class NameLeadTermSplitter
     }
 
     /// <summary>
+    /// 跨度包含过滤（"编码录入" chip 展示层专用，不下钻）：短主导词的命中跨度被另一命中
+    /// 主导词的更长跨度包含时不再单出——"急性甲型肺炎"同时命中 肺炎(急性)… 与 炎，
+    /// 炎 只是被 肺炎 包住的尾字，chip 留 肺炎 就够（11-06 用户口径）；输入里没有
+    /// 肺炎 这类长主导词时 炎 照常保留。**只关展示**：命中集（下钻/候选）不动，
+    /// 短主导词贡献的推荐仍在（上腹痛 的 痛 正是 R10.101 的产出锚）。
+    /// 形态学入口豁免：中心细胞性淋巴瘤 的 瘤(M8000/1) 是肿瘤形态学树的入口，
+    /// 不能被 淋巴瘤 吃掉。返回应隐藏的 SeqNo 集合。
+    /// </summary>
+    public static HashSet<int> SpanContainedHiddenSeqNos<T>(
+        IEnumerable<T> hits,
+        Func<T, int> seqNo,
+        Func<T, int> position,
+        Func<T, int> coveredChars,
+        Func<T, bool> exempt)
+    {
+        var list = hits.ToList();
+        var hidden = new HashSet<int>();
+        for (var i = 0; i < list.Count; i++)
+        {
+            var hit = list[i];
+            if (exempt(hit))
+            {
+                continue;
+            }
+
+            var end = position(hit) + coveredChars(hit);
+            var contained = list.Any(other => seqNo(other) != seqNo(hit)
+                && coveredChars(other) > coveredChars(hit)
+                && position(other) <= position(hit)
+                && position(other) + coveredChars(other) >= end);
+            if (contained)
+            {
+                hidden.Add(seqNo(hit));
+            }
+        }
+
+        return hidden;
+    }
+
+    /// <summary>
     /// 中段碎片终结（"编码录入"专用，诊断/手术同口径）：
     /// 2 字别名在输入**中段**（非首/尾）命中时——
     /// (a) 其跨度被另一命中主导词跨度严格包含（中心细胞性淋巴瘤：淋巴 ⊂ 淋巴瘤）；

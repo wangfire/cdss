@@ -390,12 +390,14 @@ public sealed class NameLookupTests
 
         var hits = NameLeadTermSplitter.SplitIcd(snapshot, "肺梗死");
 
+        // 拆词层：梗死 与 死 都命中（死 是单字主导词按尾重心锚定）。
         Assert.Equal(2, hits.Count);
         var infarct = hits.Single(hit => hit.Term == "梗死，梗塞");
         Assert.Equal("梗死", infarct.Alias.Key); // 命中的是头段别名
         Assert.Equal("梗死，梗塞", infarct.Term);
 
-        // 引擎层：displayTerm 随响应回传（纯展示，term/去重/证据链不变）。
+        // 引擎层：chip 展示被 梗死 包住的 死 不再单出（跨度包含过滤，只关展示）；
+        // displayTerm 随响应回传（纯展示，term/去重/证据链不变）。
         var response = NameCodingLookupEngine.Lookup(
             NameCodingLookupEngine.DiagnosisKind, "肺梗死", topK: 8,
             icdSnapshot: snapshot, tumorSnapshot: null, icdDictionary: null,
@@ -403,7 +405,7 @@ public sealed class NameLookupTests
         var infarctTerm = response.LeadTerms.Single(item => item.Term == "梗死，梗塞");
         Assert.Equal("梗死", infarctTerm.DisplayTerm);
         Assert.Equal("梗死，梗塞", infarctTerm.Term);
-        Assert.Null(response.LeadTerms.Single(item => item.Term == "死").DisplayTerm);
+        Assert.DoesNotContain(response.LeadTerms, item => item.Term == "死");
     }
 
     [Fact]
@@ -455,6 +457,58 @@ public sealed class NameLookupTests
         Assert.Contains("肺炎(性)", terms);
         // 细胞(性) 的 3 字别名 细胞性 也在输入中段——行是否展示由其自身词面决定，
         // 但 肺炎/结核 两个正牌主导词必须在列。
+    }
+
+    [Fact]
+    public void 长主导词包含短主导词_chip只留长主导词()
+    {
+        // 真库形态：急性甲型肺炎 同时命中 肺炎(急性)… 与 炎，炎 只是被 肺炎 包住的尾字，
+        // chip 留 肺炎 一个主导词就够（用户口径 11-06）。过滤只关展示（引擎层）：
+        // 拆词命中集不动，短主导词贡献的下钻/推荐仍在（上腹痛 的 痛 正是 R10.101 的产出锚）。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(1, "肺炎(急性)(双侧)(移行性)(原发性)(化脓性)(脓毒性)(未吸收)", "J18.9"),
+            LeadRow(2, "炎，炎症(性)，发炎(伴有渗出)(另见 感染)"),
+        ]);
+
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "急性甲型肺炎", topK: 8,
+            icdSnapshot: snapshot, tumorSnapshot: null, icdDictionary: null,
+            cm3Snapshot: null, cm3Dictionary: null);
+
+        Assert.Contains(response.LeadTerms, item => item.Term == "肺炎(急性)(双侧)(移行性)(原发性)(化脓性)(脓毒性)(未吸收)");
+        Assert.DoesNotContain(response.LeadTerms, item => item.Term == "炎，炎症(性)，发炎(伴有渗出)(另见 感染)");
+        // 拆词层不过滤：炎 仍在命中集里（下钻口径不变）。
+        var hits = NameLeadTermSplitter.SplitIcd(snapshot, "急性甲型肺炎");
+        Assert.Contains("炎，炎症(性)，发炎(伴有渗出)(另见 感染)", hits.Select(hit => hit.Term));
+    }
+
+    [Fact]
+    public void 短主导词无长主导词覆盖时保留()
+    {
+        // 同一索引，输入里没有 肺炎 这类长主导词时 炎 chip 要保留（角膜炎 只能靠 炎 锚）。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(1, "肺炎(急性)(双侧)(移行性)(原发性)(化脓性)(脓毒性)(未吸收)", "J18.9"),
+            LeadRow(2, "炎，炎症(性)，发炎(伴有渗出)(另见 感染)"),
+        ]);
+
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "角膜炎", topK: 8,
+            icdSnapshot: snapshot, tumorSnapshot: null, icdDictionary: null,
+            cm3Snapshot: null, cm3Dictionary: null);
+
+        Assert.Contains(response.LeadTerms, item => item.Term == "炎，炎症(性)，发炎(伴有渗出)(另见 感染)");
+    }
+
+    [Fact]
+    public void 形态学入口瘤不被淋巴瘤吃掉()
+    {
+        // 瘤(M8000/1) 是肿瘤形态学树的入口，被 淋巴瘤 的跨度包住也必须保留 chip。
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "中心细胞性淋巴瘤", topK: 8,
+            icdSnapshot: LymphomaSnapshot(), tumorSnapshot: null, icdDictionary: null,
+            cm3Snapshot: null, cm3Dictionary: null);
+
+        Assert.Contains(response.LeadTerms, item => item.Term == "瘤");
     }
 
     [Fact]

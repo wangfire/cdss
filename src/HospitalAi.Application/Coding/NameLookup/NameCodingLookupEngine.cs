@@ -131,6 +131,13 @@ public static class NameCodingLookupEngine
 
         var leadTerms = new List<NameLookupLeadTerm>();
         var candidates = new List<RecommendationAccumulator>();
+        // chip 展示层跨度包含过滤（炎 ⊂ 肺炎 时只留 肺炎）：只关展示，命中集/下钻不动。
+        var hiddenLeads = NameLeadTermSplitter.SpanContainedHiddenSeqNos(
+            splitHits,
+            entry => entry.Hit.SeqNo,
+            entry => entry.Hit.Position,
+            entry => entry.Hit.CoveredChars,
+            entry => IcdIndexMatcher.IsMorphologyEntry(entry.Hit.Node, entry.Hit.Alias));
         var drillBudget = Math.Min(splitHits.Count, MaxDrillLeads);
         for (var index = 0; index < splitHits.Count; index++)
         {
@@ -141,6 +148,11 @@ public static class NameCodingLookupEngine
             // 转示 chip 只在走出修饰词链路时展示（如 阿米巴→阿米巴病）；
             // 无产出的转示（阑尾切除术 的 切除→消融(切除)）属纯噪声，不上屏。
             if (hit.RedirectKey is not null && paths.Count == 0)
+            {
+                continue;
+            }
+
+            if (hiddenLeads.Contains(hit.SeqNo))
             {
                 continue;
             }
@@ -518,6 +530,13 @@ public static class NameCodingLookupEngine
         var hits = snapshot is null
             ? []
             : NameLeadTermSplitter.SplitCm3(snapshot, inputKey, NameLeadTermSplitter.MaxLeads);
+        // chip 展示层跨度包含过滤（同诊断侧，只关展示不下钻）。
+        var hiddenLeads = NameLeadTermSplitter.SpanContainedHiddenSeqNos(
+            hits,
+            hit => hit.SeqNo,
+            hit => hit.Position,
+            hit => hit.CoveredChars,
+            _ => false);
         var drillBudget = Math.Min(hits.Count, MaxDrillLeads);
         for (var index = 0; index < hits.Count; index++)
         {
@@ -527,6 +546,11 @@ public static class NameCodingLookupEngine
                 : [];
             // 同诊断侧：无产出的转示 chip 不上屏。
             if (hit.RedirectKey is not null && paths.Count == 0)
+            {
+                continue;
+            }
+
+            if (hiddenLeads.Contains(hit.SeqNo))
             {
                 continue;
             }

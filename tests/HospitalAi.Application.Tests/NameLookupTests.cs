@@ -330,6 +330,33 @@ public sealed class NameLookupTests
     }
 
     [Fact]
+    public void 〇级指针行括号内容不把拆词改道到别的病()
+    {
+        // 真实行 8800 + 面板实测：慢性丁型肝炎 曾被拆出 慢性 → 改道键 烧伤 → 交付 T30.000。
+        // 0 级指针行括号内容（急性、慢性或职业性）不是这行的词，不得作改道键（用户口径 11-06）。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(8800, "放射性皮肤烧伤(急性、慢性或职业性) - 见 烧伤", status: 1),
+            LeadRow(34395, "烧伤(电流)(火焰)(热气体、液体或物体)(辐射)(蒸气)(热的)", "T30.0"),
+            LeadRow(10924, "肝炎", "K73.9"),
+            ChildRow(10925, 10924, "慢性", "K73.1"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("ICD-10", "K73.100", "慢性肝炎"),
+            Dict("ICD-10", "T30.000", "身体烧伤"),
+        ]);
+
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "慢性丁型肝炎", topK: 8,
+            icdSnapshot: snapshot, tumorSnapshot: null, icdDictionary: dictionary,
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true));
+
+        var dump = string.Join(" | ", response.Recommendations.Select(item => item.Code + "(" + item.Title + ")"));
+        Assert.DoesNotContain(response.Recommendations, item => item.Code.StartsWith("T30", StringComparison.Ordinal));
+        Assert.Contains(response.Recommendations, item => item.Code.StartsWith("K73", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void 黄金用例_逗号修饰段未声明不作主导词锚()
     {
         // 真库形态：伤寒并发肠出血 应锚 伤寒 + 肠出血/出血(性) 泛行；

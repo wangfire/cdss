@@ -276,6 +276,16 @@ public static class IcdIndexSnapshotBuilder
 
             foreach (var alias in node.Aliases)
             {
+                // 0 级指针行的圆括号内容不是这行的词（用户口径 11-06）：
+                // "放射性皮肤烧伤(急性、慢性或职业性) - 见 烧伤" 的括号段 慢性 入改道键后，
+                // 编码录入门把 慢性丁型肝炎 拆出的 慢性 改道到 烧伤，交付 T30.000。
+                // 括号前词面（放射性皮肤烧伤）仍是键；非 0 级行括号内容照旧
+                // （沙门菌(亚利桑那)(猪霍乱)(小肠炎)(鼠伤寒) 的 亚利桑那）。
+                if (alias.ParenTail)
+                {
+                    continue;
+                }
+
                 redirects[alias.Key] = target;
             }
         }

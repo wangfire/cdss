@@ -414,9 +414,14 @@ public static class IcdIndexMatcher
                 // "甲状腺C细胞癌" 只能被 甲状腺X 疾病行借走。
                 // 例外二：单字正是本条病历的结尾核心词（见 IsTailCoreWord）。
                 // 心/汗/红 这类单字行只在收尾时锚定，出现在中部（心肌梗死）照旧拦住。
+                // 0 级主导词的圆括号内容不参与召回锚定（用户口径 11-06，"只要包含()前的内容即可"），
+                // 除非输入恰以该内容收尾——尾重心口径（同 IsTailCoreWord）：特大婴儿 靠
+                // 大于胎龄 NEC(胎儿或婴儿) 的 婴儿 召回（P08.0，拉黑即空推荐），
+                // 而 慢性丁型肝炎 不得被 放射性皮肤烧伤(急性、慢性或职业性) 的 慢性 锚走。
                 if (!alias.RecallAnchor || GenericModifierKeys.Contains(alias.Key)
                     || IsGenericSurgeryAliasOutsideTail(alias.Key, inputKey)
                     || (alias.Key.Length < 2 && !IsMorphologyEntry(lead, alias) && !IsTailCoreWord(alias.Key, inputKey))
+                    || (alias.ParenTail && lead.Level == 0 && !inputKey.EndsWith(alias.Key, StringComparison.Ordinal))
                     || IsAttributeTailOnlyAnchor(lead, alias, inputKey))
                 {
                     continue;

@@ -1840,6 +1840,43 @@ public sealed class IcdIndexTests
     }
 
     [Fact]
+    public void 〇级指针行括号内容不作改道键_括号前词面照旧()
+    {
+        // 真实行 8800：括号段 慢性 入改道键后，编码录入门把 慢性丁型肝炎 拆出的 慢性
+        // 改道到 烧伤 交付 T30.000（用户口径：0 级只要括号前内容，不必含括号内容）。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(8800, "放射性皮肤烧伤(急性、慢性或职业性) - 见 烧伤", status: 1),
+            LeadRow(34395, "烧伤(电流)(火焰)(热气体、液体或物体)(辐射)(蒸气)(热的)", "T30.0"),
+        ]);
+
+        Assert.False(snapshot.Redirects.ContainsKey("慢性"));
+        Assert.False(snapshot.Redirects.ContainsKey("急性"));
+        Assert.True(snapshot.Redirects.ContainsKey("放射性皮肤烧伤"));
+    }
+
+    [Fact]
+    public void 〇级主导词括号内容不作召回锚_输入以它收尾才放行()
+    {
+        // 括号内被 或/、 切开的段（职业性/胎儿）是括号内容：中段沾词不锚
+        // （尾重心口径，同 IsTailCoreWord）；输入以它收尾照旧（婴儿 → P08.1）。
+        // 慢性/急性 不用测——本就在 GenericModifierKeys 拉黑名单里。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(8800, "放射性皮肤烧伤(急性、慢性或职业性)", "T30.7"),
+            LeadRow(6632, "大于胎龄 NEC(胎儿或婴儿)", "P08.1"),
+        ]);
+
+        Assert.DoesNotContain(
+            IcdIndexMatcher.RecallLeads(snapshot, TextMatch.NormalizeKey("职业性铅中毒"), topK: 8),
+            hit => hit.Node.SeqNo == 8800);
+        Assert.DoesNotContain(
+            IcdIndexMatcher.RecallLeads(snapshot, TextMatch.NormalizeKey("胎儿水肿"), topK: 8),
+            hit => hit.Node.SeqNo == 6632);
+        Assert.Contains(
+            IcdIndexMatcher.RecallLeads(snapshot, TextMatch.NormalizeKey("特大婴儿"), topK: 8),
+            hit => hit.Node.SeqNo == 6632);
+    }
+
+    [Fact]
     public void 术语同义词_诊断改写产生规范变体且手术通道不串味()
     {
         var snapshot = IcdIndexSnapshotBuilder.Build([

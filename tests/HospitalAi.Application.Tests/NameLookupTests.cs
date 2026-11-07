@@ -460,6 +460,30 @@ public sealed class NameLookupTests
     }
 
     [Fact]
+    public void 〇级主导词锚定不看括号病程极_慢性肺炎照常锚肺炎()
+    {
+        // 用户口径 11-07："急性肺炎"/"肺炎"/"慢性肺炎" 主导词都是 肺炎——
+        // 病程极写在行名圆括号里（肺炎(急性)(双侧)…），0 级锚定不看()内容；
+        // 慢性肺炎 曾被 HasPhasePoleConflict（急性/慢性）整行剔除。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(1, "肺炎(急性)(双侧)(移行性)(原发性)(化脓性)(脓毒性)(未吸收)", "J18.9"),
+            LeadRow(2, "炎，炎症(性)，发炎(伴有渗出)(另见 感染)"),
+        ]);
+
+        foreach (var input in new[] { "急性肺炎", "肺炎", "慢性肺炎" })
+        {
+            var hits = NameLeadTermSplitter.SplitIcd(snapshot, input);
+            Assert.Contains("肺炎(急性)(双侧)(移行性)(原发性)(化脓性)(脓毒性)(未吸收)",
+                hits.Select(hit => hit.Term));
+        }
+
+        // 流水线召回同口径（RecallLeads 与面板拆词共用 NodeAllows 的层判据）。
+        var recalled = IcdIndexMatcher.RecallLeads(snapshot, "慢性肺炎", 8);
+        Assert.Contains(recalled, hit =>
+            hit.Node.Term == "肺炎(急性)(双侧)(移行性)(原发性)(化脓性)(脓毒性)(未吸收)");
+    }
+
+    [Fact]
     public void 长主导词包含短主导词_chip只留长主导词()
     {
         // 真库形态：急性甲型肺炎 同时命中 肺炎(急性)… 与 炎，炎 只是被 肺炎 包住的尾字，

@@ -151,7 +151,10 @@ public static class IcdIndexMatcher
     /// </summary>
     private static bool NodeAllows(IcdIndexNode node, HashSet<string> inputQualifiers, string inputKey)
         => node.Qualifiers.IsSubsetOf(inputQualifiers)
-            && !TextMatch.HasPhasePoleConflict(node.Term, inputKey)
+            // 0 级主导词锚定不看()里的内容（用户口径 11-07："急性肺炎"/"肺炎"/"慢性肺炎"
+            // 主导词都是 肺炎）——病程极（急性/慢性、近期/陈旧）写在行名圆括号里
+            // （肺炎(急性)(双侧)…），慢性肺炎 曾被极性冲突门控整行剔除。子行照旧门控。
+            && (node.Level == 0 || !TextMatch.HasPhasePoleConflict(node.Term, inputKey))
             && !TextMatch.HasNegationPoleConflict(node.CoreTerm, inputKey);
 
     /// <summary>ICD-O 形态学码（M8010/3、M9800/3:C95.9 的形态学段）。</summary>

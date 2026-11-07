@@ -92,15 +92,29 @@ public static class NameCodingLookupEngine
 
         // "又称" 等价变体补一路拆分（癫痫→癫癎 一族）：索引主导词用字与临床写法不一致时
         // 常规全量匹配召不回，与流水线 resolver 的输入侧改写同口径。
+        // "现译名" 等价补一路（发育迟滞→发育迟缓 一族，146 条 0 级行）：查 旧译名 即查
+        // 现译名 的主导词——目标主导词召不回时才轮到更短的主导词（发育）兜底，
+        // 由跨度包含过滤自然裁决（发育迟缓 ⊇ 发育 时只留 长主导词 chip）。
         var variants = new List<string> { inputKey };
+        var renameVariantKeys = new HashSet<string>(StringComparer.Ordinal);
         if (snapshot is not null)
         {
-            foreach (var rewritten in snapshot.RewriteByAnotherNames(text))
+            foreach (var rewritten in snapshot.RewriteByAnotherNames(text)
+                .Concat(snapshot.RewriteByRenameEquivalents(text)))
             {
                 var rewrittenKey = TextMatch.NormalizeKey(rewritten);
                 if (rewrittenKey.Length > 0 && !variants.Contains(rewrittenKey))
                 {
                     variants.Add(rewrittenKey);
+                }
+            }
+
+            foreach (var rewritten in snapshot.RewriteByRenameEquivalents(text))
+            {
+                var rewrittenKey = TextMatch.NormalizeKey(rewritten);
+                if (rewrittenKey.Length > 0)
+                {
+                    renameVariantKeys.Add(rewrittenKey);
                 }
             }
         }
@@ -122,9 +136,16 @@ public static class NameCodingLookupEngine
 
             foreach (var hit in NameLeadTermSplitter.SplitIcd(snapshot, variantKey, NameLeadTermSplitter.MaxLeads))
             {
-                if (splitHits.All(entry => entry.Hit.SeqNo != hit.SeqNo))
+                var existingIndex = splitHits.FindIndex(entry => entry.Hit.SeqNo == hit.SeqNo);
+                if (existingIndex < 0)
                 {
                     splitHits.Add((hit, variantKey));
+                }
+                else if (splitHits[existingIndex].Hit.RedirectKey is not null && hit.RedirectKey is null)
+                {
+                    // 等价改写变体把转示锚定升级成正牌命中：转示命中（发育迟滞→发育迟缓）
+                    // 无链路时不上屏，保留它会让改写变体命中的主导词 chip 整个消失。
+                    splitHits[existingIndex] = (hit, variantKey);
                 }
             }
         }
@@ -147,7 +168,8 @@ public static class NameCodingLookupEngine
         {
             var (hit, variantKey) = splitHits[index];
             var paths = index < drillBudget && dictionary is not null
-                ? DrillIcdLead(hit, text, variantKey, snapshot!, tumor, dictionary, candidates, channels)
+                ? DrillIcdLead(hit, text, variantKey, snapshot!, tumor, dictionary, candidates, channels,
+                    renameAnchored: renameVariantKeys.Contains(variantKey))
                 : [];
             // 转示 chip 只在走出修饰词链路时展示（如 阿米巴→阿米巴病）；
             // 无产出的转示（阑尾切除术 的 切除→消融(切除)）属纯噪声，不上屏。
@@ -176,7 +198,8 @@ public static class NameCodingLookupEngine
         TumorIndexSnapshot? tumor,
         IcdDictionarySnapshot dictionary,
         List<RecommendationAccumulator> candidates,
-        NameLookupTitleChannels channels)
+        NameLookupTitleChannels channels,
+        bool renameAnchored = false)
     {
         var paths = new List<NameLookupModifierPath>();
         DrillResult? redirectOwnFallback = null;
@@ -243,15 +266,18 @@ public static class NameCodingLookupEngine
                 }
             }
         }
-        else if (hit.RedirectKey is not null && hit.Node.Code is { Length: > 0 })
+        else if ((hit.RedirectKey is not null || renameAnchored) && hit.Node.Code is { Length: > 0 })
         {
-            // 转示锚定兜底：查 肠炎 必转 小肠炎，但"毗邻单胞菌肠炎"里输入写不出
-            // 小肠炎下的任何修饰词（细菌性/由于…）——按查典语义取转示目标主导词
-            // 自身默认码成链（修饰词树仍在链路上供编码员核对）。
+            // 转示/现译名等价锚定兜底：查 肠炎 必转 小肠炎、查 发育迟滞 即查 发育迟缓，
+            // 但输入写不出目标主导词下的任何修饰词（细菌性/由于…）——按查典语义取
+            // 目标主导词自身默认码成链（修饰词树仍在链路上供编码员核对）。
             // 出声时机推迟到补钻之后：子行已经给出精确码时不再并列泛词本行码（见下方）。
             redirectOwnFallback = new DrillResult(
                 hit.Node, hit.Node, [hit.Node], hit.Alias.Key,
-                1m, CodeFromAncestorFallback: false, Jumps: [$"{hit.RedirectKey} → {hit.Node.Term}"]);
+                1m, CodeFromAncestorFallback: false,
+                Jumps: [hit.RedirectKey is { } redirectKey
+                    ? $"{redirectKey} → {hit.Node.Term}"
+                    : $"现译名等价 {variantKey} → {hit.Node.Term}"]);
         }
 
         // 另见-1 挂在**主导词行自身**时（脓毒症(全身性)(化脓性)(另见 败血症) A41.9）：

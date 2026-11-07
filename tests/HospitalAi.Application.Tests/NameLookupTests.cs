@@ -544,6 +544,58 @@ public sealed class NameLookupTests
     }
 
     [Fact]
+    public void 现译名等价输入锚到现译主导词_发育迟滞等同发育迟缓()
+    {
+        // 真库形态（8218/8490/8510/迟缓族）：8510 "发育迟滞 - 现译名 发育迟缓" 是 0 级转示行，
+        // 8490 发育迟缓 是合法主导词（无自身码，下挂 精神 F79.- 等子行）。用户口径 11-07：
+        // 查 旧译名 即查 现译名 的主导词，目标主导词在位时不得回落到 发育。
+        // 迟缓→体格发育(儿童) 复刻真库交付通道（发育迟缓 输入实测交付 R62.801）。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(1, "发育"),
+            LeadRow(2, "发育迟缓"),
+            ChildRow(3, 2, "－精神", "F79.-"),
+            LeadRow(4, "发育迟滞 - 现译名 发育迟缓", status: 1),
+            LeadRow(5, "迟缓", "R62.-"),
+            ChildRow(6, 5, "－体格发育(儿童)", "R62.8"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([Dict("ICD-10", "R62.801", "生长发育迟缓")]);
+        // 字典标题直达按输入字面（发育迟滞 不等于标题），与实机 icdTitleDirect=false 同口径。
+        var channels = new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true);
+
+        var old = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "发育迟滞", topK: 8,
+            icdSnapshot: snapshot, tumorSnapshot: null, icdDictionary: dictionary,
+            cm3Snapshot: null, cm3Dictionary: null, channels);
+        var current = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "发育迟缓", topK: 8,
+            icdSnapshot: snapshot, tumorSnapshot: null, icdDictionary: dictionary,
+            cm3Snapshot: null, cm3Dictionary: null, channels);
+
+        Assert.Contains(old.LeadTerms, item => item.Term == "发育迟缓");
+        Assert.DoesNotContain(old.LeadTerms, item => item.Term == "发育");
+        Assert.Equal(current.LeadTerms.Select(item => item.Term), old.LeadTerms.Select(item => item.Term));
+        Assert.Equal(current.Recommendations.Select(item => item.Code), old.Recommendations.Select(item => item.Code));
+    }
+
+    [Fact]
+    public void 现译名目标主导词不存在时回落输入可锚的主导词()
+    {
+        // 目标（发育迟缓）无主导词行：改写变体空手，输入可锚的 发育 照常保留——
+        // "如果都不存在，再去找 发育 主导词" 的兜底不被改写抹掉。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(1, "发育"),
+            LeadRow(2, "发育迟滞 - 现译名 发育迟缓", status: 1),
+        ]);
+
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "发育迟滞", topK: 8,
+            icdSnapshot: snapshot, tumorSnapshot: null, icdDictionary: null,
+            cm3Snapshot: null, cm3Dictionary: null);
+
+        Assert.Contains(response.LeadTerms, item => item.Term == "发育");
+    }
+
+    [Fact]
     public void 形态学入口瘤不被淋巴瘤吃掉()
     {
         // 瘤(M8000/1) 是肿瘤形态学树的入口，被 淋巴瘤 的跨度包住也必须保留 chip。

@@ -122,16 +122,31 @@ public sealed class IcdIndexSnapshot
     /// </summary>
     public required IReadOnlyDictionary<string, string> AnotherNames { get; init; }
 
+    /// <summary>
+    /// "现译名" 等价（"发育迟滞 - 现译名 发育迟缓" 的 发育迟滞 → 发育迟缓，全库 146 条 0 级行）。
+    /// 与 <see cref="AnotherNames"/> 分开登记：流水线 resolver 对这类输入已有"召回全空后按目标
+    /// 重试一次"的兜底（IcdIndexDiagnosisResolver），混进来会改变流水线召回时机；目前只有
+    /// "编码录入"面板引擎消费（输入侧改写，编码员口径：查 旧名 即查 现译名 的主导词）。
+    /// </summary>
+    public required IReadOnlyDictionary<string, string> RenameEquivalents { get; init; }
+
     /// <summary>按 <see cref="AnotherNames"/> 改写输入文本，无等价词命中时返回空。</summary>
     public IReadOnlyList<string> RewriteByAnotherNames(string inputText)
+        => RewriteByEquivalents(AnotherNames, inputText);
+
+    /// <summary>按 <see cref="RenameEquivalents"/> 改写输入文本（旧译名 → 现译名），无命中返回空。</summary>
+    public IReadOnlyList<string> RewriteByRenameEquivalents(string inputText)
+        => RewriteByEquivalents(RenameEquivalents, inputText);
+
+    private static IReadOnlyList<string> RewriteByEquivalents(IReadOnlyDictionary<string, string> equivalents, string inputText)
     {
-        if (inputText.Length < 2 || AnotherNames.Count == 0)
+        if (inputText.Length < 2 || equivalents.Count == 0)
         {
             return [];
         }
 
         var rewritten = new List<string>();
-        foreach (var (variant, canonical) in AnotherNames)
+        foreach (var (variant, canonical) in equivalents)
         {
             if (inputText.Contains(variant, StringComparison.Ordinal))
             {
@@ -262,6 +277,11 @@ public static class IcdIndexSnapshotBuilder
         }
 
         var redirects = new Dictionary<string, string>(StringComparer.Ordinal);
+        // "现译名" 等价（旧译名 → 现译名）：与 Redirects（见/现译名共用）分开登记，
+        // 只供面板引擎输入侧改写。目标按转示目标同款惯例取首段（巴德-恰里 - 现译名
+        // 巴德-基亚里或巴德-吉亚利，又称 布-加综合征 → 巴德-基亚里或巴德-吉亚利），
+        // 又称 尾段照旧归 AnotherNames 通道。
+        var renameEquivalents = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var node in nodes.Values.Where(node => node.Level == 0 && !IsValidLead(node)))
         {
             if (node.JumpKind != IndexJumpKind.Redirect && node.JumpKind != IndexJumpKind.See)
@@ -272,6 +292,25 @@ public static class IcdIndexSnapshotBuilder
             if (node.JumpTarget is not { Length: > 0 } target)
             {
                 continue;
+            }
+
+            if (node.JumpKind == IndexJumpKind.Redirect)
+            {
+                var renameTarget = TailAnotherNameRegex.Match(target) is { Success: true, Index: var tailIndex }
+                    ? target[..tailIndex].Trim().TrimEnd(DashCharacters).Trim()
+                    : target;
+                renameTarget = renameTarget
+                    .Split(['，', ','], StringSplitOptions.RemoveEmptyEntries)
+                    .FirstOrDefault()?.Trim() ?? string.Empty;
+                if (renameTarget.Length >= 2)
+                {
+                    TryAddRenameVariant(renameEquivalents, node.Term, renameTarget);
+                    var strippedTerm = ParenthesisRegex.Replace(node.Term, string.Empty).Trim();
+                    if (strippedTerm != node.Term)
+                    {
+                        TryAddRenameVariant(renameEquivalents, strippedTerm, renameTarget);
+                    }
+                }
             }
 
             foreach (var alias in node.Aliases)
@@ -323,8 +362,18 @@ public static class IcdIndexSnapshotBuilder
             LeadByExactKey = leadByExact,
             Redirects = redirects,
             AnotherNames = anotherNames,
+            RenameEquivalents = renameEquivalents,
             TotalNodes = nodes.Count,
         };
+    }
+
+    private static void TryAddRenameVariant(Dictionary<string, string> target, string variant, string canonical)
+    {
+        var key = variant.Trim(DashCharacters).Trim();
+        if (key.Length >= 2 && key != canonical && !target.ContainsKey(key))
+        {
+            target[key] = canonical;
+        }
     }
 
     private static void SortByLevel(IcdIndexNode node)

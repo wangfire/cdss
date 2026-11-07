@@ -524,6 +524,26 @@ public sealed class NameLookupTests
     }
 
     [Fact]
+    public void 多字主导词包含短主导词_chip只留长主导词()
+    {
+        // 用户口径 11-07 复检：慢性支气管炎 同时命中 支气管炎(弥漫性)… 与 气管炎(急性)…，
+        // 气管炎 ⊂ 支气管炎，chip 只留 支气管炎——豁免只给形态学入口（IsMorphologyLead &&
+        // !HeadWord），不能把 ≥2 字别名整体豁免（否则多字包含永远滤不掉）。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(1, "支气管炎(弥漫性)(纤维性)(坠积性)(感染性)(膜性)(伴有气管炎)(l5岁及以上)", "J42"),
+            LeadRow(2, "气管炎(急性)(卡他性)(婴儿)(膜性)(成形性)(肺炎球菌性)(病毒性)", "J20.9"),
+        ]);
+
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "慢性支气管炎", topK: 8,
+            icdSnapshot: snapshot, tumorSnapshot: null, icdDictionary: null,
+            cm3Snapshot: null, cm3Dictionary: null);
+
+        Assert.Contains(response.LeadTerms, item => item.Term == "支气管炎(弥漫性)(纤维性)(坠积性)(感染性)(膜性)(伴有气管炎)(l5岁及以上)");
+        Assert.DoesNotContain(response.LeadTerms, item => item.Term == "气管炎(急性)(卡他性)(婴儿)(膜性)(成形性)(肺炎球菌性)(病毒性)");
+    }
+
+    [Fact]
     public void 形态学入口瘤不被淋巴瘤吃掉()
     {
         // 瘤(M8000/1) 是肿瘤形态学树的入口，被 淋巴瘤 的跨度包住也必须保留 chip。

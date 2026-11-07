@@ -131,13 +131,17 @@ public static class NameCodingLookupEngine
 
         var leadTerms = new List<NameLookupLeadTerm>();
         var candidates = new List<RecommendationAccumulator>();
-        // chip 展示层跨度包含过滤（炎 ⊂ 肺炎 时只留 肺炎）：只关展示，命中集/下钻不动。
+        // chip 展示层跨度包含过滤（炎 ⊂ 肺炎、气管炎 ⊂ 支气管炎 时只留长主导词）：
+        // 只关展示，命中集/下钻不动。豁免=形态学码主导词本行别名（瘤/癌 M8000/1 是肿瘤
+        // 形态学树入口；HeadWord 残段如 脑(脊)膜瘤 的 脑 不豁免）——不能用
+        // IsMorphologyEntry 整体当谓词：它对 ≥2 字别名恒 true，会把多字包含全放走。
         var hiddenLeads = NameLeadTermSplitter.SpanContainedHiddenSeqNos(
             splitHits,
             entry => entry.Hit.SeqNo,
             entry => entry.Hit.Position,
             entry => entry.Hit.CoveredChars,
-            entry => IcdIndexMatcher.IsMorphologyEntry(entry.Hit.Node, entry.Hit.Alias));
+            entry => IcdIndexMatcher.IsMorphologyLead(entry.Hit.Node) && !entry.Hit.Alias.HeadWord,
+            entry => entry.Hit.RedirectKey is null);
         var drillBudget = Math.Min(splitHits.Count, MaxDrillLeads);
         for (var index = 0; index < splitHits.Count; index++)
         {
@@ -536,7 +540,8 @@ public static class NameCodingLookupEngine
             hit => hit.SeqNo,
             hit => hit.Position,
             hit => hit.CoveredChars,
-            _ => false);
+            _ => false,
+            hit => hit.RedirectKey is null);
         var drillBudget = Math.Min(hits.Count, MaxDrillLeads);
         for (var index = 0; index < hits.Count; index++)
         {

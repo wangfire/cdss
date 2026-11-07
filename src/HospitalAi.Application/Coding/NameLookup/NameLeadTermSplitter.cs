@@ -160,14 +160,17 @@ public static class NameLeadTermSplitter
     /// 肺炎 这类长主导词时 炎 照常保留。**只关展示**：命中集（下钻/候选）不动，
     /// 短主导词贡献的推荐仍在（上腹痛 的 痛 正是 R10.101 的产出锚）。
     /// 形态学入口豁免：中心细胞性淋巴瘤 的 瘤(M8000/1) 是肿瘤形态学树的入口，
-    /// 不能被 淋巴瘤 吃掉。返回应隐藏的 SeqNo 集合。
+    /// 不能被 淋巴瘤 吃掉。容器必须是 <paramref name="canContain"/> 放行的命中——
+    /// 转示命中可能因无链路不上屏（发育迟滞 的 "发育迟滞 - 现译名 发育迟缓"），
+    /// 不能拿不上屏的命中去吃掉真主导词 chip。返回应隐藏的 SeqNo 集合。
     /// </summary>
     public static HashSet<int> SpanContainedHiddenSeqNos<T>(
         IEnumerable<T> hits,
         Func<T, int> seqNo,
         Func<T, int> position,
         Func<T, int> coveredChars,
-        Func<T, bool> exempt)
+        Func<T, bool> exempt,
+        Func<T, bool> canContain)
     {
         var list = hits.ToList();
         var hidden = new HashSet<int>();
@@ -180,7 +183,8 @@ public static class NameLeadTermSplitter
             }
 
             var end = position(hit) + coveredChars(hit);
-            var contained = list.Any(other => seqNo(other) != seqNo(hit)
+            var contained = list.Any(other => canContain(other)
+                && seqNo(other) != seqNo(hit)
                 && coveredChars(other) > coveredChars(hit)
                 && position(other) <= position(hit)
                 && position(other) + coveredChars(other) >= end);

@@ -162,7 +162,7 @@ public static class IcdIndexMatcher
         new(@"M\d{4}/\d", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     /// <summary>本行（或本行编码组里任一码）是形态学码 → 肿瘤形态学树。</summary>
-    private static bool IsMorphologyLead(IcdIndexNode lead)
+    public static bool IsMorphologyLead(IcdIndexNode lead)
         => lead.Code is { Length: > 0 } code && MorphologyCodeRegex.IsMatch(code);
 
     /// <summary>

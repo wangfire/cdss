@@ -1,5 +1,6 @@
 using HospitalAi.Application.Coding.IcdIndex;
 using HospitalAi.Application.Coding.Matching;
+using HospitalAi.Application.Coding.NameLookup;
 
 namespace HospitalAi.Application.Tests;
 
@@ -2944,5 +2945,136 @@ public sealed class IcdIndexTests
 
         // 成 是输入的结尾核心词（冠脉肌桥形成）：尾重心口径照旧放行，残段门控不碰它。
         Assert.True(IcdIndexMatcher.NameLookupAnchorAllowed(glioma, tailFragment, "冠脉肌桥形成"));
+    }
+
+    /// <summary>
+    /// 跨度包含夹具（真实索引行转录，seqNo 取自 icd-index-batches）：
+    /// 44949 肺炎(急性)(双侧)… J18.9、44950 炎，炎症(性)，发炎(伴有渗出)(另见 感染)（无码）
+    /// 及其 45033 －慢性，乳突切除术后空腔 H95.1；39177 痛 R52.9 → 39191 －腹 R10.4
+    /// → 39192 －－上 R10.1，以及 10664 腹痛 R10.4（上腹痛 的容器主导词）。
+    /// </summary>
+    private static IcdIndexSnapshot SpanContainedSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(44949, "肺炎(急性)(双侧)(移行性)(原发性)(化脓性)(脓毒性)(未吸收)", "J18.9"),
+        LeadRow(44950, "炎，炎症(性)，发炎(伴有渗出)(另见 感染)"),
+        ChildRow(45033, 44950, "－慢性，乳突切除术后空腔", "H95.1"),
+        LeadRow(39177, "痛", "R52.9"),
+        ChildRow(39191, 39177, "－腹", "R10.4"),
+        ChildRow(39192, 39191, "－－上", "R10.1", level: 2),
+        LeadRow(10664, "腹痛", "R10.4"),
+    ]);
+
+    private static IcdDictionarySnapshot SpanContainedDictionary() => new([
+        Dict("J18.900", "肺炎"),
+        Dict("H95.100", "乳突切除术后的其他疾患"),
+        Dict("R10.101", "上腹痛"),
+    ]);
+
+    [Fact]
+    public void 慢性肺炎_被肺炎包含的炎不再借慢性搭车出乳突腔码()
+    {
+        var leads = IcdIndexMatcher.RecallLeads(
+            SpanContainedSnapshot(), TextMatch.NormalizeKey("慢性肺炎"), 12);
+
+        Assert.Contains(leads, hit => hit.Node.SeqNo == 44949);
+        // 炎 ⊂ 肺炎，且 炎 的子行增益只能来自泛化词 慢性（乳突… 在输入中零命中）→ 剔除。
+        Assert.DoesNotContain(leads, hit => hit.Node.SeqNo == 44950);
+
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 8, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+        var results = resolver.Resolve(SpanContainedSnapshot(), SpanContainedDictionary(), "慢性肺炎");
+
+        // H95.1 在字典无精确行，此前经回退推荐同前缀 H95.100（黄牌"索引编码（字典库无此码）"）。
+        Assert.DoesNotContain(results, item => item.Code.StartsWith("H95", StringComparison.Ordinal));
+        Assert.Contains(results, item => item.Code == "J18.900");
+    }
+
+    [Fact]
+    public void 角膜炎_炎无容器时照常召回()
+    {
+        // 输入里没有 肺炎 这类长主导词时 炎 照常保留（11c9ac5 的原口径）。
+        var leads = IcdIndexMatcher.RecallLeads(
+            SpanContainedSnapshot(), TextMatch.NormalizeKey("角膜炎"), 12);
+
+        Assert.Contains(leads, hit => hit.Node.SeqNo == 44950);
+    }
+
+    [Fact]
+    public void 上腹痛_被腹痛包含的痛凭单字实词子行豁免_详码仍可达()
+    {
+        // 痛 ⊂ 腹痛，但 痛→－腹→－－上 是 R10.1 的供货链路（－腹 的 腹 是单字实词），
+        // 不得随包含剔除——砍了它 上腹痛 退化成 腹痛 的泛码 R10.4。
+        var leads = IcdIndexMatcher.RecallLeads(
+            SpanContainedSnapshot(), TextMatch.NormalizeKey("上腹痛"), 12);
+
+        Assert.Contains(leads, hit => hit.Node.SeqNo == 39177);
+
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 8, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+        var results = resolver.Resolve(SpanContainedSnapshot(), SpanContainedDictionary(), "上腹痛");
+
+        Assert.Contains(results, item => item.Code == "R10.101");
+    }
+
+    /// <summary>形态学豁免夹具：真实主导词 143 瘤(M8000/1) 与疾病主导词 淋巴瘤(C85.9)。</summary>
+    private static IcdIndexSnapshot MorphologySpanSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(50001, "淋巴瘤", "C85.9"),
+        LeadRow(143, "瘤", "M8000/1"),
+    ]);
+
+    [Fact]
+    public void 中心细胞性淋巴瘤_形态学入口瘤不被淋巴瘤吃掉()
+    {
+        var leads = IcdIndexMatcher.RecallLeads(
+            MorphologySpanSnapshot(), TextMatch.NormalizeKey("中心细胞性淋巴瘤"), 12);
+
+        // 瘤(M8000/1) 是肿瘤形态学树的唯一入口，跨度包含豁免不碰它（同展示层口径）。
+        Assert.Contains(leads, hit => hit.Node.SeqNo == 143);
+        Assert.Contains(leads, hit => hit.Node.SeqNo == 50001);
+    }
+
+    /// <summary>
+    /// 跨病并列夹具（真实索引行）：34128 伤寒(顿挫型)…(任何部位)… 自带码 A01.0、
+    /// 6774 胆囊炎 K81.9。伤寒 2 字占输入 7 字的 0.286，曾被 30% 重叠门整条丢弃。
+    /// </summary>
+    private static IcdIndexSnapshot LeadOnlyOwnCodeSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(34128, "伤寒(顿挫型)(逍遥型)(任何部位)(热)(出血性)(感染)(间歇性)(恶性)(风湿性)", "A01.0"),
+        LeadRow(6774, "胆囊炎", "K81.9"),
+    ]);
+
+    private static IcdDictionarySnapshot LeadOnlyOwnCodeDictionary() => new([
+        Dict("A01.000", "伤寒"),
+        Dict("K81.900", "胆囊炎"),
+    ]);
+
+    [Fact]
+    public void 多病并列长输入_带码主导词停链豁免重叠门_伤寒A01可达()
+    {
+        // 用户口径 11-08：伤寒 并发 胆囊炎，两条主导词各自停链（互不为对方子行），
+        // 伤寒 行自带的 A01.0 必须与 K81.9 一同供货——查典查到行右边的码就是候选。
+        // 豁免只在编码录入面板引擎实行（core ≥2 字完整词、非转示锚定）；流水线自动取
+        // Top1，万条实测全面豁免会让 术后状态 Z98.8 顶掉真值码（C50.900→Z98.800 族），
+        // 已撤回待专项。
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "伤寒并发胆囊炎", topK: 8,
+            icdSnapshot: LeadOnlyOwnCodeSnapshot(), tumorSnapshot: null, icdDictionary: LeadOnlyOwnCodeDictionary(),
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true));
+
+        Assert.Contains(response.Recommendations, item => item.Code.StartsWith("A01.0", StringComparison.Ordinal));
+        Assert.Contains(response.Recommendations, item => item.Code.StartsWith("K81.9", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void 单字残段主导词停链_长输入下仍被重叠门拦截()
+    {
+        // 反例哨兵：单字主导词 瘘(L98.8) 在 8 字输入里只占 0.125 且 core=瘘(1字)，
+        // 不得借"带码停链豁免"混进推荐（成 神经胶质细胞瘤 0.13 被拦的同一防线）。
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "腹腔手术后引流瘘", topK: 8,
+            icdSnapshot: IcdIndexSnapshotBuilder.Build([LeadRow(22727, "瘘", "L98.8")]),
+            tumorSnapshot: null,
+            icdDictionary: new IcdDictionarySnapshot([Dict("L98.800", "瘘")]),
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true));
+
+        Assert.DoesNotContain(response.Recommendations, item => item.Code.StartsWith("L98.8", StringComparison.Ordinal));
     }
 }

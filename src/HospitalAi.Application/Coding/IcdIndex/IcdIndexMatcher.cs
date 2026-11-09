@@ -2,7 +2,11 @@ using HospitalAi.Application.Coding.Matching;
 
 namespace HospitalAi.Application.Coding.IcdIndex;
 
-public sealed record LeadWordHit(IcdIndexNode Node, IcdIndexAlias Alias, decimal CoverRatio, int CoveredChars);
+/// <summary>
+/// Position = 命中别名 MatchKey 在输入中的起点（与面板拆词 NameLeadTermSplitter 同一来源口径）；
+/// -1 表示 MatchKey 整词取不到位置（Key 靠 LCS 片段命中），跨度未知，不参与跨度包含判定。
+/// </summary>
+public sealed record LeadWordHit(IcdIndexNode Node, IcdIndexAlias Alias, decimal CoverRatio, int CoveredChars, int Position = -1);
 
 /// <summary>
 /// 下钻终点：命中的最深节点与命中路径（证据链展示用）。
@@ -440,7 +444,8 @@ public static class IcdIndexMatcher
                     || (coverage.CoveredChars == best.CoveredChars
                         && coverage.Ratio * alias.Weight > best.CoverRatio * best.Alias.Weight))
                 {
-                    best = new LeadWordHit(lead, alias, coverage.Ratio, coverage.CoveredChars);
+                    best = new LeadWordHit(lead, alias, coverage.Ratio, coverage.CoveredChars,
+                        inputKey.IndexOf(alias.MatchKey, StringComparison.Ordinal));
                 }
             }
 
@@ -454,6 +459,33 @@ public static class IcdIndexMatcher
             .OrderByDescending(hit => hit.CoveredChars)
             .ThenByDescending(hit => hit.CoverRatio * hit.Alias.Weight)
             .ToList();
+
+        // 跨度包含剔除（炎 ⊂ 肺炎 只留 肺炎）：面板 chip 已按同一判据隐藏
+        // （NameCodingLookupEngine 的 SpanContainedHiddenSeqNos），这里把它下沉为管线
+        // 行为——慢性肺炎 不再借 炎→－慢性，乳突切除术后空腔 H95.1 混进耳科候选。
+        // 先剔后取：空出的席位让给后续实词主导词。豁免=形态学码主导词本行别名
+        // （瘤/癌 是形态学树唯一入口，HeadWord 残段不豁免，同展示层 989c7e5 口径），
+        // 以及有实词子行可下钻的（HasSubstantiveChildDrill：被包含不等于无独立产出，
+        // 状态 ⊂ 手术后状态 但 状态→－甲状腺切除术后 E89.0 是变体一路的精确码供货者）；
+        // 管线召回全是真主导词命中、无转示概念，容器不设限；Position<0（MatchKey
+        // 整词不在输入）的跨度未知，既不被剔也不当容器。
+        var locatable = ranked.Where(hit => hit.Position >= 0).ToList();
+        if (locatable.Count > 1)
+        {
+            var hiddenLeads = NameLookup.NameLeadTermSplitter.SpanContainedHiddenSeqNos(
+                locatable,
+                hit => hit.Node.SeqNo,
+                hit => hit.Position,
+                hit => hit.CoveredChars,
+                hit => hit.Node.CoreTerm,
+                hit => IsMorphologyLead(hit.Node) && !hit.Alias.HeadWord,
+                _ => true);
+            if (hiddenLeads.Count > 0)
+            {
+                ranked.RemoveAll(hit => hiddenLeads.Contains(hit.Node.SeqNo)
+                    && !HasSubstantiveChildDrill(hit.Node, inputKey));
+            }
+        }
         var taken = ranked.Take(topK).ToList();
 
         // 形态学入口保底席位（M18 的席位版）。肿瘤形态学主导词 瘤(M8000/1)/癌(M8010/3) 是
@@ -923,6 +955,39 @@ public static class IcdIndexMatcher
         // （见 MorphologicalPrefixes），其余别名内含部位字的形态
         // （腹壁、颞骨、舟骨）与方位前缀的过细分（耳瘢痕→中耳）实测都是正误各半，不放开。
         return SiteAbbrevWord(matchKey, inputKey, pathPositions) is not null;
+    }
+
+    /// <summary>
+    /// 被包含主导词的实词下钻豁免：直接子行里存在 MatchKey 不属于泛化修饰词、
+    /// 且能在输入中挣到内容的子行（多字 ≥2 连续段、单字整字命中——痛→－腹→上 R10.1
+    /// 的"腹"是单字实词）时，它仍有独立产出，不得因跨度包含被整体剔除。
+    /// 只拦"下钻增益全部来自泛化词"的：炎→－慢性，乳突切除术后空腔（慢性 在
+    /// <see cref="GenericModifierKeys"/> 里，乳突… 在输入中零命中）——慢性肺炎 的
+    /// "炎"正是靠"慢性"两个字搭车进耳科的。流水线召回（RecallLeads）与编码录入
+    /// 引擎（NameCodingLookupEngine）共用同一口径。
+    /// </summary>
+    public static bool HasSubstantiveChildDrill(IcdIndexNode lead, string inputKey)
+    {
+        foreach (var child in lead.Children)
+        {
+            foreach (var alias in child.Aliases)
+            {
+                var matchKey = alias.MatchKey;
+                if (matchKey.Length == 0 || GenericModifierKeys.Contains(matchKey))
+                {
+                    continue;
+                }
+
+                if (matchKey.Length == 1
+                    ? inputKey.Contains(matchKey, StringComparison.Ordinal)
+                    : TextMatch.CoveredTextPositions(matchKey, inputKey).Count >= 2)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

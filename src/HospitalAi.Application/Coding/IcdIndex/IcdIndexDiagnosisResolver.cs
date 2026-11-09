@@ -703,6 +703,9 @@ public sealed class IcdIndexDiagnosisResolver(
         // 链路字符重叠门控：主导词+下钻路径（取各节点与输入重叠最好的别名变体）
         // 必须解释输入 30% 以上字符，否则视为无关链路直接丢弃；重叠度并入评分做精排。
         // 跨部位误下钻（基底节/结核/牙源性）由主导词与子树限定词门控拦截，此处阈值只兜底。
+        // （"带码停链豁免"只在编码录入面板引擎实行——流水线自动取 Top1，万条实测全面
+        // 豁免会让 术后状态 Z98.8 类低覆盖停链链路顶掉真值码：C50.900→Z98.800 一族
+        // 改坏 15 条、Top1 重排 645 条，撤回待专项设计，11-08。）
         var pathOverlap = PathOverlapRatio(drill.Path, inputText, tumorFaces);
         if (pathOverlap < 0.30m)
         {

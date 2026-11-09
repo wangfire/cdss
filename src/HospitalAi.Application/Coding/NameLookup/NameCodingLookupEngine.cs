@@ -152,33 +152,74 @@ public static class NameCodingLookupEngine
 
         var leadTerms = new List<NameLookupLeadTerm>();
         var candidates = new List<RecommendationAccumulator>();
-        // chip 展示层跨度包含过滤（炎 ⊂ 肺炎、气管炎 ⊂ 支气管炎 时只留长主导词）：
-        // 只关展示，命中集/下钻不动。豁免=形态学码主导词本行别名（瘤/癌 M8000/1 是肿瘤
-        // 形态学树入口；HeadWord 残段如 脑(脊)膜瘤 的 脑 不豁免）——不能用
-        // IsMorphologyEntry 整体当谓词：它对 ≥2 字别名恒 true，会把多字包含全放走。
+        // chip 展示层跨度包含过滤（炎 ⊂ 肺炎、气管炎 ⊂ 支气管炎 时只留长主导词），
+        // 11-07 用户口径下沉为管线行为：被包含主导词的**下钻**一并跳过——
+        // 慢性肺炎 的 炎 不再借 炎→－慢性，乳突切除术后空腔 H95.1 混进推荐。
+        // 豁免=形态学码主导词本行别名（瘤/癌 M8000/1 是肿瘤形态学树入口；HeadWord
+        // 残段如 脑(脊)膜瘤 的 脑 不豁免）——不能用 IsMorphologyEntry 整体当谓词：
+        // 它对 ≥2 字别名恒 true，会把多字包含全放走。转示命中不当容器。
+        // 展示与管线解耦（11-07 面板口径）：hidden 的 chip 一律不显示；只有
+        // 无实词下钻豁免的才连下钻一起跳（prunedLeads）——痛 ⊂ 腹痛 但
+        // 痛→腹→上 R10.1 仍供货，只是 痛 chip 继续按 11c9ac5 隐藏。
         var hiddenLeads = NameLeadTermSplitter.SpanContainedHiddenSeqNos(
             splitHits,
             entry => entry.Hit.SeqNo,
             entry => entry.Hit.Position,
             entry => entry.Hit.CoveredChars,
+            entry => entry.Hit.Node.CoreTerm,
             entry => IcdIndexMatcher.IsMorphologyLead(entry.Hit.Node) && !entry.Hit.Alias.HeadWord,
             entry => entry.Hit.RedirectKey is null);
+        var prunedLeads = new HashSet<int>();
+        foreach (var seqNo in hiddenLeads)
+        {
+            var node = splitHits.FirstOrDefault(entry => entry.Hit.SeqNo == seqNo).Hit.Node;
+            if (!IcdIndexMatcher.HasSubstantiveChildDrill(node, inputKey))
+            {
+                prunedLeads.Add(seqNo);
+            }
+        }
+
         var drillBudget = Math.Min(splitHits.Count, MaxDrillLeads);
+        var pathBuffer = new Dictionary<int, IReadOnlyList<NameLookupModifierPath>>();
         for (var index = 0; index < splitHits.Count; index++)
         {
             var (hit, variantKey) = splitHits[index];
-            var paths = index < drillBudget && dictionary is not null
+            // pruned（被包含且无豁免）不下钻：DrillIcdLead 的副作用是往 candidates 累积推荐。
+            pathBuffer[hit.SeqNo] = !prunedLeads.Contains(hit.SeqNo) && index < drillBudget && dictionary is not null
                 ? DrillIcdLead(hit, text, variantKey, snapshot!, tumor, dictionary, candidates, channels,
                     renameAnchored: renameVariantKeys.Contains(variantKey))
                 : [];
-            // 转示 chip 只在走出修饰词链路时展示（如 阿米巴→阿米巴病）；
-            // 无产出的转示（阑尾切除术 的 切除→消融(切除)）属纯噪声，不上屏。
+        }
+
+        // 上屏资格（两阶段）：hidden 未剔；转示须有链路——无产出的转示
+        // （阑尾切除术 的 切除→消融(切除)）属纯噪声不上屏，也不能当容器（989c7e5：
+        // 不能拿不上屏的命中去吃掉真主导词 chip）。能进上屏集的转示（肠炎→小肠炎
+        // 走出 P77 链路）已有实体 chip，再做一轮跨度包含裁决：被它包住的 炎(1字)
+        // 按 腹痛/痛 同一口径隐藏（11-08 用户口径），供货不受影响。
+        var displayedHits = splitHits
+            .Where(entry => !hiddenLeads.Contains(entry.Hit.SeqNo))
+            .Where(entry => entry.Hit.RedirectKey is null || pathBuffer[entry.Hit.SeqNo].Count > 0)
+            .ToList();
+        var displayHidden = NameLeadTermSplitter.SpanContainedHiddenSeqNos(
+            displayedHits,
+            entry => entry.Hit.SeqNo,
+            entry => entry.Hit.Position,
+            entry => entry.Hit.CoveredChars,
+            entry => entry.Hit.Node.CoreTerm,
+            entry => IcdIndexMatcher.IsMorphologyLead(entry.Hit.Node) && !entry.Hit.Alias.HeadWord,
+            _ => true);
+
+        for (var index = 0; index < splitHits.Count; index++)
+        {
+            var (hit, variantKey) = splitHits[index];
+            var paths = pathBuffer[hit.SeqNo];
+            // 转示 chip 只在走出修饰词链路时展示（如 阿米巴→阿米巴病）。
             if (hit.RedirectKey is not null && paths.Count == 0)
             {
                 continue;
             }
 
-            if (hiddenLeads.Contains(hit.SeqNo))
+            if (hiddenLeads.Contains(hit.SeqNo) || displayHidden.Contains(hit.SeqNo))
             {
                 continue;
             }
@@ -207,8 +248,21 @@ public static class NameCodingLookupEngine
             snapshot,
             new LeadWordHit(hit.Node, hit.Alias, 1m, hit.CoveredChars),
             variantKey);
+        // 主导词自身带码且链路停在主导词（未下钻任何子行）时豁免 30% 重叠门：查典查到
+        // 伤寒(顿挫型)…(A01.0)，行右边的码就是编码员的候选——多病并列长输入
+        // （伤寒并发胆囊炎 7 字）里 2 字主导词占 0.286 曾被门槛整体丢弃（11-08 用户口径）。
+        // 豁免只给正牌命中的完整词主导词（core ≥2 字），单字残段链路（成 → 神经胶质细胞瘤
+        // 0.13）照旧拦截；转示/现译名锚定不享受——它们的本行码走 redirectOwnFallback
+        // 兜底+补钻通路，"子行已出精确码时不并列泛词本行回退码"的防线不得绕过
+        // （感染 A49.9、孕产妇医疗 Z71.9 实测噪声族）。
+        var leadOnlyOwnCode = drill is not null
+            && hit.RedirectKey is null
+            && !renameAnchored
+            && drill.Path.Count == 1
+            && hit.Node.Code is { Length: > 0 }
+            && hit.Node.CoreTerm.Length >= 2;
         if (drill is not null
-            && PathOverlapRatio(drill.Path, variantKey) >= MinPathOverlap
+            && (leadOnlyOwnCode || PathOverlapRatio(drill.Path, variantKey) >= MinPathOverlap)
             && drill.Path.Skip(1).Where(node => !IcdIndexMatcher.IsConnectorNode(node))
                 .All(node => ModifierNodeAllowed(node, variantKey, snapshot, drill.Path))
             && drill.Path.Skip(1).All(node => ChildNotCoveredByPathLiteral(node, drill.Path, variantKey)))
@@ -566,6 +620,7 @@ public static class NameCodingLookupEngine
             hit => hit.SeqNo,
             hit => hit.Position,
             hit => hit.CoveredChars,
+            hit => hit.Node.CoreTerm,
             _ => false,
             hit => hit.RedirectKey is null);
         var drillBudget = Math.Min(hits.Count, MaxDrillLeads);

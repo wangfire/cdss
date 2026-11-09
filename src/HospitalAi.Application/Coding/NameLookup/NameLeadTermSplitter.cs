@@ -163,12 +163,17 @@ public static class NameLeadTermSplitter
     /// 不能被 淋巴瘤 吃掉。容器必须是 <paramref name="canContain"/> 放行的命中——
     /// 转示命中可能因无链路不上屏（发育迟滞 的 "发育迟滞 - 现译名 发育迟缓"），
     /// 不能拿不上屏的命中去吃掉真主导词 chip。返回应隐藏的 SeqNo 集合。
+    /// 平局裁决（11-07 用户口径"结节包含结"）：命中跨度与覆盖字数**完全相同**的两个
+    /// 主导词（"结(节) - 另见 结节" 与 "结节(性)" 都靠 结节 二字命中同一段）由
+    /// <paramref name="coreTerm"/> 裁决——核心词严格更长的吃掉更短的（结 ⊂ 结节）；
+    /// 覆盖字数有严格差别时维持原判据，core 不参与，既有过滤面零变化。
     /// </summary>
     public static HashSet<int> SpanContainedHiddenSeqNos<T>(
         IEnumerable<T> hits,
         Func<T, int> seqNo,
         Func<T, int> position,
         Func<T, int> coveredChars,
+        Func<T, string> coreTerm,
         Func<T, bool> exempt,
         Func<T, bool> canContain)
     {
@@ -185,9 +190,11 @@ public static class NameLeadTermSplitter
             var end = position(hit) + coveredChars(hit);
             var contained = list.Any(other => canContain(other)
                 && seqNo(other) != seqNo(hit)
-                && coveredChars(other) > coveredChars(hit)
                 && position(other) <= position(hit)
-                && position(other) + coveredChars(other) >= end);
+                && position(other) + coveredChars(other) >= end
+                && (coveredChars(other) > coveredChars(hit)
+                    || (coveredChars(other) == coveredChars(hit)
+                        && coreTerm(other).Length > coreTerm(hit).Length)));
             if (contained)
             {
                 hidden.Add(seqNo(hit));

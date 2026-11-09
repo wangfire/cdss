@@ -544,6 +544,72 @@ public sealed class NameLookupTests
     }
 
     [Fact]
+    public void 同跨度同覆盖的平局_按核心词裁决_chip只留长核心词()
+    {
+        // 真库行 18725/19292：结节硬化型经典霍奇金淋巴瘤 同时命中 结(节) - 另见 结节 与
+        // 结节(性)——两者都靠 结节 二字命中同一段（覆盖字数无严格差别），平局由核心词
+        // 裁决：结(节) 的 core=结(1字) 被 结节(性) 的 core=结节(2字) 吃掉（用户口径
+        // 11-07："结节"包含"结"）。覆盖字数有严格差别的场景（痛 ⊂ 腹痛）不走此口径。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(18725, "结(节) - 另见 结节"),
+            LeadRow(19292, "结节(性)"),
+        ]);
+
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "结节硬化型经典霍奇金淋巴瘤", topK: 8,
+            icdSnapshot: snapshot, tumorSnapshot: null, icdDictionary: null,
+            cm3Snapshot: null, cm3Dictionary: null);
+
+        Assert.Contains(response.LeadTerms, item => item.Term == "结节(性)");
+        Assert.DoesNotContain(response.LeadTerms, item => item.Term == "结(节) - 另见 结节");
+    }
+
+    [Fact]
+    public void 转示命中上屏时也当容器_包住的炎chip隐藏()
+    {
+        // 真库形态：新生儿肠致病性大肠杆菌肠炎 同时命中 肠炎→小肠炎（转示，走出 K52.9
+        // 链路上屏）与 炎(1字)——转示 chip 有实体链路时按 腹痛/痛 同一口径当容器，
+        // 炎 不再单出（11-08 用户口径）；无链路的转示仍不得当容器（989c7e5 上屏过滤）。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(1, "肠炎 - 见 小肠炎", status: 1),
+            LeadRow(2, "小肠炎(腹泻)(出血性)", "K52.9"),
+            LeadRow(3, "炎，炎症(性)，发炎(伴有渗出)(另见 感染)"),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([Dict("ICD-10", "K52.900", "小肠炎")]);
+
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "新生儿肠炎", topK: 8,
+            icdSnapshot: snapshot, tumorSnapshot: null, icdDictionary: dictionary,
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true));
+
+        Assert.Contains(response.LeadTerms, lead => lead.RedirectKey is not null);
+        Assert.DoesNotContain(response.LeadTerms, lead => lead.Term.StartsWith("炎，", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void 现译名改写不认长词内部子串_伤寒并发胆囊炎不再出滑囊炎()
+    {
+        // 真库行 24761 "囊炎 - 现译名 滑囊炎"：旧译名 囊炎 嵌在 胆囊炎 内部（胆+囊炎=有效
+        // 主导词键），裸 Replace 曾把输入改写成 伤寒并发胆滑囊炎，凭空造出 滑囊炎 主导词
+        // 命中（用户口径 11-07）。改写只认独立成词的出现； 发育迟滞→发育迟缓 的整词
+        // 场景由 现译名等价输入锚到现译主导词 用例守护。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(1, "胆囊炎", "K81.9"),
+            LeadRow(2, "滑囊炎", "M71.9"),
+            LeadRow(3, "囊炎 - 现译名 滑囊炎", status: 1),
+        ]);
+
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "伤寒并发胆囊炎", topK: 8,
+            icdSnapshot: snapshot, tumorSnapshot: null, icdDictionary: null,
+            cm3Snapshot: null, cm3Dictionary: null);
+
+        Assert.Contains(response.LeadTerms, item => item.Term == "胆囊炎");
+        Assert.DoesNotContain(response.LeadTerms, item => item.Term == "滑囊炎");
+    }
+
+    [Fact]
     public void 现译名等价输入锚到现译主导词_发育迟滞等同发育迟缓()
     {
         // 真库形态（8218/8490/8510/迟缓族）：8510 "发育迟滞 - 现译名 发育迟缓" 是 0 级转示行，

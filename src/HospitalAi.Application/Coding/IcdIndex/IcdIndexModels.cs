@@ -138,7 +138,7 @@ public sealed class IcdIndexSnapshot
     public IReadOnlyList<string> RewriteByRenameEquivalents(string inputText)
         => RewriteByEquivalents(RenameEquivalents, inputText);
 
-    private static IReadOnlyList<string> RewriteByEquivalents(IReadOnlyDictionary<string, string> equivalents, string inputText)
+    private IReadOnlyList<string> RewriteByEquivalents(IReadOnlyDictionary<string, string> equivalents, string inputText)
     {
         if (inputText.Length < 2 || equivalents.Count == 0)
         {
@@ -148,13 +148,41 @@ public sealed class IcdIndexSnapshot
         var rewritten = new List<string>();
         foreach (var (variant, canonical) in equivalents)
         {
-            if (inputText.Contains(variant, StringComparison.Ordinal))
+            // 等价词必须独立成词出现才改写：出现位置若与前/后邻字能拼成另一条**有效主导词**
+            // （胆+囊炎=胆囊炎 ∈ LeadByExactKey），说明它只是长词的内部子串——伤寒并发胆囊炎
+            // 的 囊炎 曾被裸 Replace 改写成 胆滑囊炎，凭空造出 滑囊炎 主导词命中（11-07 用户口径）。
+            if (!OccursAsStandaloneWord(inputText, variant))
             {
-                rewritten.Add(inputText.Replace(variant, canonical, StringComparison.Ordinal));
+                continue;
             }
+
+            rewritten.Add(inputText.Replace(variant, canonical, StringComparison.Ordinal));
         }
 
         return rewritten;
+    }
+
+    /// <summary>
+    /// 等价词是否存在独立出现：任一出现位置若前/后邻字都拼不出更长有效主导词键，
+    /// 该次出现即独立成词；全部出现都是长词内部子串时不改写。
+    /// </summary>
+    private bool OccursAsStandaloneWord(string inputText, string variant)
+    {
+        var start = 0;
+        while ((start = inputText.IndexOf(variant, start, StringComparison.Ordinal)) >= 0)
+        {
+            var end = start + variant.Length;
+            var insideBefore = start > 0 && LeadByExactKey.ContainsKey(inputText[(start - 1)..end]);
+            var insideAfter = end < inputText.Length && LeadByExactKey.ContainsKey(inputText[start..(end + 1)]);
+            if (!insideBefore && !insideAfter)
+            {
+                return true;
+            }
+
+            start += 1;
+        }
+
+        return false;
     }
 
     public required int TotalNodes { get; init; }

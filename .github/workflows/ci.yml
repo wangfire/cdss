@@ -105,5 +105,10 @@ jobs:
       - name: Typecheck
         run: pnpm exec vue-tsc --noEmit -p apps/admin/tsconfig.app.json
 
+      # 前端测试（权限判定/信封解析/i18n 对齐）：纯逻辑，不依赖浏览器。
+      # 此前 vitest 配置 exclude 了 apps/**，测试文件数为 0，调了也是空跑。
+      - name: Frontend tests
+        run: pnpm test:run
+
       - name: Build
         run: pnpm build

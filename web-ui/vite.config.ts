@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     globals: true,
     include: ['**/*.{test,spec}.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'],
-    exclude: ['**/node_modules/**', '**/dist/**', '**/apps/**'],
+    exclude: ['**/node_modules/**', '**/dist/**'],
   },
 
   fmt: {

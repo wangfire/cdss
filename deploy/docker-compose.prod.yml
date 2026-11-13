@@ -115,6 +115,10 @@ services:
       Security__RateLimit__LoginPermitLimit: ${HOSPITAL_AI_LOGIN_PERMIT_LIMIT:-60}
       Security__RateLimit__LoginWindowSeconds: ${HOSPITAL_AI_LOGIN_WINDOW_SECONDS:-60}
       Security__CorsOrigins__0: ${HOSPITAL_AI_CORS_ORIGINS:-}
+      # 可信反向代理地址（用于校正 X-Forwarded-For）：nginx 容器 IP。
+      # 留空 = 不信任任何代理，则登录限流按 nginx 的容器 IP 分区（全院共享一个配额）。
+      # 填入实际 IP 后，限流按真实客户端 IP 分区。
+      Security__ForwardedHeaders__KnownProxies__0: ${HOSPITAL_AI_NGINX_IP:-}
       DataProtection__KeysPath: /var/hospitalai/dpkeys
     volumes:
       - prod-dpkeys:/var/hospitalai/dpkeys

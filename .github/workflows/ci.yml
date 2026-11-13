@@ -49,6 +49,32 @@ jobs:
       - name: Test
         run: dotnet test HospitalAi.slnx --no-build --nologo
 
+  # 注意：暂不启用 `dotnet format --verify-no-changes` 作为门禁 ——
+  # 仓库现存 207 处历史格式问题（12 个文件），一次性修完会污染本次缺陷修复的 diff。
+  # 待格式专项清理完成后再把这一步加回本工作流。
+
+  knowledge:
+    name: knowledge-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install openpyxl
+        run: python -m pip install --upgrade pip openpyxl
+
+      # 知识库构建链是唯一与 SQL/ES 无关的纯离线回归网：同义词生成、组合码
+      # 拆分、NEC 过滤等纯函数逻辑。此前 CI 完全不跑 Python，坏了也没人知道。
+      - name: Knowledge unit tests
+        run: python -m unittest discover -s tests/knowledge -v
+
+      - name: Knowledge build self-test
+        run: python tools/knowledge/build_knowledge.py --self-test
+
   frontend:
     name: frontend-build
     runs-on: ubuntu-latest
@@ -72,6 +98,12 @@ jobs:
 
       - name: Install
         run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm exec vue-tsc --noEmit -p apps/admin/tsconfig.app.json
 
       - name: Build
         run: pnpm build

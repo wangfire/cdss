@@ -18,7 +18,7 @@ public sealed class RuntimeTitleChannelConfigSource(HospitalAiDbContext dbContex
         var defaults = baseline.Value;
         var row = dbContext.PipelineRuntimeConfigs
             .AsNoTracking()
-            .SingleOrDefault(item => item.ConfigKey == "v22lite");
+            .SingleOrDefault(item => item.ConfigKey == HospitalAi.Worker.Pipeline.V22PipelineOptions.RuntimeConfigKey);
         if (row is null)
         {
             return new NameLookupTitleChannels(

@@ -56,7 +56,7 @@ public sealed class RabbitMqEventBus(
     {
         if (!string.Equals(
                 messageType,
-                "coding.task.created",
+                CodingTaskCreatedMessage.MessageType,
                 StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException($"未知 Outbox 消息类型：{messageType}");

@@ -34,7 +34,7 @@ public static class RabbitMqWorkerRegistration
 
                 cfg.Message<CodingTaskCreatedMessage>(message =>
                 {
-                    message.SetEntityName("coding.task.created");
+                    message.SetEntityName(CodingTaskCreatedMessage.MessageType);
                 });
                 // MassTransit 8.x 内置 .NET Meter（名称为 "MassTransit"），
                 // OpenTelemetry 在 Worker Program.cs 中通过 AddMeter("MassTransit") 采集 RabbitMQ 消费指标。

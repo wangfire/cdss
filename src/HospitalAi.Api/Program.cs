@@ -804,6 +804,12 @@ app.MapPatch(
             return Results.Forbid();
         }
 
+        // 医院上下文必须存在：审计行落到假医院（原硬编码 GUID 兜底）会破坏数据隔离。
+        if (requestContext.HospitalId == Guid.Empty)
+        {
+            return Results.BadRequest(ApiEnvelope.Create<object>(new { error = "HOSPITAL_CONTEXT_REQUIRED" }));
+        }
+
         Action invalidate = kind switch
         {
             "icd" => () => app.Services.GetRequiredService<HospitalAi.Application.Coding.IcdIndex.IIcdIndexSource>().Invalidate(),
@@ -812,19 +818,37 @@ app.MapPatch(
             _ => throw new ValidationException($"不支持的索引类型：{kind}（icd / cm3 / tumor）")
         };
 
-        var record = kind switch
+        // 按具体类型取行并直接赋值：此前用反射 GetProperty("IsEnabled")!.SetValue，
+        // 属性名拼错要到运行时才炸（NRE 500），编译期零保护。
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        switch (kind)
         {
-            "icd" => (object?)await db.IcdIndexes.FirstOrDefaultAsync(item => item.Id == id, cancellationToken),
-            "cm3" => await db.Cm3Indexes.FirstOrDefaultAsync(item => item.Id == id, cancellationToken),
-            _ => await db.TumorIndexes.FirstOrDefaultAsync(item => item.Id == id, cancellationToken)
-        };
-        if (record is null)
-        {
-            return Results.NotFound(ApiEnvelope.Create(new { message = "索引行不存在或已被删除。" }));
+            case "icd":
+            {
+                var row = await db.IcdIndexes.FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+                if (row is null) { return IndexRowNotFound(); }
+                row.IsEnabled = request.Enabled;
+                row.UpdatedAt = now;
+                break;
+            }
+            case "cm3":
+            {
+                var row = await db.Cm3Indexes.FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+                if (row is null) { return IndexRowNotFound(); }
+                row.IsEnabled = request.Enabled;
+                row.UpdatedAt = now;
+                break;
+            }
+            default:
+            {
+                var row = await db.TumorIndexes.FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+                if (row is null) { return IndexRowNotFound(); }
+                row.IsEnabled = request.Enabled;
+                row.UpdatedAt = now;
+                break;
+            }
         }
 
-        record.GetType().GetProperty("IsEnabled")!.SetValue(record, request.Enabled);
-        record.GetType().GetProperty("UpdatedAt")!.SetValue(record, DateTimeOffset.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
         invalidate();
 
@@ -832,20 +856,21 @@ app.MapPatch(
         db.AuditLogs.Add(new AuditLogRecord
         {
             Id = Guid.NewGuid(),
-            HospitalId = requestContext.HospitalId == Guid.Empty
-                ? Guid.Parse("11111111-1111-1111-1111-111111111111")
-                : requestContext.HospitalId,
+            HospitalId = requestContext.HospitalId,
             ResourceType = $"{kind}_index",
             ResourceId = id,
             Action = $"{kind}_index." + (request.Enabled ? "enable" : "disable"),
             Result = "SUCCESS",
             RequestId = requestContext.RequestId,
             ActorId = requestContext.UserId,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow
+            CreatedAt = now,
+            UpdatedAt = now
         });
         await db.SaveChangesAsync(cancellationToken);
         return Results.Ok(ApiEnvelope.Create(new { id, enabled = request.Enabled }));
+
+        static IResult IndexRowNotFound() =>
+            Results.NotFound(ApiEnvelope.Create(new { message = "索引行不存在或已被删除。" }));
     })
     // 端点级只要求「至少有一种索引的更新权限」（具体是哪一种由端点内按 kind 二次判定）；
     // 若这里硬绑 icd.update，则只授 cm3/tumor 权限的角色会被挡在门外。
@@ -1636,7 +1661,7 @@ app.MapPut(
             item => item.Id == id, cancellationToken);
         if (record is null)
         {
-            return Results.NotFound();
+            return Results.NotFound(ApiEnvelope.Create(new { message = "资源不存在或已被删除。" }));
         }
 
         var termType = string.IsNullOrWhiteSpace(input.TermType)
@@ -1693,7 +1718,7 @@ app.MapDelete(
             item => item.Id == id, cancellationToken);
         if (record is null)
         {
-            return Results.NotFound();
+            return Results.NotFound(ApiEnvelope.Create(new { message = "资源不存在或已被删除。" }));
         }
 
         db.IcdTermSynonyms.Remove(record);
@@ -1715,7 +1740,7 @@ app.MapGet(
             includeLegacy ?? false,
             cancellationToken);
         return response is null
-            ? Results.NotFound()
+            ? Results.NotFound(ApiEnvelope.Create(new { message = "资源不存在或已被删除。" }))
             : Results.Ok(ApiEnvelope.Create(response));
     }).RequireAuthorization(RbacPolicies.CodingReader);
 
@@ -1774,7 +1799,7 @@ app.MapGet(
     {
         var row = await db.PipelineRuntimeConfigs
             .AsNoTracking()
-            .SingleOrDefaultAsync(item => item.ConfigKey == "v22lite", cancellationToken);
+            .SingleOrDefaultAsync(item => item.ConfigKey == HospitalAi.Worker.Pipeline.V22PipelineOptions.RuntimeConfigKey, cancellationToken);
         if (row is null)
         {
             var baseline = options.Value;
@@ -1822,13 +1847,13 @@ app.MapPut(
         });
         var now = DateTimeOffset.UtcNow;
         var row = await db.PipelineRuntimeConfigs
-            .SingleOrDefaultAsync(item => item.ConfigKey == "v22lite", cancellationToken);
+            .SingleOrDefaultAsync(item => item.ConfigKey == HospitalAi.Worker.Pipeline.V22PipelineOptions.RuntimeConfigKey, cancellationToken);
         if (row is null)
         {
             row = new PipelineRuntimeConfigRecord
             {
                 Id = Guid.NewGuid(),
-                ConfigKey = "v22lite",
+                ConfigKey = HospitalAi.Worker.Pipeline.V22PipelineOptions.RuntimeConfigKey,
                 ConfigJson = configJson,
                 UpdatedAt = now
             };
@@ -1894,7 +1919,7 @@ app.MapPost(
             outbox.Add(OutboxMessage.Create(
                 message.MessageId,
                 task.HospitalId,
-                "coding.task.created",
+                CodingTaskCreatedMessage.MessageType,
                 System.Text.Json.JsonSerializer.Serialize(message, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))));
         }
 
@@ -1998,7 +2023,7 @@ app.MapGet(
     {
         var response = await service.GetAsync(taskId, cancellationToken);
         return response is null
-            ? Results.NotFound()
+            ? Results.NotFound(ApiEnvelope.Create(new { message = "资源不存在或已被删除。" }))
             : Results.Ok(ApiEnvelope.Create(response));
     }).RequireAuthorization(RbacPolicies.CodingReader);
 
@@ -2136,6 +2161,68 @@ app.MapGet(
     {
         var templates = await service.ListRoleTemplatesAsync(cancellationToken);
         return Results.Ok(ApiEnvelope.Create(templates));
+    }).RequireAuthorization(RbacPolicies.UserAdmin);
+
+// 审计日志查询（合规闭环）：只有能查的审计才算真正的审计。
+// 归为账户管理员的职责（user.manage 权限族）——审计查看是运营/合规动作，
+// 不引入新权限码即可复用既有角色矩阵；日志本身不含患者临床数据。
+app.MapGet(
+    "/api/v1/audit-logs",
+    async (
+        HospitalAiDbContext db,
+        IRequestContext requestContext,
+        int? page,
+        int? pageSize,
+        string? resourceType,
+        string? action,
+        string? actorId,
+        CancellationToken cancellationToken) =>
+    {
+        if (requestContext.HospitalId == Guid.Empty)
+        {
+            return Results.BadRequest(ApiEnvelope.Create<object>(new { error = "HOSPITAL_CONTEXT_REQUIRED" }));
+        }
+
+        var query = db.AuditLogs
+            .AsNoTracking()
+            .Where(item => item.HospitalId == requestContext.HospitalId);
+        if (!string.IsNullOrWhiteSpace(resourceType))
+        {
+            query = query.Where(item => item.ResourceType == resourceType);
+        }
+
+        if (!string.IsNullOrWhiteSpace(action))
+        {
+            query = query.Where(item => item.Action.StartsWith(action, StringComparison.Ordinal));
+        }
+
+        if (!string.IsNullOrWhiteSpace(actorId))
+        {
+            query = query.Where(item => item.ActorId == actorId);
+        }
+
+        var total = await query.CountAsync(cancellationToken);
+        var pageNum = Math.Max(page ?? 1, 1);
+        var size = Math.Clamp(pageSize ?? 20, 1, 200);
+        var items = await query
+            .OrderByDescending(item => item.CreatedAt)
+            .ThenByDescending(item => item.Id)
+            .Skip((pageNum - 1) * size)
+            .Take(size)
+            .Select(item => new
+            {
+                item.Id,
+                item.ResourceType,
+                item.ResourceId,
+                item.Action,
+                item.Result,
+                item.ActorId,
+                item.RequestId,
+                item.CreatedAt
+            })
+            .ToListAsync(cancellationToken);
+
+        return Results.Ok(ApiEnvelope.Create(new { total, page = pageNum, pageSize = size, items }));
     }).RequireAuthorization(RbacPolicies.UserAdmin);
 
 app.MapGet(

@@ -519,7 +519,7 @@ public sealed class SqlServerV22CodingService(
         new OutboxStore(dbContext).Add(OutboxMessage.Create(
             message.MessageId,
             task.HospitalId,
-            "coding.task.created",
+            CodingTaskCreatedMessage.MessageType,
             JsonSerializer.Serialize(message, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
 
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);

@@ -182,7 +182,14 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
 
         var qualityIssues = new List<QualityIssueRecord>();
         var degradedFlags = new HashSet<string>(StringComparer.Ordinal);
-        var recorder = new TraceRecorder(_dbContext, task, message.TraceId, runId);
+        var recorder = new TraceRecorder(
+            _dbContext,
+            task,
+            message.TraceId,
+            runId,
+            settings.KnowledgeVersion,
+            settings.RuleVersion,
+            settings.PromptVersion);
 
         // Step 1：Data Quality Gate。
         var documents = await LoadCurrentDocumentsAsync(task, cancellationToken);
@@ -1790,7 +1797,10 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         HospitalAiDbContext dbContext,
         CodingTaskRecord task,
         string traceId,
-        Guid runId)
+        Guid runId,
+        string? knowledgeVersion,
+        string? ruleVersion,
+        string? promptVersion)
     {
         private readonly List<PipelineTraceStepRecord> _steps = [];
 
@@ -1818,9 +1828,10 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                 DurationMs = (long)(now - startedAt).TotalMilliseconds,
                 ErrorCode = errorCode,
                 ModelVersion = modelVersion,
-                KnowledgeVersion = null,
-                RuleVersion = null,
-                PromptVersion = null,
+                // 版本三件套接线：此前硬编码 null，排障时无法回答"这次跑的是哪版知识库/规则/提示词"。
+                KnowledgeVersion = knowledgeVersion,
+                RuleVersion = ruleVersion,
+                PromptVersion = promptVersion,
                 InputTokens = inputTokens,
                 OutputTokens = outputTokens,
                 CreatedAt = now,
@@ -1892,7 +1903,7 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
             var row = await _dbContext.PipelineRuntimeConfigs
                 .AsNoTracking()
                 .SingleOrDefaultAsync(
-                    item => item.ConfigKey == "v22lite", cancellationToken);
+                    item => item.ConfigKey == HospitalAi.Worker.Pipeline.V22PipelineOptions.RuntimeConfigKey, cancellationToken);
             if (row is null)
             {
                 return settings;

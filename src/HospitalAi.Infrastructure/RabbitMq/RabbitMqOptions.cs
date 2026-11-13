@@ -1,3 +1,5 @@
+using HospitalAi.Contracts.CodingTasks;
+
 namespace HospitalAi.Infrastructure.RabbitMq;
 
 /// <summary>
@@ -17,7 +19,7 @@ public sealed class RabbitMqOptions
 
     public string Password { get; set; } = "guest";
 
-    public string QueueName { get; set; } = "coding.task.created";
+    public string QueueName { get; set; } = CodingTaskCreatedMessage.MessageType;
 
     public bool Enabled { get; set; }
 }

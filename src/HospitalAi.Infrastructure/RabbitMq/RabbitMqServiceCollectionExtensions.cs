@@ -33,7 +33,7 @@ public static class RabbitMqServiceCollectionExtensions
                     });
                 cfg.Message<CodingTaskCreatedMessage>(message =>
                 {
-                    message.SetEntityName("coding.task.created");
+                    message.SetEntityName(CodingTaskCreatedMessage.MessageType);
                 });
             });
         });

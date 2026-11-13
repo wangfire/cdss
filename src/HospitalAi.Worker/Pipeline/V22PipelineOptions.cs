@@ -7,6 +7,13 @@ public sealed class V22PipelineOptions
 {
     public const string SectionName = "Coding:V22Lite";
 
+    /// <summary>
+    /// pipeline_runtime_config 表里本流水线运行时覆盖行的 config_key。
+    /// Api（GET/PUT admin/pipeline-config、标题通道配置源）与 Worker（每次执行读取）
+    /// 共用同一行，此前以字面量散落 5 处，改键名会让两侧读到不同配置。
+    /// </summary>
+    public const string RuntimeConfigKey = "v22lite";
+
     /// <summary>知识库版本，用于 Exact 过滤与 ES 索引名。</summary>
     public string KnowledgeVersion { get; set; } = "v1";
 

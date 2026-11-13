@@ -102,7 +102,7 @@ public sealed class SqlServerCodingTaskService(
         new OutboxStore(dbContext).Add(OutboxMessage.Create(
             messageId,
             requestContext.HospitalId,
-            "coding.task.created",
+            CodingTaskCreatedMessage.MessageType,
             JsonSerializer.Serialize(
                 message,
                 new JsonSerializerOptions(JsonSerializerDefaults.Web))));

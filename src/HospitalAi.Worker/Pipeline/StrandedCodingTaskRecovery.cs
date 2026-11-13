@@ -28,7 +28,7 @@ public sealed class StrandedCodingTaskRecovery(
 
     private const int BatchSize = 200;
 
-    private const string MessageType = "coding.task.created";
+    private const string MessageType = CodingTaskCreatedMessage.MessageType;
 
     private static readonly JsonSerializerOptions PayloadOptions = new(JsonSerializerDefaults.Web);
 

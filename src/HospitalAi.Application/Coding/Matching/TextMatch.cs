@@ -230,7 +230,8 @@ public static class TextMatch
         }
     }
 
-    public static (int Start, int Length) LongestCommonSubstring(string left, string right)    {
+    public static (int Start, int Length) LongestCommonSubstring(string left, string right)
+    {
         if (left.Length == 0 || right.Length == 0)
         {
             return (0, 0);

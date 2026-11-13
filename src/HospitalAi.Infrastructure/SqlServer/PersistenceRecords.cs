@@ -1,4 +1,4 @@
-﻿﻿﻿﻿using HospitalAi.Domain.CodingTasks;
+﻿using HospitalAi.Domain.CodingTasks;
 
 namespace HospitalAi.Infrastructure.SqlServer;
 

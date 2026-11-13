@@ -49,117 +49,117 @@ public static class ReferenceEndpoints
     /// <summary>MapReferenceEndpoints（由 Program.cs 搬移）。</summary>
     public static IEndpointRouteBuilder MapReferenceEndpoints(this IEndpointRouteBuilder app)
     {
-    // 医院公开列表（WP-A 医院下拉登录）：匿名可访问，仅返回 id/code/name 三字段，
-    // 60 秒内存缓存防刷。供登录页在未认证状态下选择医院。
-    app.MapGet(
-        "/api/v1/hospitals/public",
-        async (HospitalAiDbContext db, CancellationToken cancellationToken) =>
-        {
-            var items = await db.Hospitals
-                .AsNoTracking()
-                .OrderBy(item => item.Code)
-                .Select(item => new { item.Id, item.Code, item.Name })
-                .ToListAsync(cancellationToken);
-            return Results.Ok(ApiEnvelope.Create(items));
-        });
+        // 医院公开列表（WP-A 医院下拉登录）：匿名可访问，仅返回 id/code/name 三字段，
+        // 60 秒内存缓存防刷。供登录页在未认证状态下选择医院。
+        app.MapGet(
+            "/api/v1/hospitals/public",
+            async (HospitalAiDbContext db, CancellationToken cancellationToken) =>
+            {
+                var items = await db.Hospitals
+                    .AsNoTracking()
+                    .OrderBy(item => item.Code)
+                    .Select(item => new { item.Id, item.Code, item.Name })
+                    .ToListAsync(cancellationToken);
+                return Results.Ok(ApiEnvelope.Create(items));
+            });
 
-    app.MapPost(
-        "/api/v1/hospitals",
-        async (
-            CreateHospitalRequest request,
-            IReferenceDataService service,
-            CancellationToken cancellationToken) =>
-        {
-            var response = await service.CreateHospitalAsync(request, cancellationToken);
-            return Results.Created($"/api/v1/hospitals/{response.Id}", ApiEnvelope.Create(response));
-        }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeHospitalCreate));
+        app.MapPost(
+            "/api/v1/hospitals",
+            async (
+                CreateHospitalRequest request,
+                IReferenceDataService service,
+                CancellationToken cancellationToken) =>
+            {
+                var response = await service.CreateHospitalAsync(request, cancellationToken);
+                return Results.Created($"/api/v1/hospitals/{response.Id}", ApiEnvelope.Create(response));
+            }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeHospitalCreate));
 
-    app.MapPost(
-        "/api/v1/patients",
-        async (
-            CreatePatientRequest request,
-            IReferenceDataService service,
-            CancellationToken cancellationToken) =>
-        {
-            var response = await service.CreatePatientAsync(request, cancellationToken);
-            return Results.Created($"/api/v1/patients/{response.Id}", ApiEnvelope.Create(response));
-        }).RequireAuthorization(RbacPolicies.CodingReviewer);
+        app.MapPost(
+            "/api/v1/patients",
+            async (
+                CreatePatientRequest request,
+                IReferenceDataService service,
+                CancellationToken cancellationToken) =>
+            {
+                var response = await service.CreatePatientAsync(request, cancellationToken);
+                return Results.Created($"/api/v1/patients/{response.Id}", ApiEnvelope.Create(response));
+            }).RequireAuthorization(RbacPolicies.CodingReviewer);
 
-    app.MapPost(
-        "/api/v1/visits",
-        async (
-            CreateVisitRequest request,
-            IReferenceDataService service,
-            CancellationToken cancellationToken) =>
-        {
-            var response = await service.CreateVisitAsync(request, cancellationToken);
-            return Results.Created($"/api/v1/visits/{response.Id}", ApiEnvelope.Create(response));
-        }).RequireAuthorization(RbacPolicies.CodingReviewer);
+        app.MapPost(
+            "/api/v1/visits",
+            async (
+                CreateVisitRequest request,
+                IReferenceDataService service,
+                CancellationToken cancellationToken) =>
+            {
+                var response = await service.CreateVisitAsync(request, cancellationToken);
+                return Results.Created($"/api/v1/visits/{response.Id}", ApiEnvelope.Create(response));
+            }).RequireAuthorization(RbacPolicies.CodingReviewer);
 
-    app.MapPost(
-        "/api/v1/documents",
-        async (
-            CreateDocumentRequest request,
-            IReferenceDataService service,
-            CancellationToken cancellationToken) =>
-        {
-            var response = await service.CreateDocumentAsync(request, cancellationToken);
-            return Results.Created($"/api/v1/documents/{response.Id}", ApiEnvelope.Create(response));
-        }).RequireAuthorization(RbacPolicies.CodingReviewer);
+        app.MapPost(
+            "/api/v1/documents",
+            async (
+                CreateDocumentRequest request,
+                IReferenceDataService service,
+                CancellationToken cancellationToken) =>
+            {
+                var response = await service.CreateDocumentAsync(request, cancellationToken);
+                return Results.Created($"/api/v1/documents/{response.Id}", ApiEnvelope.Create(response));
+            }).RequireAuthorization(RbacPolicies.CodingReviewer);
 
-    // Legacy 结果只读，不接受修改与审核动作。
+        // Legacy 结果只读，不接受修改与审核动作。
 
-    app.MapGet(
-        "/api/v1/visits/{visitId:guid}/readiness",
-        async (
-            Guid visitId,
-            IV22CodingService service,
-            CancellationToken cancellationToken) =>
-        {
-            var response = await service.GetVisitReadinessAsync(visitId, cancellationToken);
-            return response is null
-                ? Results.NotFound(ApiEnvelope.Create<object>(new { error = "VISIT_NOT_FOUND" }))
-                : Results.Ok(ApiEnvelope.Create(response));
-        }).RequireAuthorization(RbacPolicies.CodingReader);
+        app.MapGet(
+            "/api/v1/visits/{visitId:guid}/readiness",
+            async (
+                Guid visitId,
+                IV22CodingService service,
+                CancellationToken cancellationToken) =>
+            {
+                var response = await service.GetVisitReadinessAsync(visitId, cancellationToken);
+                return response is null
+                    ? Results.NotFound(ApiEnvelope.Create<object>(new { error = "VISIT_NOT_FOUND" }))
+                    : Results.Ok(ApiEnvelope.Create(response));
+            }).RequireAuthorization(RbacPolicies.CodingReader);
 
-    app.MapGet(
-        "/api/v1/visits/{visitId:guid}/clinical-facts",
-        async (
-            Guid visitId,
-            IV22CodingService service,
-            CancellationToken cancellationToken) =>
-        {
-            var response = await service.GetClinicalFactsAsync(visitId, cancellationToken);
-            return Results.Ok(ApiEnvelope.Create(response));
-        }).RequireAuthorization(RbacPolicies.CodingReader);
+        app.MapGet(
+            "/api/v1/visits/{visitId:guid}/clinical-facts",
+            async (
+                Guid visitId,
+                IV22CodingService service,
+                CancellationToken cancellationToken) =>
+            {
+                var response = await service.GetClinicalFactsAsync(visitId, cancellationToken);
+                return Results.Ok(ApiEnvelope.Create(response));
+            }).RequireAuthorization(RbacPolicies.CodingReader);
 
-    app.MapGet(
-        "/api/v1/visits/{visitId:guid}/documents",
-        async (
-            Guid visitId,
-            IV22CodingService service,
-            CancellationToken cancellationToken) =>
-        {
-            var response = await service.GetVisitDocumentsAsync(visitId, cancellationToken);
-            return Results.Ok(ApiEnvelope.Create(response));
-        }).RequireAuthorization(RbacPolicies.CodingReader);
+        app.MapGet(
+            "/api/v1/visits/{visitId:guid}/documents",
+            async (
+                Guid visitId,
+                IV22CodingService service,
+                CancellationToken cancellationToken) =>
+            {
+                var response = await service.GetVisitDocumentsAsync(visitId, cancellationToken);
+                return Results.Ok(ApiEnvelope.Create(response));
+            }).RequireAuthorization(RbacPolicies.CodingReader);
 
-    app.MapGet(
-        "/api/v1/visits/{visitId:guid}/coding",
-        async (
-            Guid visitId,
-            bool? includeLegacy,
-            IV22CodingService service,
-            CancellationToken cancellationToken) =>
-        {
-            var response = await service.GetVisitCodingAsync(
-                visitId,
-                includeLegacy ?? false,
-                cancellationToken);
-            return response is null
-                ? Results.NotFound(ApiEnvelope.Create<object>(new { error = "VISIT_NOT_FOUND" }))
-                : Results.Ok(ApiEnvelope.Create(response));
-        }).RequireAuthorization(RbacPolicies.CodingReader);
+        app.MapGet(
+            "/api/v1/visits/{visitId:guid}/coding",
+            async (
+                Guid visitId,
+                bool? includeLegacy,
+                IV22CodingService service,
+                CancellationToken cancellationToken) =>
+            {
+                var response = await service.GetVisitCodingAsync(
+                    visitId,
+                    includeLegacy ?? false,
+                    cancellationToken);
+                return response is null
+                    ? Results.NotFound(ApiEnvelope.Create<object>(new { error = "VISIT_NOT_FOUND" }))
+                    : Results.Ok(ApiEnvelope.Create(response));
+            }).RequireAuthorization(RbacPolicies.CodingReader);
 
         return app;
     }

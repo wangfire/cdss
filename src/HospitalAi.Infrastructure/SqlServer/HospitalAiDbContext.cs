@@ -521,7 +521,8 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
             .HasDatabaseName("ix_medical_code_embedding_hospital_model");
     }
 
-    private static void ConfigureCodingRule(ModelBuilder modelBuilder)    {
+    private static void ConfigureCodingRule(ModelBuilder modelBuilder)
+    {
         var entity = modelBuilder.Entity<CodingRuleRecord>();
 
         entity.ToTable("coding_rule");
@@ -838,13 +839,13 @@ public sealed class HospitalAiDbContext(DbContextOptions<HospitalAiDbContext> op
             .IsUnique()
             .HasFilter("[recommendation_version] IS NULL");
         entity.HasIndex(item => new
-            {
-                item.CodingTaskId,
-                item.DiagnosisInputId,
-                item.RecommendationType,
-                item.Code,
-                item.RecommendationVersion
-            })
+        {
+            item.CodingTaskId,
+            item.DiagnosisInputId,
+            item.RecommendationType,
+            item.Code,
+            item.RecommendationVersion
+        })
             .HasDatabaseName("ux_coding_recommendation_task_input_type_code_version")
             .IsUnique()
             .HasFilter("[recommendation_version] IS NOT NULL");

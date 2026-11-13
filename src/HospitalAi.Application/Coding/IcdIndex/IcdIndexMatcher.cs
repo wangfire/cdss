@@ -320,7 +320,7 @@ public static class IcdIndexMatcher
                 break;
             }
         }
-        
+
         if (commaIndex < 0)
         {
             return true;

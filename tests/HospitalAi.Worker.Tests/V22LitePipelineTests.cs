@@ -594,21 +594,42 @@ public sealed class V22LitePipelineTests
             context.MedicalCodeEmbeddings.AddRange(
                 new MedicalCodeEmbeddingRecord
                 {
-                    Id = Guid.NewGuid(), HospitalId = hospitalId, CodeSystemCode = "ICD-10",
-                    Code = "I21.900", ModelCode = "stub", Title = "急性心肌梗死", Dim = 2,
-                    Vector = ToBytes([1f, 0f]), CreatedAt = now, UpdatedAt = now
+                    Id = Guid.NewGuid(),
+                    HospitalId = hospitalId,
+                    CodeSystemCode = "ICD-10",
+                    Code = "I21.900",
+                    ModelCode = "stub",
+                    Title = "急性心肌梗死",
+                    Dim = 2,
+                    Vector = ToBytes([1f, 0f]),
+                    CreatedAt = now,
+                    UpdatedAt = now
                 },
                 new MedicalCodeEmbeddingRecord
                 {
-                    Id = Guid.NewGuid(), HospitalId = hospitalId, CodeSystemCode = "ICD-10",
-                    Code = "I10.X04", ModelCode = "stub", Title = "高血压", Dim = 2,
-                    Vector = ToBytes([0f, 1f]), CreatedAt = now, UpdatedAt = now
+                    Id = Guid.NewGuid(),
+                    HospitalId = hospitalId,
+                    CodeSystemCode = "ICD-10",
+                    Code = "I10.X04",
+                    ModelCode = "stub",
+                    Title = "高血压",
+                    Dim = 2,
+                    Vector = ToBytes([0f, 1f]),
+                    CreatedAt = now,
+                    UpdatedAt = now
                 },
                 new MedicalCodeEmbeddingRecord
                 {
-                    Id = Guid.NewGuid(), HospitalId = otherHospital, CodeSystemCode = "ICD-10",
-                    Code = "I21.900", ModelCode = "stub", Title = "急性心肌梗死", Dim = 2,
-                    Vector = ToBytes([1f, 0f]), CreatedAt = now, UpdatedAt = now
+                    Id = Guid.NewGuid(),
+                    HospitalId = otherHospital,
+                    CodeSystemCode = "ICD-10",
+                    Code = "I21.900",
+                    ModelCode = "stub",
+                    Title = "急性心肌梗死",
+                    Dim = 2,
+                    Vector = ToBytes([1f, 0f]),
+                    CreatedAt = now,
+                    UpdatedAt = now
                 });
             await context.SaveChangesAsync();
         }

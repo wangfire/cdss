@@ -49,57 +49,57 @@ public static class TaskEndpoints
     /// <summary>MapTaskEndpoints（由 Program.cs 搬移）。</summary>
     public static IEndpointRouteBuilder MapTaskEndpoints(this IEndpointRouteBuilder app)
     {
-    app.MapPost(
-        "/api/v1/coding-tasks",
-        async (
-            CreateCodingTaskRequest request,
-            ICodingTaskService service,
-            IRequestContext requestContext,
-            CancellationToken cancellationToken) =>
-        {
-            var response = await service.CreateAsync(
-                request,
-                requestContext.IdempotencyKey ?? string.Empty,
-                cancellationToken);
-            return Results.Created($"/api/v1/coding-tasks/{response.Id}", ApiEnvelope.Create(response));
-        }).RequireAuthorization(RbacPolicies.CodingReviewer);
+        app.MapPost(
+            "/api/v1/coding-tasks",
+            async (
+                CreateCodingTaskRequest request,
+                ICodingTaskService service,
+                IRequestContext requestContext,
+                CancellationToken cancellationToken) =>
+            {
+                var response = await service.CreateAsync(
+                    request,
+                    requestContext.IdempotencyKey ?? string.Empty,
+                    cancellationToken);
+                return Results.Created($"/api/v1/coding-tasks/{response.Id}", ApiEnvelope.Create(response));
+            }).RequireAuthorization(RbacPolicies.CodingReviewer);
 
-    app.MapGet(
-        "/api/v1/coding-tasks/{taskId:guid}",
-        async (
-            Guid taskId,
-            ICodingTaskService service,
-            CancellationToken cancellationToken) =>
-        {
-            var response = await service.GetAsync(taskId, cancellationToken);
-            return response is null
-                ? Results.NotFound(ApiEnvelope.Create(new { message = "资源不存在或已被删除。" }))
-                : Results.Ok(ApiEnvelope.Create(response));
-        }).RequireAuthorization(RbacPolicies.CodingReader);
+        app.MapGet(
+            "/api/v1/coding-tasks/{taskId:guid}",
+            async (
+                Guid taskId,
+                ICodingTaskService service,
+                CancellationToken cancellationToken) =>
+            {
+                var response = await service.GetAsync(taskId, cancellationToken);
+                return response is null
+                    ? Results.NotFound(ApiEnvelope.Create(new { message = "资源不存在或已被删除。" }))
+                    : Results.Ok(ApiEnvelope.Create(response));
+            }).RequireAuthorization(RbacPolicies.CodingReader);
 
-    app.MapGet(
-        "/api/v1/traces/{traceId}",
-        async (
-            string traceId,
-            ITraceQueryService service,
-            CancellationToken cancellationToken) =>
-        {
-            var response = await service.GetAsync(traceId, cancellationToken);
-            return response is null
-                ? Results.NotFound(ApiEnvelope.Create<object>(new { error = "TRACE_NOT_FOUND" }))
-                : Results.Ok(ApiEnvelope.Create(response));
-        }).RequireAuthorization(RbacPolicies.CodingReader);
+        app.MapGet(
+            "/api/v1/traces/{traceId}",
+            async (
+                string traceId,
+                ITraceQueryService service,
+                CancellationToken cancellationToken) =>
+            {
+                var response = await service.GetAsync(traceId, cancellationToken);
+                return response is null
+                    ? Results.NotFound(ApiEnvelope.Create<object>(new { error = "TRACE_NOT_FOUND" }))
+                    : Results.Ok(ApiEnvelope.Create(response));
+            }).RequireAuthorization(RbacPolicies.CodingReader);
 
-    app.MapGet(
-        "/api/v1/coding-tasks/{taskId:guid}/traces",
-        async (
-            Guid taskId,
-            ITraceQueryService service,
-            CancellationToken cancellationToken) =>
-        {
-            var response = await service.ListRunsAsync(taskId, 20, cancellationToken);
-            return Results.Ok(ApiEnvelope.Create(response));
-        }).RequireAuthorization(RbacPolicies.CodingReader);
+        app.MapGet(
+            "/api/v1/coding-tasks/{taskId:guid}/traces",
+            async (
+                Guid taskId,
+                ITraceQueryService service,
+                CancellationToken cancellationToken) =>
+            {
+                var response = await service.ListRunsAsync(taskId, 20, cancellationToken);
+                return Results.Ok(ApiEnvelope.Create(response));
+            }).RequireAuthorization(RbacPolicies.CodingReader);
 
         return app;
     }

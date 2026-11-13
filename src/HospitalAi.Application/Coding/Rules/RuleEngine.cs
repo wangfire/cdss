@@ -161,43 +161,43 @@ public static class RuleConditionEvaluator
             case "exists":
                 return context.ResolveField(field) is not null;
             case "equals":
-            {
-                var actual = context.ResolveField(field);
-                return actual is not null && string.Equals(actual, AsText(value), StringComparison.OrdinalIgnoreCase);
-            }
-            case "not_equals":
-            {
-                var actual = context.ResolveField(field);
-                return actual is null || !string.Equals(actual, AsText(value), StringComparison.OrdinalIgnoreCase);
-            }
-            case "contains":
-            {
-                var actual = context.ResolveField(field);
-                return actual is not null && actual.Contains(AsText(value), StringComparison.Ordinal);
-            }
-            case "in":
-            {
-                var actual = context.ResolveField(field);
-                if (actual is null || value.ValueKind != JsonValueKind.Array)
                 {
-                    return false;
+                    var actual = context.ResolveField(field);
+                    return actual is not null && string.Equals(actual, AsText(value), StringComparison.OrdinalIgnoreCase);
                 }
+            case "not_equals":
+                {
+                    var actual = context.ResolveField(field);
+                    return actual is null || !string.Equals(actual, AsText(value), StringComparison.OrdinalIgnoreCase);
+                }
+            case "contains":
+                {
+                    var actual = context.ResolveField(field);
+                    return actual is not null && actual.Contains(AsText(value), StringComparison.Ordinal);
+                }
+            case "in":
+                {
+                    var actual = context.ResolveField(field);
+                    if (actual is null || value.ValueKind != JsonValueKind.Array)
+                    {
+                        return false;
+                    }
 
-                return value.EnumerateArray()
-                    .Any(item => string.Equals(actual, AsText(item), StringComparison.OrdinalIgnoreCase));
-            }
+                    return value.EnumerateArray()
+                        .Any(item => string.Equals(actual, AsText(item), StringComparison.OrdinalIgnoreCase));
+                }
             case "greater_than":
             case "less_than":
-            {
-                var actual = context.ResolveNumber(field) ?? ParseDecimal(context.ResolveField(field));
-                if (actual is null || value.ValueKind != JsonValueKind.Number)
                 {
-                    return false;
-                }
+                    var actual = context.ResolveNumber(field) ?? ParseDecimal(context.ResolveField(field));
+                    if (actual is null || value.ValueKind != JsonValueKind.Number)
+                    {
+                        return false;
+                    }
 
-                var expected = value.GetDecimal();
-                return op == "greater_than" ? actual > expected : actual < expected;
-            }
+                    var expected = value.GetDecimal();
+                    return op == "greater_than" ? actual > expected : actual < expected;
+                }
             default:
                 return false;
         }

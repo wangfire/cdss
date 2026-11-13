@@ -186,138 +186,138 @@ public static class IndexCodeExpander
                     fallbackCodeSystem, inAlternatives, tumor, titleReverseEnabled);
 
             case IndexCodeFormatKind.Morphology:
-            {
-                // 索引已给部位码（M8332/3:C73）→ 直接用，不查肿瘤表；
-                // 裸形态学码（M8510/3）→ 按行为位到肿瘤索引表查特指部位码。
-                var morph = parsed.MorphologyCode;
-                IReadOnlyList<(string Prefix, string? Note)> families = [];
-                if (parsed.SiteCode is { Length: > 0 } indexSite)
                 {
-                    families = [(indexSite, null)];
-                }
-                else if (tumor is not null && morph is { } morphologyCode)
-                {
-                    // 肿瘤表解出的并列族（颅◇=C79.5 与 颅(窝，任何)=C79.3 之于 颅底、
-                    // 腹壁 在 神经/皮肤/结缔组织 三族）：表本身分不出，但字典标题分得出——
-                    // 都展开交给字典门控裁决，不再一枪打死整张表。
-                    families = tumor.ResolveSiteCodes(morphologyCode, inputText)
-                        .Select(match => (match.Code, (string?)SiteNote(match, morphologyCode)))
-                        .ToList();
-
-                    // 部位词一个都没锚上表，且形态学码本身不含部位信息（M8000/x 肿瘤、M8010/x 癌）：
-                    // 交付肿瘤表对"未特指部位"给的码（C80 / D36.9 / D09.9 / D48.9），
-                    // 而不是 M80000/3 这种补零后仍然没有部位的形态学码。
-                    if (families.Count == 0 && IsSitelessMorphology(morphologyCode)
-                        && tumor.ResolveUnspecifiedSiteCode(morphologyCode) is { } unspecified)
+                    // 索引已给部位码（M8332/3:C73）→ 直接用，不查肿瘤表；
+                    // 裸形态学码（M8510/3）→ 按行为位到肿瘤索引表查特指部位码。
+                    var morph = parsed.MorphologyCode;
+                    IReadOnlyList<(string Prefix, string? Note)> families = [];
+                    if (parsed.SiteCode is { Length: > 0 } indexSite)
                     {
-                        families =
-                        [
-                            (unspecified.Code, $"形态学编码 {morphologyCode} 不含部位信息，"
+                        families = [(indexSite, null)];
+                    }
+                    else if (tumor is not null && morph is { } morphologyCode)
+                    {
+                        // 肿瘤表解出的并列族（颅◇=C79.5 与 颅(窝，任何)=C79.3 之于 颅底、
+                        // 腹壁 在 神经/皮肤/结缔组织 三族）：表本身分不出，但字典标题分得出——
+                        // 都展开交给字典门控裁决，不再一枪打死整张表。
+                        families = tumor.ResolveSiteCodes(morphologyCode, inputText)
+                            .Select(match => (match.Code, (string?)SiteNote(match, morphologyCode)))
+                            .ToList();
+
+                        // 部位词一个都没锚上表，且形态学码本身不含部位信息（M8000/x 肿瘤、M8010/x 癌）：
+                        // 交付肿瘤表对"未特指部位"给的码（C80 / D36.9 / D09.9 / D48.9），
+                        // 而不是 M80000/3 这种补零后仍然没有部位的形态学码。
+                        if (families.Count == 0 && IsSitelessMorphology(morphologyCode)
+                            && tumor.ResolveUnspecifiedSiteCode(morphologyCode) is { } unspecified)
+                        {
+                            families =
+                            [
+                                (unspecified.Code, $"形态学编码 {morphologyCode} 不含部位信息，"
                                 + $"按动态码 {unspecified.BehaviorDigit}「{unspecified.ColumnName}」"
                                 + $"取肿瘤索引表未特指部位码: {unspecified.DisplayPath}")
-                        ];
+                            ];
+                        }
                     }
-                }
 
-                if (families.Count > 0)
-                {
-                    var items = families
-                        .SelectMany(family => ExpandSiteFamily(
-                            family.Prefix, family.Note, morph, dictionary,
-                            inputText, inputKey, pathKey, parsed.Kind, inAlternatives))
-                        .ToList();
-                    if (items.Count > 0)
+                    if (families.Count > 0)
                     {
-                        // 无部位形态学码的 5 位详码（M80000/3 恶性肿瘤）与它查表得到的部位码同义不同写，
-                        // 不能再占交付席位；有部位信息的形态学码（M8460/0 浆液性乳头状囊腺瘤）仍作粒度补充附上。
-                        return IsSitelessMorphology(morph)
-                            ? items
-                            : MergeMorphologyDetailed(
-                                items, morph, dictionary, inputText, inputKey, pathKey, tumor);
+                        var items = families
+                            .SelectMany(family => ExpandSiteFamily(
+                                family.Prefix, family.Note, morph, dictionary,
+                                inputText, inputKey, pathKey, parsed.Kind, inAlternatives))
+                            .ToList();
+                        if (items.Count > 0)
+                        {
+                            // 无部位形态学码的 5 位详码（M80000/3 恶性肿瘤）与它查表得到的部位码同义不同写，
+                            // 不能再占交付席位；有部位信息的形态学码（M8460/0 浆液性乳头状囊腺瘤）仍作粒度补充附上。
+                            return IsSitelessMorphology(morph)
+                                ? items
+                                : MergeMorphologyDetailed(
+                                    items, morph, dictionary, inputText, inputKey, pathKey, tumor);
+                        }
                     }
-                }
 
-                // 无部位可展开：裸形态学码本身不进推荐（FallbackItems 丢弃），
-                // 但字典里的 5 位详码（M85100/3 甲状腺髓样癌C73）仍按门控给形态学候选。
-                var morphologyOnly = ExpandMorphologyDetailed(
-                    parsed.MorphologyCode, dictionary, inputText, inputKey, pathKey);
-                return morphologyOnly.Count > 0
-                    ? morphologyOnly
-                    : FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
-                        fallbackCodeSystem, titleReverseEnabled);
-            }
+                    // 无部位可展开：裸形态学码本身不进推荐（FallbackItems 丢弃），
+                    // 但字典里的 5 位详码（M85100/3 甲状腺髓样癌C73）仍按门控给形态学候选。
+                    var morphologyOnly = ExpandMorphologyDetailed(
+                        parsed.MorphologyCode, dictionary, inputText, inputKey, pathKey);
+                    return morphologyOnly.Count > 0
+                        ? morphologyOnly
+                        : FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
+                            fallbackCodeSystem, titleReverseEnabled);
+                }
 
             case IndexCodeFormatKind.DaggerPair:
-            {
-                var dagger = (parsed.DaggerCode ?? string.Empty).ToUpperInvariant();
-                var asterisk = (parsed.AsteriskCode ?? string.Empty).ToUpperInvariant();
-                if (dagger.Length > 0 && asterisk.Length > 0)
                 {
-                    var joint = dictionary.Joint(dagger, asterisk);
-                    var jointItems = RankRows(joint, inputText, inputKey, pathKey, parsed.Kind,
-                        inAlternatives, note: null);
-                    if (jointItems.Count > 0)
+                    var dagger = (parsed.DaggerCode ?? string.Empty).ToUpperInvariant();
+                    var asterisk = (parsed.AsteriskCode ?? string.Empty).ToUpperInvariant();
+                    if (dagger.Length > 0 && asterisk.Length > 0)
                     {
-                        return jointItems;
+                        var joint = dictionary.Joint(dagger, asterisk);
+                        var jointItems = RankRows(joint, inputText, inputKey, pathKey, parsed.Kind,
+                            inAlternatives, note: null);
+                        if (jointItems.Count > 0)
+                        {
+                            return jointItems;
+                        }
                     }
-                }
 
-                // 联合展开为空 → 病因/表现两码分别展开，成对给出。
-                var pair = new List<ExpandedItem>();
-                if (dagger.Length > 0)
-                {
-                    pair.AddRange(ExpandByPrefix(dagger, dictionary, inputText, inputKey, pathKey,
-                        parsed.Kind, excludeJoint: true, inAlternatives,
-                        note: $"联合编码病因码（配 {parsed.AsteriskCode}*）"));
-                }
+                    // 联合展开为空 → 病因/表现两码分别展开，成对给出。
+                    var pair = new List<ExpandedItem>();
+                    if (dagger.Length > 0)
+                    {
+                        pair.AddRange(ExpandByPrefix(dagger, dictionary, inputText, inputKey, pathKey,
+                            parsed.Kind, excludeJoint: true, inAlternatives,
+                            note: $"联合编码病因码（配 {parsed.AsteriskCode}*）"));
+                    }
 
-                if (asterisk.Length > 0 && pair.Count < 3)
-                {
-                    pair.AddRange(ExpandByPrefix(asterisk, dictionary, inputText, inputKey, pathKey,
-                        parsed.Kind, excludeJoint: false, inAlternatives,
-                        note: $"联合编码表现码（配 {parsed.DaggerCode}†）"));
-                }
+                    if (asterisk.Length > 0 && pair.Count < 3)
+                    {
+                        pair.AddRange(ExpandByPrefix(asterisk, dictionary, inputText, inputKey, pathKey,
+                            parsed.Kind, excludeJoint: false, inAlternatives,
+                            note: $"联合编码表现码（配 {parsed.DaggerCode}†）"));
+                    }
 
-                return pair.Count > 0 ? pair : FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
-                    fallbackCodeSystem, titleReverseEnabled);
-            }
-
-            case IndexCodeFormatKind.CodeRange:
-            {
-                var prefixes = ParsedIndexCode.RangePrefixes(
-                    parsed.RangeStart ?? string.Empty, parsed.RangeEnd ?? string.Empty);
-                if (prefixes.Count == 0)
-                {
-                    return FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
+                    return pair.Count > 0 ? pair : FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
                         fallbackCodeSystem, titleReverseEnabled);
                 }
 
-                var rows = prefixes
-                    .SelectMany(prefix => dictionary.Prefix(prefix))
-                    .ToList();
-                var items = RankRows(rows, inputText, inputKey, pathKey, parsed.Kind,
-                    inAlternatives, note: null);
-                return items.Count > 0 ? items : FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
-                    fallbackCodeSystem, titleReverseEnabled);
-            }
+            case IndexCodeFormatKind.CodeRange:
+                {
+                    var prefixes = ParsedIndexCode.RangePrefixes(
+                        parsed.RangeStart ?? string.Empty, parsed.RangeEnd ?? string.Empty);
+                    if (prefixes.Count == 0)
+                    {
+                        return FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
+                            fallbackCodeSystem, titleReverseEnabled);
+                    }
+
+                    var rows = prefixes
+                        .SelectMany(prefix => dictionary.Prefix(prefix))
+                        .ToList();
+                    var items = RankRows(rows, inputText, inputKey, pathKey, parsed.Kind,
+                        inAlternatives, note: null);
+                    return items.Count > 0 ? items : FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
+                        fallbackCodeSystem, titleReverseEnabled);
+                }
 
             case IndexCodeFormatKind.CategoryUnspecified:
             case IndexCodeFormatKind.Single:
             case IndexCodeFormatKind.Empty:
             default:
-            {
-                var prefix = (parsed.Prefix ?? parsed.Raw).ToUpperInvariant().TrimEnd('*');
-                if (prefix.Length < 3)
                 {
-                    return FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
+                    var prefix = (parsed.Prefix ?? parsed.Raw).ToUpperInvariant().TrimEnd('*');
+                    if (prefix.Length < 3)
+                    {
+                        return FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
+                            fallbackCodeSystem, titleReverseEnabled);
+                    }
+
+                    var items = ExpandByPrefix(prefix, dictionary, inputText, inputKey, pathKey,
+                        parsed.Kind, excludeJoint: false, inAlternatives, note: null);
+                    return items.Count > 0 ? items : FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
                         fallbackCodeSystem, titleReverseEnabled);
                 }
-
-                var items = ExpandByPrefix(prefix, dictionary, inputText, inputKey, pathKey,
-                    parsed.Kind, excludeJoint: false, inAlternatives, note: null);
-                return items.Count > 0 ? items : FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
-                    fallbackCodeSystem, titleReverseEnabled);
-            }
         }
     }
 
@@ -448,7 +448,8 @@ public static class IndexCodeExpander
 
         var results = new List<ExpandedItem>();
         foreach (var row in rows)
-        {            if (TextMatch.IsUnjustifiedDiabetesCompound(row.Title, inputText)
+        {
+            if (TextMatch.IsUnjustifiedDiabetesCompound(row.Title, inputText)
                 || TextMatch.HasDiabetesTypeConflict(row.Title, row.Code, inputText, inAlternatives)
                 || TextMatch.HasNegationPoleConflict(row.Title, inputText)
                 || TextMatch.HasBodyPartConflict(row.Title, inputText))

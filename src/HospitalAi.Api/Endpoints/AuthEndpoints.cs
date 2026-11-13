@@ -49,47 +49,47 @@ public static class AuthEndpoints
     /// <summary>MapAuthEndpoints（由 Program.cs 搬移）。</summary>
     public static IEndpointRouteBuilder MapAuthEndpoints(this IEndpointRouteBuilder app)
     {
-    // ===== 认证端点（前端 authApi 对齐 /api/v1/auth/*）=====
-    // 登录请求体含 hospitalId（前端不注入 X-Hospital-Id 头时也能确定医院范围）。
-    app.MapPost(
-        "/api/v1/auth/login",
-        async (
-            LoginRequest request,
-            IAuthService authService,
-            CancellationToken cancellationToken) =>
-        {
-            var response = await authService.LoginAsync(request, cancellationToken);
-            return Results.Ok(ApiEnvelope.Create(response));
-        }).RequireRateLimiting("login");
+        // ===== 认证端点（前端 authApi 对齐 /api/v1/auth/*）=====
+        // 登录请求体含 hospitalId（前端不注入 X-Hospital-Id 头时也能确定医院范围）。
+        app.MapPost(
+            "/api/v1/auth/login",
+            async (
+                LoginRequest request,
+                IAuthService authService,
+                CancellationToken cancellationToken) =>
+            {
+                var response = await authService.LoginAsync(request, cancellationToken);
+                return Results.Ok(ApiEnvelope.Create(response));
+            }).RequireRateLimiting("login");
 
-    app.MapGet(
-        "/api/v1/auth/me",
-        async (
-            IAuthService authService,
-            CancellationToken cancellationToken) =>
-        {
-            var response = await authService.GetCurrentUserAsync(cancellationToken);
-            return Results.Ok(ApiEnvelope.Create(response));
-        }).RequireAuthorization();
+        app.MapGet(
+            "/api/v1/auth/me",
+            async (
+                IAuthService authService,
+                CancellationToken cancellationToken) =>
+            {
+                var response = await authService.GetCurrentUserAsync(cancellationToken);
+                return Results.Ok(ApiEnvelope.Create(response));
+            }).RequireAuthorization();
 
-    app.MapPost(
-        "/api/v1/auth/logout",
-        () =>
-        {
-            // 第一阶段：JWT 短期令牌 + 客户端清除；无服务端黑名单。
-            return Results.Ok(ApiEnvelope.Create(new { ok = true }));
-        });
+        app.MapPost(
+            "/api/v1/auth/logout",
+            () =>
+            {
+                // 第一阶段：JWT 短期令牌 + 客户端清除；无服务端黑名单。
+                return Results.Ok(ApiEnvelope.Create(new { ok = true }));
+            });
 
-    app.MapPost(
-        "/api/v1/auth/change-password",
-        async (
-            ChangePasswordRequest request,
-            IAuthService authService,
-            CancellationToken cancellationToken) =>
-        {
-            await authService.ChangePasswordAsync(request, cancellationToken);
-            return Results.Ok(ApiEnvelope.Create(new { ok = true }));
-        }).RequireAuthorization();
+        app.MapPost(
+            "/api/v1/auth/change-password",
+            async (
+                ChangePasswordRequest request,
+                IAuthService authService,
+                CancellationToken cancellationToken) =>
+            {
+                await authService.ChangePasswordAsync(request, cancellationToken);
+                return Results.Ok(ApiEnvelope.Create(new { ok = true }));
+            }).RequireAuthorization();
 
         return app;
     }

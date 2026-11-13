@@ -49,35 +49,35 @@ public static class HealthEndpoints
     /// <summary>MapHealthEndpoints（由 Program.cs 搬移）。</summary>
     public static IEndpointRouteBuilder MapHealthEndpoints(this IEndpointRouteBuilder app)
     {
-    app.MapGet(
-        "/api/v1/health",
-        (IRequestContext requestContext) => Results.Ok(new
-        {
-            status = "ok",
-            traceId = requestContext.TraceId
-        }));
+        app.MapGet(
+            "/api/v1/health",
+            (IRequestContext requestContext) => Results.Ok(new
+            {
+                status = "ok",
+                traceId = requestContext.TraceId
+            }));
 
-    app.MapGet(
-        "/api/v1/health/live",
-        (IRequestContext requestContext) => Results.Ok(new
-        {
-            status = "ok",
-            traceId = requestContext.TraceId
-        }));
+        app.MapGet(
+            "/api/v1/health/live",
+            (IRequestContext requestContext) => Results.Ok(new
+            {
+                status = "ok",
+                traceId = requestContext.TraceId
+            }));
 
-    app.MapGet(
-        "/api/v1/health/ready",
-        async (
-            ReadinessProbe readinessProbe,
-            CancellationToken cancellationToken) =>
-        {
-            var result = await readinessProbe.CheckAsync(cancellationToken);
-            return result.Status == "healthy"
-                ? Results.Ok(result)
-                : Results.Json(
-                    result,
-                    statusCode: StatusCodes.Status503ServiceUnavailable);
-        });
+        app.MapGet(
+            "/api/v1/health/ready",
+            async (
+                ReadinessProbe readinessProbe,
+                CancellationToken cancellationToken) =>
+            {
+                var result = await readinessProbe.CheckAsync(cancellationToken);
+                return result.Status == "healthy"
+                    ? Results.Ok(result)
+                    : Results.Json(
+                        result,
+                        statusCode: StatusCodes.Status503ServiceUnavailable);
+            });
 
         return app;
     }

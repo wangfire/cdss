@@ -32,3 +32,6 @@ docs/~$*
 deploy/secrets.env
 deploy/nginx/certs/
 deploy/nginx/frontend-dist/
+
+# 前端依赖目录（历史误生成在仓库根）
+node_modules/

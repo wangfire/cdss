@@ -46,6 +46,50 @@ namespace HospitalAi.Api.Endpoints;
 /// </summary>
 public static class ReferenceEndpoints
 {
+    /// <summary>
+    /// 医院公开列表的内存缓存（60 秒）：匿名端点防刷。
+    /// 医院列表变更频率极低（管理端手工建），过期后下次请求重建。
+    /// </summary>
+    private static readonly object HospitalCacheLock = new();
+    private static IReadOnlyList<object>? _hospitalCache;
+    private static DateTimeOffset _hospitalCacheAt = DateTimeOffset.MinValue;
+    private static readonly TimeSpan HospitalCacheLifetime = TimeSpan.FromSeconds(60);
+
+    /// <summary>读取医院列表（带 60 秒内存缓存）。传入活动中的 DbContext 仅在缓存失效时使用。</summary>
+    internal static async Task<IReadOnlyList<object>> GetOrAddAsync(
+        HospitalAiDbContext db,
+        CancellationToken cancellationToken)
+    {
+        if (_hospitalCache is not null && DateTimeOffset.UtcNow - _hospitalCacheAt < HospitalCacheLifetime)
+        {
+            return _hospitalCache;
+        }
+
+        List<object> items;
+        lock (HospitalCacheLock)
+        {
+            // 双检：等锁期间可能已被其他请求重建。
+            if (_hospitalCache is not null && DateTimeOffset.UtcNow - _hospitalCacheAt < HospitalCacheLifetime)
+            {
+                return _hospitalCache;
+            }
+        }
+
+        items = await db.Hospitals
+            .AsNoTracking()
+            .OrderBy(item => item.Code)
+            .Select(item => new { item.Id, item.Code, item.Name })
+            .Cast<object>()
+            .ToListAsync(cancellationToken);
+
+        lock (HospitalCacheLock)
+        {
+            _hospitalCache = items;
+            _hospitalCacheAt = DateTimeOffset.UtcNow;
+        }
+
+        return items;
+    }
     /// <summary>MapReferenceEndpoints（由 Program.cs 搬移）。</summary>
     public static IEndpointRouteBuilder MapReferenceEndpoints(this IEndpointRouteBuilder app)
     {
@@ -55,11 +99,10 @@ public static class ReferenceEndpoints
             "/api/v1/hospitals/public",
             async (HospitalAiDbContext db, CancellationToken cancellationToken) =>
             {
-                var items = await db.Hospitals
-                    .AsNoTracking()
-                    .OrderBy(item => item.Code)
-                    .Select(item => new { item.Id, item.Code, item.Name })
-                    .ToListAsync(cancellationToken);
+                // 内存缓存：匿名端点防刷（兑现此前注释宣称的 60 秒缓存）。
+                // 医院列表变更频率极低（管理端手工建），60 秒延迟可接受；
+                // 新建医院后最多 60 秒出现在登录页下拉。
+                var items = await GetOrAddAsync(db, cancellationToken);
                 return Results.Ok(ApiEnvelope.Create(items));
             });
 

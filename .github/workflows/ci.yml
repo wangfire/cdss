@@ -49,9 +49,10 @@ jobs:
       - name: Test
         run: dotnet test HospitalAi.slnx --no-build --nologo
 
-  # 注意：暂不启用 `dotnet format --verify-no-changes` 作为门禁 ——
-  # 仓库现存 207 处历史格式问题（12 个文件），一次性修完会污染本次缺陷修复的 diff。
-  # 待格式专项清理完成后再把这一步加回本工作流。
+      # 格式门禁：2026-11-13 全仓清理（2273 处）后启用；
+      # 后续任何不合格式的计算结果都会在这里被拦下。
+      - name: Format check
+        run: dotnet format HospitalAi.slnx --verify-no-changes --no-restore
 
   knowledge:
     name: knowledge-tests

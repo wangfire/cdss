@@ -897,7 +897,43 @@ public static class NameCodingLookupEngine
             }
         }
 
-        return new NameLookupResponse(kind, text, inputKey, codeSystem, ChannelsInfo(channels), directs, leadTerms, recommendations, degraded);
+        return new NameLookupResponse(kind, text, inputKey, codeSystem, ChannelsInfo(channels), directs, leadTerms, recommendations, degraded,
+            EmptyReasonOf(kind, recommendations, leadTerms));
+    }
+
+    /// <summary>
+    /// 推荐为空时的原因提示：链路已走到裸形态学码（M8051/3）却一条码都展不开，
+    /// 说明输入只写了肿瘤形态、没写部位（疣状鳞状细胞癌），肿瘤表无部位词可锚。
+    /// 提示编码员补部位重查，而不是把形态学码本身当推荐交付（口径不变，只加提示）。
+    /// </summary>
+    private static string? EmptyReasonOf(
+        string kind,
+        List<NameLookupRecommendation> recommendations,
+        IReadOnlyList<NameLookupLeadTerm> leadTerms)
+    {
+        if (kind != DiagnosisKind || recommendations.Count > 0)
+        {
+            return null;
+        }
+
+        var morphologyCodes = leadTerms
+            .SelectMany(lead => lead.ModifierPaths)
+            .Where(path => path.Codes.Count == 0 && path.IndexCode is { Length: > 0 })
+            .Select(path => ParsedIndexCode.Parse(path.IndexCode))
+            .Where(parsed => parsed.Kind == IndexCodeFormatKind.Morphology
+                && parsed.SiteCode is not { Length: > 0 }
+                && parsed.MorphologyCode is { Length: > 0 })
+            .Select(parsed => parsed.MorphologyCode!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(3)
+            .ToList();
+        if (morphologyCodes.Count == 0)
+        {
+            return null;
+        }
+
+        return $"已识别肿瘤形态学编码 {string.Join("、", morphologyCodes)}，"
+            + "但未定位到部位编码。请确认输入是否写明部位（如皮肤、口腔、宫颈），补充后重新解析。";
     }
 
     private static NameLookupResponse Empty(string kind, string text, string codeSystem, NameLookupTitleChannels channels)

@@ -533,6 +533,8 @@ export interface NameLookupResponse {
   leadTerms: NameLookupLeadTerm[]
   recommendations: NameLookupRecommendation[]
   degradedFlags: string[]
+  /** 推荐为空时的原因提示（如已识别形态学码但缺部位词）；有推荐时为 null。 */
+  emptyReason: string | null
 }
 
 /** 最终编码提交（保存为病例后回填已确认编码用）。 */

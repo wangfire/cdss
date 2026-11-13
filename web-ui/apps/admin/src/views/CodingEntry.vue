@@ -489,6 +489,13 @@ async function saveAsCase() {
             <p v-if="activeEntry.lookup.recommendations.length === 0" class="text-xs text-muted-foreground">
               {{ t('codingEntry.recommendationsEmpty') }}
             </p>
+            <div
+              v-if="activeEntry.lookup.recommendations.length === 0 && activeEntry.lookup.emptyReason"
+              class="rounded-md border border-amber-300 bg-amber-50/50 p-3 text-xs text-amber-800"
+            >
+              <AlertTriangle class="mr-1 inline h-3.5 w-3.5 align-[-2px]" />
+              {{ activeEntry.lookup.emptyReason }}
+            </div>
             <div class="space-y-2">
               <div
                 v-for="(recommendation, index) in activeEntry.lookup.recommendations"

@@ -1366,4 +1366,63 @@ public sealed class NameLookupTests
         Assert.Empty(response.Recommendations);
         Assert.Empty(response.DictionaryDirects);
     }
+
+    /// <summary>真库形态：癌 → －疣状(表皮样)(鳞状细胞) M8051/3、－鳞状(细胞) M8070/3。</summary>
+    private static IcdIndexSnapshot VerrucousCarcinomaSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(1, "癌", "M8010/3"),
+        ChildRow(2, 1, "－疣状(表皮样)(鳞状细胞)", "M8051/3"),
+        ChildRow(3, 1, "－鳞状(细胞)", "M8070/3"),
+    ]);
+
+    private static TumorIndexSnapshot SiteTumorSnapshot() => TumorIndexSnapshot.Build([
+        new TumorIndexRow(1, "肿瘤，肿瘤性", 0, 0, "肿瘤，肿瘤性", "C80", "C80", "D09.9", "D36.9", "D48.9", 0, null),
+        new TumorIndexRow(2, "－皮肤", 1, 1, "肿瘤，肿瘤性 皮肤", "C44.9", "C79.2", "D04.9", "D23.9", "D48.5", 0, null),
+    ]);
+
+    [Fact]
+    public void 引擎_形态学码命中但缺部位_空推荐给补部位提示()
+    {
+        // 疣状鳞状细胞癌：链路走到 M8051/3 / M8070/3，但输入没有部位词，
+        // 肿瘤表锚不上、字典无 M 斜杠详码 → 推荐为空；提示已识别形态学码并引导补部位。
+        var dictionary = new IcdDictionarySnapshot([Dict("ICD-10", "C44.900", "皮肤恶性肿瘤")]);
+
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "疣状鳞状细胞癌", topK: 8,
+            icdSnapshot: VerrucousCarcinomaSnapshot(), tumorSnapshot: SiteTumorSnapshot(),
+            icdDictionary: dictionary, cm3Snapshot: null, cm3Dictionary: null);
+
+        Assert.Empty(response.Recommendations);
+        Assert.NotNull(response.EmptyReason);
+        Assert.Contains("M8051/3", response.EmptyReason);
+        Assert.Contains("部位", response.EmptyReason);
+    }
+
+    [Fact]
+    public void 引擎_形态学码加部位词_正常出部位码无提示()
+    {
+        var dictionary = new IcdDictionarySnapshot([Dict("ICD-10", "C44.900", "皮肤恶性肿瘤")]);
+
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "皮肤疣状鳞状细胞癌", topK: 8,
+            icdSnapshot: VerrucousCarcinomaSnapshot(), tumorSnapshot: SiteTumorSnapshot(),
+            icdDictionary: dictionary, cm3Snapshot: null, cm3Dictionary: null);
+
+        Assert.Contains(response.Recommendations, item => item.Code.StartsWith("C44.9", StringComparison.Ordinal));
+        Assert.Null(response.EmptyReason);
+    }
+
+    [Fact]
+    public void 引擎_普通空推荐_不给形态学提示()
+    {
+        // 无主导词命中（输入与索引零交集）：空推荐但没有形态学链路，不得误报"缺部位"。
+        var dictionary = new IcdDictionarySnapshot([Dict("ICD-10", "C44.900", "皮肤恶性肿瘤")]);
+
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "阑尾切除术", topK: 8,
+            icdSnapshot: VerrucousCarcinomaSnapshot(), tumorSnapshot: SiteTumorSnapshot(),
+            icdDictionary: dictionary, cm3Snapshot: null, cm3Dictionary: null);
+
+        Assert.Empty(response.Recommendations);
+        Assert.Null(response.EmptyReason);
+    }
 }

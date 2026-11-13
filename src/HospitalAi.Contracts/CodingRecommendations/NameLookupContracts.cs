@@ -25,7 +25,9 @@ public sealed record NameLookupResponse(
     [property: JsonPropertyName("dictionaryDirects")] IReadOnlyList<NameLookupDictionaryDirect> DictionaryDirects,
     [property: JsonPropertyName("leadTerms")] IReadOnlyList<NameLookupLeadTerm> LeadTerms,
     [property: JsonPropertyName("recommendations")] IReadOnlyList<NameLookupRecommendation> Recommendations,
-    [property: JsonPropertyName("degradedFlags")] IReadOnlyList<string> DegradedFlags);
+    [property: JsonPropertyName("degradedFlags")] IReadOnlyList<string> DegradedFlags,
+    /// <summary>推荐为空时的原因提示（如已识别肿瘤形态学码但输入缺部位词）；有推荐时为 null。</summary>
+    [property: JsonPropertyName("emptyReason")] string? EmptyReason = null);
 
 /// <summary>本次解析实际应用的标题通道开关（供前端回显）。</summary>
 public sealed record NameLookupTitleChannelsInfo(

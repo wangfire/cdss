@@ -27,10 +27,21 @@ public sealed class SqlServerAuthService(
     IOptions<LockoutOptions> lockoutOptions,
     ILogger<SqlServerAuthService> logger) : IAuthService
 {
-    private const int Pbkdf2Iterations = 100_000;
+    // ===== PBKDF2 密码哈希 =====
+    //
+    // 迭代数按 OWASP 2023 建议（PBKDF2-HMAC-SHA256 ≥ 600k）。
+    // 带版本前缀渐进升级：v1（10 万轮，历史存量）校验仍接受，
+    // 新签发一律 v2（60 万轮）；登录成功时若命中 v1 旧哈希则透明升级为 v2。
+    // 此前单一 10 万轮常量且校验硬编码同一迭代数，升级需同时改签发与校验两处。
+
+    private const int Pbkdf2IterationsLegacy = 100_000;
+    private const int Pbkdf2IterationsCurrent = 600_000;
+
+    /// <summary>当前签发使用的哈希版本。</summary>
+    private const string HashVersion = "v2";
+    private const string HashVersionLegacy = "v1";
     private const int SaltSize = 16;
     private const int HashSize = 32;
-    private const string HashVersion = "v1";
 
     private LockoutOptions Lockout => lockoutOptions.Value;
 
@@ -59,7 +70,8 @@ public sealed class SqlServerAuthService(
                 (int)Math.Ceiling((lockedUntil - DateTimeOffset.UtcNow).TotalMinutes));
         }
 
-        if (!VerifyPassword(user.PasswordHash, request.Password))
+        var passwordCheck = VerifyPasswordDetailed(user.PasswordHash, request.Password);
+        if (!passwordCheck.Valid)
         {
             var lockedNow = await RecordLoginFailureAsync(user, cancellationToken);
             if (lockedNow)
@@ -70,6 +82,10 @@ public sealed class SqlServerAuthService(
 
             throw new ValidationException("用户名或密码错误。");
         }
+
+        // 密码哈希透明升级：v1（10 万轮）校验通过后顺手重签为 v2（60 万轮），
+        // 与"清零失败计数"同一事务落库。升级失败不阻断登录（下次登录再试）。
+        var needsHashUpgrade = passwordCheck.NeedsUpgrade;
 
         if (!string.Equals(user.Status, "ACTIVE", StringComparison.OrdinalIgnoreCase))
         {
@@ -89,6 +105,11 @@ public sealed class SqlServerAuthService(
             // 成功登录即重置锁定状态：清零失败计数并解除未过期的锁（正常登录路径）。
             tracked.FailedLoginCount = 0;
             tracked.LockedUntil = null;
+            if (needsHashUpgrade)
+            {
+                tracked.PasswordHash = HashPassword(request.Password);
+            }
+
             await dbContext.SaveChangesAsync(cancellationToken);
         }
         catch (Exception exception)
@@ -378,33 +399,59 @@ public sealed class SqlServerAuthService(
 
     // ===== PBKDF2 密码哈希 =====
 
+    /// <summary>版本号 → 迭代数（校验时按存储哈希的版本取对应迭代数；未知版本返回 0 = 拒绝）。</summary>
+    private static int IterationsFor(string version) => version switch
+    {
+        HashVersion => Pbkdf2IterationsCurrent,
+        HashVersionLegacy => Pbkdf2IterationsLegacy,
+        _ => 0
+    };
+
+    /// <summary>当前账号的密码哈希是否为旧版本（登录成功后应升级）。</summary>
+    private static bool IsLegacyHash(string storedHash)
+        => storedHash.StartsWith(HashVersionLegacy + "$", StringComparison.Ordinal);
+
     public static string HashPassword(string password)
+        => HashPasswordWithVersion(password, HashVersion);
+
+    private static string HashPasswordWithVersion(string password, string version)
     {
         var salt = RandomNumberGenerator.GetBytes(SaltSize);
         var hash = Rfc2898DeriveBytes.Pbkdf2(
             Encoding.UTF8.GetBytes(password),
             salt,
-            Pbkdf2Iterations,
+            IterationsFor(version),
             HashAlgorithmName.SHA256,
             HashSize);
         return string.Join(
             '$',
-            HashVersion,
+            version,
             Convert.ToBase64String(salt),
             Convert.ToBase64String(hash));
     }
 
-    public static bool VerifyPassword(string storedHash, string password)
+    /// <summary>
+    /// 校验密码。按存储哈希的版本号取对应迭代数（v1 旧哈希用 10 万轮，v2 用 60 万轮），
+    /// 同时返回"是否需要升级到当前版本"。
+    /// </summary>
+    private static (bool Valid, bool NeedsUpgrade) VerifyPasswordDetailed(string storedHash, string password)
     {
         if (string.IsNullOrEmpty(storedHash))
         {
-            return false;
+            return (false, false);
         }
 
         var parts = storedHash.Split('$');
-        if (parts.Length != 3 || !string.Equals(parts[0], HashVersion, StringComparison.Ordinal))
+        if (parts.Length != 3)
         {
-            return false;
+            return (false, false);
+        }
+
+        var version = parts[0];
+        var iterations = IterationsFor(version);
+        if (iterations == 0)
+        {
+            return (false, false);
         }
 
         byte[] salt;
@@ -414,17 +461,21 @@ public sealed class SqlServerAuthService(
         }
         catch (FormatException)
         {
-            return false;
+            return (false, false);
         }
 
         var expected = Convert.FromBase64String(parts[2]);
         var actual = Rfc2898DeriveBytes.Pbkdf2(
             Encoding.UTF8.GetBytes(password),
             salt,
-            Pbkdf2Iterations,
+            iterations,
             HashAlgorithmName.SHA256,
             expected.Length);
 
-        return CryptographicOperations.FixedTimeEquals(expected, actual);
+        var valid = CryptographicOperations.FixedTimeEquals(expected, actual);
+        return (valid, valid && IsLegacyHash(storedHash));
     }
+
+    public static bool VerifyPassword(string storedHash, string password)
+        => VerifyPasswordDetailed(storedHash, password).Valid;
 }

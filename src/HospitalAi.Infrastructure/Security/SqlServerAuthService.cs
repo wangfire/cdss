@@ -4,6 +4,7 @@ using HospitalAi.Application.Security;
 using HospitalAi.Contracts.Security;
 using HospitalAi.Infrastructure.SqlServer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
@@ -23,7 +24,8 @@ public sealed class SqlServerAuthService(
     HospitalAiDbContext dbContext,
     IRequestContext requestContext,
     IJwtOptionsProvider jwtOptionsProvider,
-    IOptions<LockoutOptions> lockoutOptions) : IAuthService
+    IOptions<LockoutOptions> lockoutOptions,
+    ILogger<SqlServerAuthService> logger) : IAuthService
 {
     private const int Pbkdf2Iterations = 100_000;
     private const int SaltSize = 16;
@@ -89,9 +91,15 @@ public sealed class SqlServerAuthService(
             tracked.LockedUntil = null;
             await dbContext.SaveChangesAsync(cancellationToken);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
             // 非关键路径：写失败不阻断登录。
+            // 但必须留痕：失败计数没清零会让该账号在阈值边缘被误锁，
+            // 静默吞掉会让这类误锁无从排查。
+            logger.LogWarning(
+                exception,
+                "登录成功后更新最后登录时间/清零失败计数失败，账号 {UserCode} 的失败计数可能残留导致误锁。",
+                user.Code);
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -158,8 +166,15 @@ public sealed class SqlServerAuthService(
             await dbContext.SaveChangesAsync(cancellationToken);
             return triggered;
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            // 计数写入失败：本次按「未触发锁定」返回，登录结果仍表现为密码错误。
+            // 必须留痕——这里静默返回 false 等于在最需要它的时刻（库压力大/攻击高峰）
+            // 静默关掉暴力破解锁定，且事后无任何线索可查。
+            logger.LogError(
+                exception,
+                "登录失败计数写入异常，账号 {UserCode} 的锁定判定不可靠（本次未触发锁定）。",
+                user.Code);
             return false;
         }
     }

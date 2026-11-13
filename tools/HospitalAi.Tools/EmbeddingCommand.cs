@@ -32,7 +32,11 @@ public static class EmbeddingCommand
                 ?? "models/bge-small-zh-v1.5/vocab.txt",
             ModelCode = configuration["Embedding:ModelCode"] ?? "bge-small-zh-v1.5",
         };
-        var provider = new OnnxEmbeddingProvider(Options.Create(options));
+        // 工具是纯命令行程序（无 DI 容器），用 NullLogger：模型加载失败的诊断信息
+        // 由下面的 IsAvailable 检查统一输出到控制台。
+        var provider = new OnnxEmbeddingProvider(
+            Options.Create(options),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<OnnxEmbeddingProvider>.Instance);
         if (!provider.IsAvailable)
         {
             Console.WriteLine("嵌入模型不可用：请检查 --model / --vocab 路径。");

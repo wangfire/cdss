@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
@@ -42,6 +43,7 @@ public interface IEmbeddingProvider
 public sealed class OnnxEmbeddingProvider : IEmbeddingProvider
 {
     private readonly EmbeddingOptions _options;
+    private readonly ILogger<OnnxEmbeddingProvider> _logger;
     private readonly SemaphoreSlim _inferLock = new(1, 1);
     private volatile bool _unavailable;
     private InferenceSession? _session;
@@ -53,9 +55,12 @@ public sealed class OnnxEmbeddingProvider : IEmbeddingProvider
     private bool _hasTokenTypeIds;
     private bool _initialized;
 
-    public OnnxEmbeddingProvider(IOptions<EmbeddingOptions> options)
+    public OnnxEmbeddingProvider(
+        IOptions<EmbeddingOptions> options,
+        ILogger<OnnxEmbeddingProvider> logger)
     {
         _options = options.Value;
+        _logger = logger;
     }
 
     public string ModelCode => _options.ModelCode;
@@ -108,8 +113,11 @@ public sealed class OnnxEmbeddingProvider : IEmbeddingProvider
             Normalize(vector);
             return vector;
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            // 推理失败：标记不可用并降级（流水线记 DEGRADED.NO_VECTOR）。
+            // 必须留痕——否则模型文件缺失/损坏时只能看到"向量通道没出数"，无从定位。
+            _logger.LogError(exception, "嵌入推理失败，模型 {ModelCode} 标记为不可用。", _options.ModelCode);
             _unavailable = true;
             return null;
         }
@@ -130,6 +138,10 @@ public sealed class OnnxEmbeddingProvider : IEmbeddingProvider
         var vocabPath = ResolvePath(_options.VocabPath);
         if (modelPath is null || vocabPath is null)
         {
+            _logger.LogError(
+                "嵌入模型路径不存在：ModelPath={ModelPath}, VocabPath={VocabPath}，向量通道将不可用。",
+                _options.ModelPath,
+                _options.VocabPath);
             _unavailable = true;
             _initialized = true;
             return;
@@ -150,8 +162,15 @@ public sealed class OnnxEmbeddingProvider : IEmbeddingProvider
             _outputName = _session.OutputMetadata.Keys.First(name => name.Contains("hidden", StringComparison.OrdinalIgnoreCase));
             _initialized = true;
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            // 模型加载失败：标记不可用并降级（流水线记 DEGRADED.NO_VECTOR）。
+            // 必须留痕——模型文件损坏/版本不匹配是最常见的部署问题，无日志等于黑盒。
+            _logger.LogError(
+                exception,
+                "嵌入模型加载失败：ModelPath={ModelPath}, VocabPath={VocabPath}，向量通道将不可用。",
+                modelPath,
+                vocabPath);
             _unavailable = true;
             _initialized = true;
         }

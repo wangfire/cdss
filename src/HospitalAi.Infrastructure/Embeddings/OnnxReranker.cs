@@ -1,5 +1,6 @@
 using HospitalAi.Application.Abstractions;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
@@ -31,6 +32,7 @@ public sealed class RerankOptions
 public sealed class OnnxReranker : IReranker
 {
     private readonly RerankOptions _options;
+    private readonly ILogger<OnnxReranker> _logger;
     private readonly SemaphoreSlim _inferLock = new(1, 1);
     private volatile bool _unavailable;
     private InferenceSession? _session;
@@ -42,9 +44,12 @@ public sealed class OnnxReranker : IReranker
     private string _outputName = "logits";
     private bool _initialized;
 
-    public OnnxReranker(IOptions<RerankOptions> options)
+    public OnnxReranker(
+        IOptions<RerankOptions> options,
+        ILogger<OnnxReranker> logger)
     {
         _options = options.Value;
+        _logger = logger;
     }
 
     public string ModelCode => _options.ModelCode;
@@ -108,8 +113,10 @@ public sealed class OnnxReranker : IReranker
 
             return scores;
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            // 推理失败：标记不可用并降级（流水线记 DEGRADED.NO_RERANK）。必须留痕。
+            _logger.LogError(exception, "重排推理失败，模型 {ModelCode} 标记为不可用。", _options.ModelCode);
             _unavailable = true;
             return null;
         }
@@ -130,6 +137,10 @@ public sealed class OnnxReranker : IReranker
         var tokenizerPath = OnnxEmbeddingProvider.ResolvePath(_options.TokenizerPath);
         if (modelPath is null || tokenizerPath is null)
         {
+            _logger.LogError(
+                "重排模型路径不存在：ModelPath={ModelPath}, TokenizerPath={TokenizerPath}，重排通道将不可用。",
+                _options.ModelPath,
+                _options.TokenizerPath);
             _unavailable = true;
             _initialized = true;
             return;
@@ -151,8 +162,14 @@ public sealed class OnnxReranker : IReranker
                 ?? _session.OutputMetadata.Keys.First();
             _initialized = true;
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            // 模型加载失败：标记不可用并降级（流水线记 DEGRADED.NO_RERANK）。必须留痕。
+            _logger.LogError(
+                exception,
+                "重排模型加载失败：ModelPath={ModelPath}, TokenizerPath={TokenizerPath}，重排通道将不可用。",
+                modelPath,
+                tokenizerPath);
             _unavailable = true;
             _initialized = true;
         }

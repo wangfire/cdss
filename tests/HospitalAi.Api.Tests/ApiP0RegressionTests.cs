@@ -190,6 +190,64 @@ public sealed class ApiP0RegressionTests
     // ==================== P0-2：肿瘤索引查询必须返回 isEnabled ====================
 
     /// <summary>
+    /// 医院隔离：知识库查询端点必须按当前请求的医院过滤。
+    /// code_system / medical_code / term_synonym / coding_rule 四张表都带 hospital_id，
+    /// 未过滤时医院 A 的编码员能读到医院 B 的字典与规则（跨院越权）。
+    /// 这里种两个医院的数据，断言 A 的令牌只看到 A 的行。
+    /// </summary>
+    [Fact]
+    public async Task 知识库查询_必须按医院隔离_不能读到其他医院的字典()
+    {
+        await using var database = await ApiTestDatabase.CreateAsync();
+        var hospitalA = Guid.NewGuid();
+        var hospitalB = Guid.NewGuid();
+
+        // 直接种数据：A、B 两家医院各一条编码体系与一条字典。
+        await using (var connection = new SqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            foreach (var (hospital, code, title) in new[]
+                     {
+                         (hospitalA, "DEMO-A", "A院专属编码"),
+                         (hospitalB, "DEMO-B", "B院专属编码")
+                     })
+            {
+                var systemId = Guid.NewGuid();
+                await ExecuteAsync(connection,
+                    "INSERT INTO hospital (id, code, name, status, created_at, updated_at) " +
+                    "VALUES (@id, @code, @name, 'ACTIVE', SYSUTCDATETIME(), SYSUTCDATETIME())",
+                    new SqlParameter("@id", hospital), new SqlParameter("@code", "H" + code), new SqlParameter("@name", "医院" + code));
+                await ExecuteAsync(connection,
+                    "INSERT INTO code_system (id, hospital_id, code, name, version, created_at, updated_at) " +
+                    "VALUES (@id, @hospital, @code, @name, 'v1', SYSUTCDATETIME(), SYSUTCDATETIME())",
+                    new SqlParameter("@id", systemId), new SqlParameter("@hospital", hospital), new SqlParameter("@code", code), new SqlParameter("@name", "体系" + code));
+                await ExecuteAsync(connection,
+                    "INSERT INTO medical_code (id, hospital_id, code_system_id, code_system_code, code, title, code_type, search_text, is_enabled, created_at, updated_at) " +
+                    "VALUES (NEWID(), @hospital, @systemId, @code, 'X00.1', @title, @code, @title, 1, SYSUTCDATETIME(), SYSUTCDATETIME())",
+                    new SqlParameter("@hospital", hospital), new SqlParameter("@systemId", systemId), new SqlParameter("@code", code), new SqlParameter("@title", title));
+            }
+        }
+
+        using var factory = CreateDatabaseFactory(database.ConnectionString);
+        using var client = CreateTokenClient(factory, [AppPermissions.KnowledgeRead], hospitalA);
+
+        using var systemsResponse = await client.GetAsync("/api/v1/knowledge/code-systems");
+        systemsResponse.EnsureSuccessStatusCode();
+        var systems = await systemsResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var systemItems = systems.GetProperty("data");
+        Assert.Equal(JsonValueKind.Array, systemItems.ValueKind);
+        Assert.Equal(1, systemItems.GetArrayLength());
+        Assert.Equal("DEMO-A", systemItems[0].GetProperty("code").GetString());
+
+        using var codesResponse = await client.GetAsync("/api/v1/knowledge/medical-codes?page=1&pageSize=50");
+        codesResponse.EnsureSuccessStatusCode();
+        var codes = await codesResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var codeItems = codes.GetProperty("data").GetProperty("items");
+        Assert.Equal(1, codeItems.GetArrayLength());
+        Assert.Equal("A院专属编码", codeItems[0].GetProperty("title").GetString());
+    }
+
+    /// <summary>
     /// P0-2：后端肿瘤索引查询的 Select 投影曾漏掉 IsEnabled（ICD/CM3 都有），
     /// 前端 `row.isEnabled !== false` 恒为 true，按钮永远只显示「停用」。
     /// 这里断言响应里存在该字段（值本身可为 false，取决于库内容）。
@@ -395,6 +453,21 @@ public sealed class ApiP0RegressionTests
         return result;
     }
 
+    private static async Task ExecuteAsync(
+        SqlConnection connection,
+        string sql,
+        params SqlParameter[] parameters)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        foreach (var parameter in parameters)
+        {
+            command.Parameters.Add(parameter);
+        }
+
+        await command.ExecuteNonQueryAsync();
+    }
+
     /// <summary>从测试程序集目录上溯到仓库根，取源文件路径。</summary>
     private static string ResolveRepoFile(string relativePath)
     {
@@ -417,6 +490,19 @@ public sealed class ApiP0RegressionTests
         string connectionString,
         IReadOnlyDictionary<string, string?>? extraSettings = null)
     {
+        var settings = new Dictionary<string, string?>
+        {
+            ["ConnectionStrings:HospitalAi"] = connectionString,
+            ["RabbitMq:Enabled"] = "false"
+        };
+        if (extraSettings is not null)
+        {
+            foreach (var pair in extraSettings)
+            {
+                settings[pair.Key] = pair.Value;
+            }
+        }
+
         return new CdssTestFactory()
             .WithWebHostBuilder(builder =>
             {
@@ -425,12 +511,9 @@ public sealed class ApiP0RegressionTests
                 // 注意：额外配置必须走 UseSetting（写入 host settings 源，优先级最高），
                 // 不能只走 ConfigureAppConfiguration —— 后者追加的源在 Program.cs
                 // 读取 builder.Configuration 取限流选项时还没生效。
-                if (extraSettings is not null)
+                foreach (var pair in settings)
                 {
-                    foreach (var pair in extraSettings)
-                    {
-                        builder.UseSetting(pair.Key, pair.Value);
-                    }
+                    builder.UseSetting(pair.Key, pair.Value);
                 }
 
                 builder.ConfigureAppConfiguration(configuration =>
@@ -447,13 +530,14 @@ public sealed class ApiP0RegressionTests
     /// <summary>签发带权限声明（permv 版本）的令牌，走真实权限码判定。</summary>
     private static HttpClient CreateTokenClient(
         WebApplicationFactory<Program> factory,
-        IReadOnlyList<string> permissions)
+        IReadOnlyList<string> permissions,
+        Guid? hospitalId = null)
     {
         var claims = new List<Claim>
         {
             new(ClaimTypes.NameIdentifier, "p0-regression-user"),
             new("sub", "p0-regression-user"),
-            new("hospitalId", Guid.NewGuid().ToString()),
+            new("hospitalId", (hospitalId ?? Guid.NewGuid()).ToString()),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString("N")),
             new(AppClaimTypes.PermissionVersion, AppClaimTypes.PermissionVersionValue),
         };
@@ -475,6 +559,7 @@ public sealed class ApiP0RegressionTests
 
         var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", encoded);
+        client.DefaultRequestHeaders.Add("X-Hospital-Id", (hospitalId ?? Guid.NewGuid()).ToString());
         return client;
     }
 }

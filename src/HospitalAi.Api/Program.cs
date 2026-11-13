@@ -248,8 +248,10 @@ if (loginRateLimit.LoginPermitLimit > 0)
     app.UseRateLimiter();
 }
 app.UseMiddleware<RequestLoggingMiddleware>();
-// 接口文档（WP-B2-2）：/swagger 仅非生产环境暴露，生产关闭避免扩大攻击面。
-if (!builder.Environment.IsProduction())
+// 接口文档（WP-B2-2）：/swagger 仅开发环境暴露。
+// 原条件 !IsProduction() 是黑名单式 —— 环境变量误设为 Development/Staging 时
+// 会把完整 API 文档暴露在生产。改成 IsDevelopment() 白名单式：默认关闭，显式开开发才开。
+if (builder.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
@@ -357,13 +359,18 @@ app.MapPost(
     }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeRulesImport));
 
 // 查询知识库数据
+// 注意：code_system / medical_code / term_synonym / coding_rule 四张表都带 hospital_id，
+// 查询必须按当前请求的医院过滤 —— 否则医院 A 的编码员能读到医院 B 的字典与规则（跨院越权）。
+// icd_index / cm3_index / tumor_index 三张索引表没有 hospital_id（平台共享），不受此约束。
 app.MapGet(
     "/api/v1/knowledge/code-systems",
     async (
         HospitalAiDbContext db,
+        IRequestContext requestContext,
         CancellationToken cancellationToken) =>
     {
         var systems = await db.CodeSystems
+            .Where(s => s.HospitalId == requestContext.HospitalId)
             .OrderByDescending(s => s.CreatedAt)
             .Select(s => new { s.Id, s.Code, s.Name, s.Version, s.CreatedAt })
             .ToListAsync(cancellationToken);
@@ -374,17 +381,25 @@ app.MapGet(
     "/api/v1/knowledge/medical-codes",
     async (
         HospitalAiDbContext db,
+        IRequestContext requestContext,
         int? page,
         int? pageSize,
         string? codeSystem,
         string? keyword,
         CancellationToken cancellationToken) =>
     {
+        if (requestContext.HospitalId == Guid.Empty)
+        {
+            return Results.BadRequest(ApiEnvelope.Create<object>(new { error = "HOSPITAL_CONTEXT_REQUIRED" }));
+        }
+
+        // 医院隔离：只返回当前医院的字典行。
         // 字典展示去重：多医院各导入一份相同字典副本时，同 code_system+code+title 存在多行
         // （实测 102100 行 = 51050 条 × 2 院），弹窗与知识库页面只应展示一条。
         // 保留每组最小 Id 行；同一编码不同标题（差异副本）仍各自展示。
         // 运行时字典快照按医院隔离加载（EfIcdDictionarySource），不受此展示层去重影响。
         var dedupedIds = db.MedicalCodes
+            .Where(code => code.HospitalId == requestContext.HospitalId)
             .GroupBy(code => new { code.CodeSystemCode, code.Code, code.Title })
             .Select(group => (Guid?)group.Min(code => code.Id));
         IQueryable<MedicalCodeRecord> query = db.MedicalCodes
@@ -411,12 +426,19 @@ app.MapGet(
     "/api/v1/knowledge/term-synonyms",
     async (
         HospitalAiDbContext db,
+        IRequestContext requestContext,
         int? page,
         int? pageSize,
         string? keyword,
         CancellationToken cancellationToken) =>
     {
-        var query = db.TermSynonyms.AsQueryable();
+        if (requestContext.HospitalId == Guid.Empty)
+        {
+            return Results.BadRequest(ApiEnvelope.Create<object>(new { error = "HOSPITAL_CONTEXT_REQUIRED" }));
+        }
+
+        var query = db.TermSynonyms
+            .Where(s => s.HospitalId == requestContext.HospitalId);
         if (!string.IsNullOrEmpty(keyword))
             query = query.Where(s => s.Term.Contains(keyword) || s.NormalizedTerm.Contains(keyword));
 
@@ -437,12 +459,19 @@ app.MapGet(
     "/api/v1/knowledge/coding-rules",
     async (
         HospitalAiDbContext db,
+        IRequestContext requestContext,
         int? page,
         int? pageSize,
         string? codeSystem,
         CancellationToken cancellationToken) =>
     {
-        var query = db.CodingRules.AsQueryable();
+        if (requestContext.HospitalId == Guid.Empty)
+        {
+            return Results.BadRequest(ApiEnvelope.Create<object>(new { error = "HOSPITAL_CONTEXT_REQUIRED" }));
+        }
+
+        var query = db.CodingRules
+            .Where(r => r.HospitalId == requestContext.HospitalId);
         if (!string.IsNullOrEmpty(codeSystem))
             query = query.Where(r => r.CodeSystemCode == codeSystem);
 
@@ -1882,63 +1911,10 @@ app.MapGet(
         return Results.Ok(ApiEnvelope.Create(response));
     }).RequireAuthorization(RbacPolicies.CodingReader);
 
-app.MapGet(
-    "/workbench",
-    () => Results.Content(
-        """
-        <!doctype html>
-        <html lang="zh-CN">
-        <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <title>智能编码审核工作台</title>
-          <style>
-            body { margin: 0; font-family: "Segoe UI", Arial, sans-serif; background: #f6f8fb; color: #1f2937; }
-            header { padding: 16px 24px; background: #ffffff; border-bottom: 1px solid #d9e2ec; display: flex; justify-content: space-between; align-items: center; }
-            main { display: grid; grid-template-columns: 280px 1fr 320px; gap: 16px; padding: 16px; }
-            section { background: #ffffff; border: 1px solid #d9e2ec; border-radius: 8px; padding: 16px; min-height: 72vh; }
-            h1 { font-size: 20px; margin: 0; }
-            h2 { font-size: 16px; margin: 0 0 12px; }
-            button { padding: 8px 12px; border: 1px solid #2563eb; background: #2563eb; color: #fff; border-radius: 6px; cursor: pointer; }
-            .item { border-bottom: 1px solid #edf2f7; padding: 10px 0; cursor: pointer; }
-            .muted { color: #64748b; font-size: 13px; }
-            .rec { border: 1px solid #dbeafe; background: #eff6ff; padding: 12px; border-radius: 6px; margin-bottom: 10px; }
-            .evidence { color: #475569; font-size: 13px; margin-top: 8px; }
-          </style>
-        </head>
-        <body>
-          <header>
-            <h1>智能编码审核工作台</h1>
-            <button onclick="loadTasks()">刷新任务</button>
-          </header>
-          <main>
-            <section><h2>待审核任务</h2><div id="tasks" class="muted">点击刷新任务</div></section>
-            <section><h2>AI 推荐与证据</h2><div id="recommendations" class="muted">选择左侧任务后查看推荐</div></section>
-            <section><h2>人工审核</h2><div class="muted">首版请通过接口提交审核：POST /api/v1/coding-tasks/{taskId}/review</div></section>
-          </main>
-          <script>
-            const headers = { "X-Hospital-Id": localStorage.getItem("hospitalId") || "" };
-            async function loadTasks() {
-              const response = await fetch("/api/v1/workbench/tasks", { headers });
-              const envelope = await response.json();
-              const tasks = envelope?.data ?? [];
-              document.getElementById("tasks").innerHTML = tasks.map(t =>
-                `<div class="item" onclick="loadRecommendations('${t.taskId}')"><strong>${t.taskId}</strong><div class="muted">${t.status} · 推荐 ${t.recommendationCount}</div></div>`
-              ).join("") || "暂无任务";
-            }
-            async function loadRecommendations(taskId) {
-              const response = await fetch(`/api/v1/coding-tasks/${taskId}/recommendations`, { headers });
-              const envelope = await response.json();
-              const data = envelope?.data ?? {};
-              document.getElementById("recommendations").innerHTML = (data.recommendations ?? []).map(r =>
-                `<div class="rec"><strong>${r.code}</strong> ${r.title}<div class="muted">${r.codeSystem} · ${r.recommendationType} · 置信度 ${r.confidenceScore}</div>${(r.evidences ?? []).map(e => `<div class="evidence">证据：${e.sourceText}</div>`).join("")}</div>`
-              ).join("") || "暂无推荐";
-            }
-          </script>
-        </body>
-        </html>
-        """,
-        "text/html; charset=utf-8"));
+// 说明：早期版本的 /workbench 服务端渲染 HTML 页已移除。
+// 它用 innerHTML 直接拼接推荐标题与证据原文（来自病历文书，含临床文本），
+// 存在存储型 XSS；且为匿名端点。功能由 web-ui 的 /workbench 路由页（Vue）完整承接，
+// 审核入口统一为前端地址 http://localhost:3001/workbench。
 
 // 医院公开列表（WP-A 医院下拉登录）：匿名可访问，仅返回 id/code/name 三字段，
 // 60 秒内存缓存防刷。供登录页在未认证状态下选择医院。

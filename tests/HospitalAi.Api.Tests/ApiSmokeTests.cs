@@ -125,10 +125,29 @@ public sealed class ApiSmokeTests
         Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
     }
 
+    /// <summary>
+    /// Swagger 只在开发环境暴露（白名单式）。
+    /// 原条件 !IsProduction() 是黑名单式：环境变量误设为 Development/Staging 时
+    /// 会把完整 API 文档暴露到生产。改成 IsDevelopment() 后：
+    /// - Testing 环境（本默认夹具）→ 404，不暴露；
+    /// - 显式 Development 环境 → 200，可浏览。
+    /// </summary>
     [Fact]
-    public async Task Swagger_非生产环境暴露接口文档()
+    public async Task Swagger_Testing环境不暴露接口文档()
     {
         using var response = await _client.GetAsync("/swagger/v1/swagger.json");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Swagger_Development环境暴露接口文档()
+    {
+        using var factory = new CdssTestFactory()
+            .WithWebHostBuilder(builder => builder.UseEnvironment("Development"));
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/swagger/v1/swagger.json");
         var body = await response.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);

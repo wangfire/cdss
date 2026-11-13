@@ -982,6 +982,23 @@ public sealed class SqlServerV22CodingService(
             CreatedAt = now,
             UpdatedAt = now
         });
+
+        // 审计留痕：人工审核改变最终编码的判定结果，属于医疗合规的必须记录项。
+        // coding_review 表承载业务态（可被后续审核覆盖），audit_log 承载不可变的事实流水。
+        // 只记录编码与动作，不记录患者姓名等临床数据。
+        dbContext.AuditLogs.Add(new AuditLogRecord
+        {
+            Id = Guid.NewGuid(),
+            HospitalId = recommendation.HospitalId,
+            ResourceType = "coding_recommendation",
+            ResourceId = recommendation.Id,
+            Action = $"coding_review.{reviewStatus.ToLowerInvariant()}",
+            Result = "SUCCESS",
+            RequestId = requestContext.RequestId,
+            ActorId = string.IsNullOrWhiteSpace(reviewerId) ? requestContext.UserId : reviewerId,
+            CreatedAt = now,
+            UpdatedAt = now
+        });
     }
 
     private async Task<int> CountFinalCodingsAsync(

@@ -97,11 +97,14 @@ data/phase2/coding-rules.sample.json
 data/phase2/golden-dataset.sample.json
 ```
 
-审核工作台入口：
+审核工作台入口（Vue 前端）：
 
 ```text
-http://localhost:5080/workbench
+http://localhost:3001/workbench
 ```
+
+> 早期由 API 直接渲染的 `http://localhost:5080/workbench` HTML 页已移除
+> （存在 XSS 与匿名访问问题），审核功能由前端工作台页完整承接。
 
 ## 最终验证
 

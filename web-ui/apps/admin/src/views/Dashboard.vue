@@ -33,7 +33,7 @@ import {
   WORKBENCH_PERMISSIONS,
 } from '@/constants/permissions'
 import { ApiError, authApi, healthApi, knowledgeApi, workbenchApi } from '@/api'
-import type { WorkbenchTaskResponse } from '@/api'
+import type { WorkbenchTaskResponse, WorkbenchTaskStatsResponse, WorkbenchTasksPageResponse } from '@/api'
 import {
   Avatar,
   AvatarFallback,

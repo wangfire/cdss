@@ -109,6 +109,14 @@ builder.Services.AddHospitalAiAuthorization();
 var loginRateLimit = builder.Configuration
     .GetSection(LoginRateLimitOptions.SectionName)
     .Get<LoginRateLimitOptions>() ?? new LoginRateLimitOptions();
+
+// 可信反向代理白名单：只有这些地址带来的 X-Forwarded-For 才被采信。
+// 同时用于 ForwardedHeadersOptions（让中间件知道谁是代理）与限流分区键判定。
+var trustedProxies = builder.Configuration
+    .GetSection("Security:ForwardedHeaders:KnownProxies")
+    .Get<string[]>() ?? [];
+HospitalAi.Api.Security.LoginRateLimitClientKey.ConfigureTrustedProxies(trustedProxies);
+
 if (loginRateLimit.LoginPermitLimit > 0)
 {
     builder.Services.AddRateLimiter(options =>
@@ -116,9 +124,9 @@ if (loginRateLimit.LoginPermitLimit > 0)
         options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
         options.AddPolicy("login", httpContext =>
             RateLimitPartition.GetFixedWindowLimiter(
-                // 分区键取校正后的真实客户端 IP（见 GetClientKey 注释）；
+                // 分区键取「转发头中间件处理前」的对端 IP（见 LoginRateLimitClientKey 注释）；
                 // 医院内网 NAT 由账号级锁定策略兜底。
-                GetClientKey(httpContext),
+                HospitalAi.Api.Security.LoginRateLimitClientKey.Resolve(httpContext),
                 _ => new FixedWindowRateLimiterOptions
                 {
                     PermitLimit = loginRateLimit.LoginPermitLimit,
@@ -126,18 +134,6 @@ if (loginRateLimit.LoginPermitLimit > 0)
                     QueueLimit = 0
                 }));
     });
-}
-
-/// <summary>
-/// 限流分区键：取连接的真实客户端 IP。
-/// RemoteIpAddress 已被 UseForwardedHeaders 按 KnownProxies 白名单校正过
-/// （可信代理会写入 X-Forwarded-For / X-Forwarded-Proto）。
-/// 这里不能直读 X-Forwarded-For 原始头——那完全由客户端控制，
-/// 每次换一个值就能拿到新的限流分区，固定窗口限流形同虚设。
-/// </summary>
-static string GetClientKey(HttpContext httpContext)
-{
-    return httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown-client";
 }
 
 // 接口文档（WP-B2-2）：Minimal API 元数据 + Swashbuckle UI；中间件仅在非生产环境挂载。
@@ -191,14 +187,30 @@ if (!string.IsNullOrWhiteSpace(dpKeysPath))
 
 var app = builder.Build();
 
-// 反向代理转发头（WP-C）：仅信任 KnownProxies 配置的代理地址，
-// 使 X-Forwarded-For / X-Forwarded-Proto 可信（登录限流按真实客户端 IP 分区）。
+// 对端 IP 采集：必须排在 UseForwardedHeaders 之前。
+// ForwardedHeadersMiddleware 会用 X-Forwarded-For 覆盖 Connection.RemoteIpAddress，
+// 而那个头完全由客户端控制。先把 TCP 对端地址存下来，限流分区键才有不可伪造的来源。
+app.Use(async (context, next) =>
+{
+    HospitalAi.Api.Security.LoginRateLimitClientKey.CapturePeerIp(context);
+    await next();
+});
+
+// 反向代理转发头（WP-C）：使 X-Forwarded-For / X-Forwarded-Proto 可信
+// （登录限流按真实客户端 IP 分区）。
+//
+// 关键：必须清空 KnownIPNetworks 与 KnownProxies 的默认值。
+// ASP.NET Core 10 的 ForwardedHeadersOptions 默认把 127.0.0.0/8 列入 KnownIPNetworks、
+// 把 ::1 列入 KnownProxies，于是本机发来的请求能用 X-Forwarded-For 改写来源 IP。
+// 清空后只有显式配置的 KnownProxies 才会被中间件采信。
 var forwardedOptions = new Microsoft.AspNetCore.Builder.ForwardedHeadersOptions
 {
     ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor
         | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto,
 };
-foreach (var proxy in builder.Configuration.GetSection("Security:ForwardedHeaders:KnownProxies").Get<string[]>() ?? [])
+forwardedOptions.KnownIPNetworks.Clear();
+forwardedOptions.KnownProxies.Clear();
+foreach (var proxy in trustedProxies)
 {
     if (System.Net.IPAddress.TryParse(proxy, out var ip))
     {

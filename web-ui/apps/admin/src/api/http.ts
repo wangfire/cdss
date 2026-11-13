@@ -22,11 +22,20 @@ export class ApiError extends Error {
 }
 
 import { API_CONFIG, STORAGE_KEYS } from '@/constants/common'
+import { i18n } from '@/i18n'
 
 /**
  * HTTP 客户端：基于浏览器原生 fetch。
  * 自动注入 JWT、解析统一响应、抛出 ApiError。
+ *
+ * 错误消息走 i18n（切换语言后提示同步变化）；
+ * i18n 未初始化时 Proxy 会回退返回 key 本身，不会抛异常。
  */
+function t(key: string, params?: Record<string, unknown>): string {
+  const translate = i18n.global?.t as ((k: string, p?: Record<string, unknown>) => string) | undefined
+  return params ? translate?.(key, params) ?? key : translate?.(key) ?? key
+}
+
 class HttpClient {
   private baseUrl: string
   private timeout: number
@@ -106,9 +115,9 @@ class HttpClient {
     } catch (e: any) {
       clearTimeout(timer)
       if (e?.name === 'AbortError') {
-        throw new ApiError('请求超时', -1, 0)
+        throw new ApiError(t('common.httpTimeout'), -1, 0)
       }
-      throw new ApiError(`网络错误: ${e?.message || e}`, -1, 0)
+      throw new ApiError(t('common.httpNetworkError', { message: e?.message || String(e) }), -1, 0)
     }
     clearTimeout(timer)
 
@@ -129,11 +138,11 @@ class HttpClient {
     }
 
     if (!payload) {
-      throw new ApiError('响应解析失败', -1, response.status, text)
+      throw new ApiError(t('common.httpParseFailed'), -1, response.status, text)
     }
 
     if (payload.code !== 0) {
-      throw new ApiError(payload.message || '业务错误', payload.code, response.status, payload)
+      throw new ApiError(payload.message || t('common.httpBusinessError'), payload.code, response.status, payload)
     }
 
     return payload.data as T

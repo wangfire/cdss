@@ -219,11 +219,11 @@ function doctorParts(rec: CodingRecommendationResponse) {
   return parts
 }
 function diagnosisTypeLabel(rec: CodingRecommendationResponse) {
-  if (isProcedureRec(rec)) return '手术'
-  if (isAdmissionRec(rec)) return '入院诊断'
-  if (rec.isPrincipal === true) return '主诊断'
-  if (rec.isPrincipal === false) return '次诊断'
-  return '诊断'
+  if (isProcedureRec(rec)) return t('workbench.typeProcedure')
+  if (isAdmissionRec(rec)) return t('workbench.typeAdmission')
+  if (rec.isPrincipal === true) return t('workbench.typePrincipal')
+  if (rec.isPrincipal === false) return t('workbench.typeSecondary')
+  return t('workbench.typeDiagnosis')
 }
 
 /* ============== 加载任务列表 ============== */
@@ -300,7 +300,7 @@ function stageLabel(stage: string) {
   return key ? t(key) : stage
 }
 
-/* ============== 流水线设置抽屉（运行时配置 + 批量重跑，user.manage） ============== */
+/* ============== 流水线设置抽屉（WP-A 前端生产化） ============== */
 const settingsOpen = ref(false)
 const pipelineLoading = ref(false)
 const pipelineSaving = ref(false)
@@ -364,7 +364,9 @@ function formatDuration(ms: number) {
   const totalSeconds = Math.round(ms / 1000)
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
-  return minutes > 0 ? `${minutes}分${seconds}秒` : `${seconds}秒`
+  return minutes > 0
+    ? t('workbench.durationMinutesSeconds', { minutes, seconds })
+    : t('workbench.durationSeconds', { seconds })
 }
 
 function formatClock(date: Date) {
@@ -401,18 +403,18 @@ async function refreshRerunProgress() {
         const elapsedMs = endedAt.getTime() - session.startedAt.getTime()
         const perMinute = elapsedMs > 0 ? (session.total / (elapsedMs / 60000)).toFixed(1) : '-'
         notificationStore.addNotification({
-          title: '批量重跑完成',
+          title: t('workbench.rerunDoneTitle'),
           // 通知面板已支持 whitespace-pre-line（clamp-6），五行明细完整展示
           message: [
-            `总任务数：${session.total}`,
-            `开始时间：${formatClock(session.startedAt)}`,
-            `结束时间：${formatClock(endedAt)}`,
-            `总耗时：${formatDuration(elapsedMs)}`,
-            `平均速率：${perMinute} 条/分钟`,
+            t('workbench.rerunDoneTotal', { total: session.total }),
+            t('workbench.rerunDoneStart', { time: formatClock(session.startedAt) }),
+            t('workbench.rerunDoneEnd', { time: formatClock(endedAt) }),
+            t('workbench.rerunDoneElapsed', { duration: formatDuration(elapsedMs) }),
+            t('workbench.rerunDoneRate', { rate: perMinute }),
           ].join('\n'),
           type: 'success',
           actionUrl: '/workbench',
-          actionLabel: '查看工作台',
+          actionLabel: t('workbench.viewWorkbench'),
         })
         rerunSession.value = null
         if (!settingsOpen.value) stopProgressPolling()
@@ -490,7 +492,7 @@ async function savePipelineConfig() {
       icdTitleReverse: pcIcdTitleReverse.value,
     })
     pcUpdatedAt.value = cfg.updatedAt
-    toast.success('配置已保存，下一个任务执行起生效')
+    toast.success(t('workbench.configSaved'))
   }
   catch (err) {
     toast.error(err instanceof ApiError ? err.message : t('common.error'))
@@ -514,7 +516,7 @@ async function rerunPipeline() {
   rerunning.value = true
   try {
     const res = await workbenchApi.rerunPipeline()
-    toast.success(`已重新入队 ${res.rerunCount} 个任务`)
+    toast.success(t('workbench.rerunQueued', { count: res.rerunCount }))
     if (res.rerunCount > 0) {
       rerunSession.value = { total: res.rerunCount, startedAt: new Date(), observedInFlight: false }
       // 重跑会话期间保持轮询（即使抽屉关闭），完成时发通知中心
@@ -848,7 +850,7 @@ const canSubmitReview = computed(
                 >
                   <div class="flex items-center justify-between gap-2">
                     <span class="text-sm font-semibold text-foreground truncate">
-                      {{ task.patientName || '未知患者' }}
+                      {{ task.patientName || t('workbench.unknownPatient') }}
                     </span>
                     <Badge variant="outline" class="text-xs shrink-0" :class="statusColor(task.status)">
                       {{ statusLabel(task.status) }}
@@ -856,7 +858,7 @@ const canSubmitReview = computed(
                   </div>
                   <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground mt-0.5">
                     <span class="truncate">
-                      病案号: {{ task.medicalRecordNo || '-' }} · 住院 {{ task.admissionCount }} 次 · {{ t('workbench.recommendations') }}: {{ task.recommendationCount }}
+                      {{ t('workbench.medicalRecordNoLabel') }}: {{ task.medicalRecordNo || '-' }} · {{ t('workbench.admissionCountLabel', { count: task.admissionCount }) }} · {{ t('workbench.recommendations') }}: {{ task.recommendationCount }}
                     </span>
                     <span class="shrink-0">
                       {{ new Date(task.dischargeAt || task.createdAt).toLocaleDateString('zh-CN') }}
@@ -875,11 +877,11 @@ const canSubmitReview = computed(
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem v-for="s in ['10', '20', '30', '50', '100']" :key="s" :value="s" class="text-xs">
-                    {{ s }} 条
+                    {{ t('workbench.countSuffix', { count: s }) }}
                   </SelectItem>
                 </SelectContent>
               </Select>
-              <span class="whitespace-nowrap">共 {{ totalCount }} 条</span>
+              {{ t('workbench.totalCountLabel', { count: totalCount }) }}
             </div>
             <div class="flex items-center shrink-0">
               <Button variant="ghost" size="icon" class="h-6 w-6 shrink-0" :disabled="pageNum <= 1" @click="pageNum--">
@@ -929,7 +931,7 @@ const canSubmitReview = computed(
                   <Badge variant="secondary">{{ recommendations.length }}</Badge>
                   <Button variant="ghost" size="sm" class="h-6 px-2 text-xs" @click="openTraces">
                     <History class="h-3.5 w-3.5 mr-1" />
-                    运行记录
+                    {{ t('workbench.runRecordsTitle') }}
                   </Button>
                 </div>
               </div>
@@ -937,13 +939,13 @@ const canSubmitReview = computed(
                 <Tabs v-model="activeRecTab" class="flex-1 min-w-0">
                   <TabsList class="w-full">
                     <TabsTrigger value="admission" class="flex-1">
-                      入院诊断 ({{ admissionRecommendations.length }})
+                      {{ t('workbench.tabAdmission', { count: admissionRecommendations.length }) }}
                     </TabsTrigger>
                     <TabsTrigger value="diagnosis" class="flex-1">
-                      诊断 ({{ diagnosisRecommendations.length }})
+                      {{ t('workbench.tabDiagnosis', { count: diagnosisRecommendations.length }) }}
                     </TabsTrigger>
                     <TabsTrigger value="procedure" class="flex-1">
-                      手术 ({{ procedureRecommendations.length }})
+                      {{ t('workbench.tabProcedure', { count: procedureRecommendations.length }) }}
                     </TabsTrigger>
                   </TabsList>
                 </Tabs>
@@ -952,9 +954,9 @@ const canSubmitReview = computed(
                   <Button variant="ghost" size="icon" class="h-6 w-6 flex-shrink-0" @click="selectedTaskId = null">
                     <ArrowLeft class="h-3.5 w-3.5" />
                   </Button>
-                  <span class="text-sm font-semibold truncate">{{ selectedTask?.patientName || '未知患者' }}</span>
+                  {{ selectedTask?.patientName || t('workbench.unknownPatient') }}
                   <span class="text-xs text-muted-foreground truncate">
-                    病案号: {{ selectedTask?.medicalRecordNo || '-' }} · 住院 {{ selectedTask?.admissionCount ?? 0 }} 次
+                    {{ t('workbench.medicalRecordNoLabel') }}: {{ selectedTask?.medicalRecordNo || '-' }} · {{ t('workbench.admissionCountLabel', { count: selectedTask?.admissionCount ?? 0 }) }}
                   </span>
                   <Badge v-if="selectedTask" variant="outline" class="text-xs flex-shrink-0" :class="statusColor(selectedTask.status)">
                     {{ statusLabel(selectedTask.status) }}
@@ -973,7 +975,7 @@ const canSubmitReview = computed(
               </div>
               <template v-else>
                 <div v-if="activeRecommendations.length === 0" class="text-center py-8 text-muted-foreground">
-                  <p class="text-sm">{{ activeRecTab === 'admission' ? '暂无入院诊断推荐' : activeRecTab === 'diagnosis' ? '暂无诊断推荐' : '暂无手术推荐' }}</p>
+                  <p class="text-sm">{{ activeRecTab === 'admission' ? t('workbench.noAdmissionRecs') : activeRecTab === 'diagnosis' ? t('workbench.noDiagnosisRecs') : t('workbench.noProcedureRecs') }}</p>
                 </div>
                 <div v-else class="space-y-2">
                   <div
@@ -986,7 +988,7 @@ const canSubmitReview = computed(
                       <span class="text-sm font-semibold text-foreground truncate" :title="grp.name">{{ grp.name }}</span>
                       <Badge variant="outline" class="text-[10px] px-1 py-0 shrink-0 font-normal">{{ grp.typeLabel }}</Badge>
                       <span v-if="grp.code" class="text-xs font-mono text-muted-foreground shrink-0">{{ grp.code }}</span>
-                      <span class="ml-auto shrink-0 text-[10px] text-muted-foreground">{{ grp.recs.length }} 个推荐</span>
+                      {{ t('workbench.recommendationCountSuffix', { count: grp.recs.length }) }}
                     </div>
                     <div class="divide-y divide-border/40">
                       <div
@@ -1038,11 +1040,11 @@ const canSubmitReview = computed(
                                 <p v-if="ev.matchText && ev.matchText !== ev.sourceText" class="text-primary/80" :title="ev.matchText">→ {{ ev.matchText }}</p>
                               </div>
                               <p v-if="rec.evidences.length > 6" class="text-[10px] text-muted-foreground">
-                                仅显示前 6 条，共 {{ rec.evidences.length }} 条
+                                {{ t('workbench.evidenceLimit', { total: rec.evidences.length }) }}
                               </p>
                             </div>
                           </template>
-                          <p v-else class="text-xs text-muted-foreground">无证据链</p>
+                          <p v-else class="text-xs text-muted-foreground">{{ t('workbench.noEvidenceChain') }}</p>
                         </div>
                       </div>
                     </div>
@@ -1109,7 +1111,7 @@ const canSubmitReview = computed(
     v-if="userStore.hasAnyPermission(['user.manage'])"
     size="icon"
     class="fixed right-3 top-1/2 -translate-y-1/2 z-40 h-10 w-10 rounded-full shadow-lg border border-border/60 bg-background hover:bg-muted"
-    title="流水线设置"
+    :title="t('workbench.pipelineSettings')"
     @click="openPipelineSettings"
   >
     <Settings class="h-5 w-5 text-muted-foreground" />
@@ -1121,39 +1123,39 @@ const canSubmitReview = computed(
       <SheetHeader class="px-4 py-3 border-b border-border/40">
         <SheetTitle class="flex items-center gap-2 text-base">
           <Settings class="h-4 w-4 text-violet-500" />
-          流水线设置
+          {{ t('workbench.pipelineSettings') }}
         </SheetTitle>
         <SheetDescription class="text-xs">
-          匹配通道开关实时生效于下一个执行的任务；修改后可手动批量重跑历史数据
+          {{ t('workbench.pipelineSettingsDesc') }}
         </SheetDescription>
       </SheetHeader>
 
       <ScrollArea class="flex-1 min-h-0">
         <div class="p-4 space-y-4">
           <div v-if="pipelineLoading" class="flex items-center justify-center py-8 text-sm text-muted-foreground">
-            <Loader2 class="h-4 w-4 animate-spin mr-2" />加载中...
+            <Loader2 class="h-4 w-4 animate-spin mr-2" />{{ t('workbench.loading') }}
           </div>
           <template v-else>
             <!-- 通道开关 -->
             <div class="space-y-3">
               <div class="flex items-center justify-between gap-3 rounded-md border border-border/50 px-3 py-2.5">
                 <div class="min-w-0">
-                  <p class="text-sm font-medium">诊断侧字典标题直达</p>
-                  <p class="text-xs text-muted-foreground mt-0.5">诊断名逐字命中字典标题时直接产出编码</p>
+                  {{ t('workbench.icdTitleDirect') }}
+                  {{ t('workbench.icdTitleDirectDesc') }}
                 </div>
                 <Switch v-model="pcIcdTitleDirect" />
               </div>
               <div class="flex items-center justify-between gap-3 rounded-md border border-border/50 px-3 py-2.5">
                 <div class="min-w-0">
-                  <p class="text-sm font-medium">手术侧字典标题直达</p>
-                  <p class="text-xs text-muted-foreground mt-0.5">手术名逐字命中 CM3 字典标题时直接产出编码</p>
+                  {{ t('workbench.cm3TitleDirect') }}
+                  {{ t('workbench.cm3TitleDirectDesc') }}
                 </div>
                 <Switch v-model="pcCm3TitleDirect" />
               </div>
               <div class="flex items-center justify-between gap-3 rounded-md border border-border/50 px-3 py-2.5">
                 <div class="min-w-0">
-                  <p class="text-sm font-medium">同族标题反查</p>
-                  <p class="text-xs text-muted-foreground mt-0.5">标题未直击时按同族近义标题反查候选编码</p>
+                  {{ t('workbench.titleReverse') }}
+                  {{ t('workbench.titleReverseDesc') }}
                 </div>
                 <Switch v-model="pcIcdTitleReverse" />
               </div>
@@ -1162,10 +1164,10 @@ const canSubmitReview = computed(
             <div class="flex items-center gap-2">
               <Button size="sm" :disabled="pipelineSaving" @click="savePipelineConfig">
                 <Loader2 v-if="pipelineSaving" class="h-3.5 w-3.5 mr-1 animate-spin" />
-                保存配置
+                {{ t('workbench.saveConfig') }}
               </Button>
               <span v-if="pcUpdatedAt" class="text-[11px] text-muted-foreground">
-                更新于 {{ formatUpdatedAt(pcUpdatedAt) }}
+                {{ t('workbench.updatedAtLabel', { time: formatUpdatedAt(pcUpdatedAt) }) }}
               </span>
             </div>
 
@@ -1173,10 +1175,9 @@ const canSubmitReview = computed(
 
             <!-- 批量重跑 -->
             <div class="space-y-2">
-              <p class="text-sm font-medium">批量重跑</p>
+              <p class="text-sm font-medium">{{ t('workbench.batchRerun') }}</p>
               <p class="text-xs text-muted-foreground">
-                将本院全部终态任务（待审核/已接受/已修改/已拒绝/失败）置回队列重新执行；
-                旧推荐不删除，新版本落库后自动标记 STALE。大库重跑耗时较长，请谨慎操作。
+                {{ t('workbench.batchRerunDesc') }}
               </p>
               <Button
                 size="sm"
@@ -1185,7 +1186,7 @@ const canSubmitReview = computed(
                 @click="rerunPipeline"
               >
                 <Loader2 v-if="rerunning" class="h-3.5 w-3.5 mr-1 animate-spin" />
-                {{ rerunInProgress ? '重跑进行中...' : rerunConfirm ? '再次点击确认重跑' : '开始批量重跑' }}
+                {{ rerunInProgress ? t('workbench.rerunInProgress') : rerunConfirm ? t('workbench.rerunConfirmAgain') : t('workbench.startBatchRerun') }}
               </Button>
 
               <!-- 重跑进度（每 5 秒自动刷新） -->
@@ -1193,9 +1194,9 @@ const canSubmitReview = computed(
               <div v-if="rerunSession && rerunProgress" class="space-y-1.5 pt-1">
                 <div class="flex items-center justify-between text-xs">
                   <span>
-                    任务总数 <span class="font-medium text-foreground">{{ rerunProgress.total }}</span>
-                    · 已跑 <span class="font-medium text-foreground">{{ rerunProgress.done }}</span>
-                    <span v-if="rerunProgress.inFlight > 0" class="text-amber-600">· 进行中 {{ rerunProgress.inFlight }}</span>
+                    {{ t('workbench.rerunTotalLabel', { total: rerunProgress.total }) }}
+                    {{ t('workbench.rerunDoneLabel', { done: rerunProgress.done }) }}
+                    {{ t('workbench.rerunInFlightLabel', { count: rerunProgress.inFlight }) }}
                   </span>
                   <span class="text-muted-foreground tabular-nums">{{ rerunPercent }}%</span>
                 </div>
@@ -1214,19 +1215,19 @@ const canSubmitReview = computed(
       <SheetHeader class="px-4 py-3 border-b border-border/40">
         <SheetTitle class="flex items-center gap-2 text-base">
           <History class="h-4 w-4 text-violet-500" />
-          流水线运行记录
+          {{ t('workbench.runRecordsTitle') }}
         </SheetTitle>
         <SheetDescription class="text-xs">
-          {{ selectedTask?.patientName || '当前病例' }} · 每次推荐生成的步骤、降级标记与质量问题（最近 20 次）
+          {{ t('workbench.runRecordsDesc', { patient: selectedTask?.patientName || t('workbench.currentCase') }) }}
         </SheetDescription>
       </SheetHeader>
       <ScrollArea class="flex-1 min-h-0">
         <div class="p-3 space-y-2">
           <div v-if="tracesLoading" class="flex items-center justify-center py-8 text-sm text-muted-foreground">
-            <Loader2 class="h-4 w-4 animate-spin mr-2" />加载中...
+            <Loader2 class="h-4 w-4 animate-spin mr-2" />{{ t('workbench.loading') }}
           </div>
           <p v-else-if="traces.length === 0" class="py-8 text-center text-sm text-muted-foreground">
-            暂无运行记录
+            {{ t('workbench.noRunRecords') }}
           </p>
           <template v-else>
             <div
@@ -1243,13 +1244,13 @@ const canSubmitReview = computed(
                 {{ run.status }}
               </span>
               <span class="text-xs text-muted-foreground">
-                推荐 {{ run.recommendationCount }} 条 · {{ (run.durationMs ?? 0) }}ms
+                {{ t('workbench.recommendationCountLabel', { count: run.recommendationCount, duration: (run.durationMs ?? 0) }) }}
               </span>
               <Badge v-if="run.degradedFlags.length > 0" variant="outline" class="text-[10px] px-1 py-0 text-amber-600 border-amber-500/50">
-                降级 {{ run.degradedFlags.length }}
+                {{ t('workbench.degradedCountLabel', { count: run.degradedFlags.length }) }}
               </Badge>
               <Badge v-if="run.qualityIssues.length > 0" variant="outline" class="text-[10px] px-1 py-0 text-orange-600 border-orange-500/50">
-                问题 {{ run.qualityIssues.length }}
+                {{ t('workbench.issuesCountLabel', { count: run.qualityIssues.length }) }}
               </Badge>
               <ChevronRight
                 class="h-3.5 w-3.5 ml-auto text-muted-foreground flex-shrink-0 transition-transform"
@@ -1258,7 +1259,7 @@ const canSubmitReview = computed(
             </button>
             <div v-if="expandedRun === (run.runId || run.traceId)" class="px-3 pb-3 space-y-2 border-t border-border/40 pt-2">
               <div class="text-[11px] text-muted-foreground">
-                TraceId: {{ run.traceId }}<span v-if="run.pipelineVersion"> · 版本: {{ run.pipelineVersion }}</span>
+                {{ t('workbench.versionLabel', { version: run.pipelineVersion }) }}
               </div>
               <div class="space-y-0.5">
                 <div
@@ -1285,7 +1286,7 @@ const canSubmitReview = computed(
                   >
                     <span class="text-orange-600 font-medium">[{{ issue.riskLevel }}] {{ issue.issueType }}</span>
                     <span class="text-foreground/80"> {{ issue.description }}</span>
-                    <span v-if="issue.currentCode" class="text-muted-foreground">（编码 {{ issue.currentCode }}）</span>
+                    {{ t('workbench.issueCodePrefix', { code: issue.currentCode }) }}
                   </div>
                 </div>
               </template>

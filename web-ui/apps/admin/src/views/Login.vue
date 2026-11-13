@@ -299,13 +299,6 @@ async function handleLogin() {
 
         <div class="flex items-center gap-6 text-white/50 text-sm animate-fade-in">
           <span>{{ t('login.copyright') }}</span>
-          <span class="w-1 h-1 rounded-full bg-white/30" />
-          <a href="#" class="hover:text-white/80 transition-colors">{{
-            t('login.privacyPolicy')
-          }}</a>
-          <a href="#" class="hover:text-white/80 transition-colors">{{
-            t('login.termsOfService')
-          }}</a>
         </div>
       </div>
     </div>

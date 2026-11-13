@@ -47,14 +47,24 @@ const processing = ref(false)
 const TASK_TERMINAL_STATUSES = new Set(['SUCCESS', 'PENDING_REVIEW', 'HUMAN_REQUIRED', 'FAILED'])
 const POLL_INTERVAL_MS = 2000
 const POLL_DEADLINE_MS = 120_000
+// 轮询容错：一次网络抖动不该中断整个等待（任务本身还在后端正常跑）。
+// 连续失败达到上限才判定为失败，避免"提交成功却提示录入失败"的误导。
+const POLL_MAX_CONSECUTIVE_ERRORS = 5
 
 async function waitForTaskCompletion(taskId: string): Promise<'done' | 'failed' | 'timeout'> {
   const deadline = Date.now() + POLL_DEADLINE_MS
+  let consecutiveErrors = 0
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
-    const task = await workbenchApi.getTask(taskId)
-    if (task.status === 'FAILED') return 'failed'
-    if (TASK_TERMINAL_STATUSES.has(task.status)) return 'done'
+    try {
+      const task = await workbenchApi.getTask(taskId)
+      consecutiveErrors = 0
+      if (task.status === 'FAILED') return 'failed'
+      if (TASK_TERMINAL_STATUSES.has(task.status)) return 'done'
+    } catch {
+      consecutiveErrors += 1
+      if (consecutiveErrors >= POLL_MAX_CONSECUTIVE_ERRORS) return 'timeout'
+    }
   }
   return 'timeout'
 }

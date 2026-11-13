@@ -176,11 +176,16 @@ const acceptedCount = computed(() =>
 const totalRecommendations = computed(() =>
   tasks.value.reduce((sum, task) => sum + (task.recommendationCount || 0), 0),
 )
+// 口径统一：分子（pendingReviewCount/acceptedCount）来自 stats 端点的全库 GROUP BY，
+// 分母也必须用同一来源的全库任务总数，否则任务量超过列表分页上限（100 条）时比例失真。
+const totalTasksFromStats = computed(() =>
+  Object.values(statusCounts.value).reduce((sum, count) => sum + count, 0),
+)
 const pendingRate = computed(() =>
-  tasks.value.length ? Math.round((pendingReviewCount.value / tasks.value.length) * 100) : 0,
+  totalTasksFromStats.value ? Math.round((pendingReviewCount.value / totalTasksFromStats.value) * 100) : 0,
 )
 const completionRate = computed(() =>
-  tasks.value.length ? Math.round((acceptedCount.value / tasks.value.length) * 100) : 0,
+  totalTasksFromStats.value ? Math.round((acceptedCount.value / totalTasksFromStats.value) * 100) : 0,
 )
 const healthyChecks = computed(
   () => Object.values(serviceChecks.value).filter(check => check.status === 'healthy').length,

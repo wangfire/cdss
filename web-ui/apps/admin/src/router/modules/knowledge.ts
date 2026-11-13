@@ -11,7 +11,7 @@ const knowledgeRoutes: RouteRecordRaw[] = [
       titleKey: 'menu.knowledge',
       title: 'Knowledge',
       icon: BookOpen,
-      order: 4,
+      order: 5,
       keepAlive: true,
       permissions: KNOWLEDGE_PERMISSIONS,
     },

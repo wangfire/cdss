@@ -185,13 +185,23 @@ function toIsoDate(value: string): string | null {
   return new Date(`${value}T00:00:00`).toISOString()
 }
 
+// 轮询容错：与 CaseEntry 同口径 —— 单次网络抖动不中断等待，连续失败才判定超时。
+const POLL_MAX_CONSECUTIVE_ERRORS = 5
+
 async function waitForTaskCompletion(taskId: string): Promise<'done' | 'failed' | 'timeout'> {
   const deadline = Date.now() + 120_000
+  let consecutiveErrors = 0
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 2000))
-    const task = await workbenchApi.getTask(taskId)
-    if (task.status === 'FAILED') return 'failed'
-    if (['SUCCESS', 'PENDING_REVIEW', 'HUMAN_REQUIRED'].includes(task.status)) return 'done'
+    try {
+      const task = await workbenchApi.getTask(taskId)
+      consecutiveErrors = 0
+      if (task.status === 'FAILED') return 'failed'
+      if (['SUCCESS', 'PENDING_REVIEW', 'HUMAN_REQUIRED'].includes(task.status)) return 'done'
+    } catch {
+      consecutiveErrors += 1
+      if (consecutiveErrors >= POLL_MAX_CONSECUTIVE_ERRORS) return 'timeout'
+    }
   }
   return 'timeout'
 }

@@ -25,6 +25,12 @@ public static class RbacPolicies
     /// <summary>用户与角色管理：功能权限或任一账户按钮权限。</summary>
     public const string UserAdmin = "user-admin";
 
+    /// <summary>
+    /// 索引行停用/启用：三种索引的「更新」权限任一即可进入端点，
+    /// 具体适用哪一种由端点内按 kind 二次判定（防止跨索引类型越权）。
+    /// </summary>
+    public const string KnowledgeIndexToggle = "knowledge-index-toggle";
+
     /// <summary>知识库按钮级权限：按具体权限码生成策略名，供各写端点复用。</summary>
     public static string PermissionPolicy(string permission) => $"permission:{permission}";
 
@@ -103,7 +109,13 @@ public static class RbacPolicies
                 policy => policy.RequireAssertion(context =>
                     HasPermission(context.User, AppPermissions.UserManage)
                     || UserActionPermissions.Any(permission =>
-                        HasPermission(context.User, permission))));
+                        HasPermission(context.User, permission))))
+            .AddPolicy(
+                KnowledgeIndexToggle,
+                policy => policy.RequireAssertion(context =>
+                    HasPermission(context.User, AppPermissions.KnowledgeIcdUpdate)
+                    || HasPermission(context.User, AppPermissions.KnowledgeCm3Update)
+                    || HasPermission(context.User, AppPermissions.KnowledgeTumorUpdate)));
 
         // 按钮级权限与功能权限共用同一套判定（含旧令牌的角色码回退）。
         foreach (var permission in AppPermissions.All)

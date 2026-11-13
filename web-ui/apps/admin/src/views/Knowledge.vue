@@ -1746,10 +1746,10 @@ async function handleImportRules() {
                               <Button v-if="canDeleteIcd" variant="ghost" size="sm" class="h-7 w-7 p-0 text-destructive" :title="t('knowledge.delete')" @click="deleteIndexEntry('icd', row)">
                                 <Trash2 class="h-3.5 w-3.5" />
                               </Button>
-                              <Button v-if="canDeleteIcd && row.isEnabled !== false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-muted-foreground" :title="t('knowledge.disableIndexEntry')" @click="toggleIndexEntryEnabled('icd', row, false)">
+                              <Button v-if="canUpdateIcd && row.isEnabled !== false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-muted-foreground" :title="t('knowledge.disableIndexEntry')" @click="toggleIndexEntryEnabled('icd', row, false)">
                                 <CircleOff class="h-3.5 w-3.5" />
                               </Button>
-                              <Button v-if="canDeleteIcd && row.isEnabled === false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-emerald-600" :title="t('knowledge.enableIndexEntry')" @click="toggleIndexEntryEnabled('icd', row, true)">
+                              <Button v-if="canUpdateIcd && row.isEnabled === false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-emerald-600" :title="t('knowledge.enableIndexEntry')" @click="toggleIndexEntryEnabled('icd', row, true)">
                                 <CheckCircle2 class="h-3.5 w-3.5" />
                               </Button>
                             </div>
@@ -1838,10 +1838,10 @@ async function handleImportRules() {
                               <Button v-if="canDeleteIcd" variant="ghost" size="sm" class="h-7 w-7 p-0 text-destructive" :title="t('knowledge.delete')" @click="deleteIndexEntry('icd', row.node)">
                                 <Trash2 class="h-3.5 w-3.5" />
                               </Button>
-                              <Button v-if="canDeleteIcd && row.node.isEnabled !== false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-muted-foreground" :title="t('knowledge.disableIndexEntry')" @click="toggleIndexEntryEnabled('icd', row.node, false)">
+                              <Button v-if="canUpdateIcd && row.node.isEnabled !== false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-muted-foreground" :title="t('knowledge.disableIndexEntry')" @click="toggleIndexEntryEnabled('icd', row.node, false)">
                                 <CircleOff class="h-3.5 w-3.5" />
                               </Button>
-                              <Button v-if="canDeleteIcd && row.node.isEnabled === false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-emerald-600" :title="t('knowledge.enableIndexEntry')" @click="toggleIndexEntryEnabled('icd', row.node, true)">
+                              <Button v-if="canUpdateIcd && row.node.isEnabled === false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-emerald-600" :title="t('knowledge.enableIndexEntry')" @click="toggleIndexEntryEnabled('icd', row.node, true)">
                                 <CheckCircle2 class="h-3.5 w-3.5" />
                               </Button>
                             </div>
@@ -1934,10 +1934,10 @@ async function handleImportRules() {
                               <Button v-if="canDeleteCm3" variant="ghost" size="sm" class="h-7 w-7 p-0 text-destructive" :title="t('knowledge.delete')" @click="deleteIndexEntry('cm3', row)">
                                 <Trash2 class="h-3.5 w-3.5" />
                               </Button>
-                              <Button v-if="canDeleteCm3 && row.isEnabled !== false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-muted-foreground" :title="t('knowledge.disableIndexEntry')" @click="toggleIndexEntryEnabled('cm3', row, false)">
+                              <Button v-if="canUpdateCm3 && row.isEnabled !== false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-muted-foreground" :title="t('knowledge.disableIndexEntry')" @click="toggleIndexEntryEnabled('cm3', row, false)">
                                 <CircleOff class="h-3.5 w-3.5" />
                               </Button>
-                              <Button v-if="canDeleteCm3 && row.isEnabled === false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-emerald-600" :title="t('knowledge.enableIndexEntry')" @click="toggleIndexEntryEnabled('cm3', row, true)">
+                              <Button v-if="canUpdateCm3 && row.isEnabled === false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-emerald-600" :title="t('knowledge.enableIndexEntry')" @click="toggleIndexEntryEnabled('cm3', row, true)">
                                 <CheckCircle2 class="h-3.5 w-3.5" />
                               </Button>
                             </div>
@@ -2026,10 +2026,10 @@ async function handleImportRules() {
                               <Button v-if="canDeleteCm3" variant="ghost" size="sm" class="h-7 w-7 p-0 text-destructive" :title="t('knowledge.delete')" @click="deleteIndexEntry('cm3', row.node)">
                                 <Trash2 class="h-3.5 w-3.5" />
                               </Button>
-                              <Button v-if="canDeleteCm3 && row.node.isEnabled !== false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-muted-foreground" :title="t('knowledge.disableIndexEntry')" @click="toggleIndexEntryEnabled('cm3', row.node, false)">
+                              <Button v-if="canUpdateCm3 && row.node.isEnabled !== false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-muted-foreground" :title="t('knowledge.disableIndexEntry')" @click="toggleIndexEntryEnabled('cm3', row.node, false)">
                                 <CircleOff class="h-3.5 w-3.5" />
                               </Button>
-                              <Button v-if="canDeleteCm3 && row.node.isEnabled === false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-emerald-600" :title="t('knowledge.enableIndexEntry')" @click="toggleIndexEntryEnabled('cm3', row.node, true)">
+                              <Button v-if="canUpdateCm3 && row.node.isEnabled === false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-emerald-600" :title="t('knowledge.enableIndexEntry')" @click="toggleIndexEntryEnabled('cm3', row.node, true)">
                                 <CheckCircle2 class="h-3.5 w-3.5" />
                               </Button>
                             </div>
@@ -2117,10 +2117,10 @@ async function handleImportRules() {
                               <Button v-if="canDeleteTumor" variant="ghost" size="sm" class="h-7 w-7 p-0 text-destructive" :title="t('knowledge.delete')" @click="deleteIndexEntry('tumor', row)">
                                 <Trash2 class="h-3.5 w-3.5" />
                               </Button>
-                              <Button v-if="canDeleteTumor && row.isEnabled !== false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-muted-foreground" :title="t('knowledge.disableIndexEntry')" @click="toggleIndexEntryEnabled('tumor', row, false)">
+                              <Button v-if="canUpdateTumor && row.isEnabled !== false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-muted-foreground" :title="t('knowledge.disableIndexEntry')" @click="toggleIndexEntryEnabled('tumor', row, false)">
                                 <CircleOff class="h-3.5 w-3.5" />
                               </Button>
-                              <Button v-if="canDeleteTumor && row.isEnabled === false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-emerald-600" :title="t('knowledge.enableIndexEntry')" @click="toggleIndexEntryEnabled('tumor', row, true)">
+                              <Button v-if="canUpdateTumor && row.isEnabled === false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-emerald-600" :title="t('knowledge.enableIndexEntry')" @click="toggleIndexEntryEnabled('tumor', row, true)">
                                 <CheckCircle2 class="h-3.5 w-3.5" />
                               </Button>
                             </div>
@@ -2214,10 +2214,10 @@ async function handleImportRules() {
                               <Button v-if="canDeleteTumor" variant="ghost" size="sm" class="h-7 w-7 p-0 text-destructive" :title="t('knowledge.delete')" @click="deleteIndexEntry('tumor', row.node)">
                                 <Trash2 class="h-3.5 w-3.5" />
                               </Button>
-                              <Button v-if="canDeleteTumor && row.node.isEnabled !== false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-muted-foreground" :title="t('knowledge.disableIndexEntry')" @click="toggleIndexEntryEnabled('tumor', row.node, false)">
+                              <Button v-if="canUpdateTumor && row.node.isEnabled !== false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-muted-foreground" :title="t('knowledge.disableIndexEntry')" @click="toggleIndexEntryEnabled('tumor', row.node, false)">
                                 <CircleOff class="h-3.5 w-3.5" />
                               </Button>
-                              <Button v-if="canDeleteTumor && row.node.isEnabled === false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-emerald-600" :title="t('knowledge.enableIndexEntry')" @click="toggleIndexEntryEnabled('tumor', row.node, true)">
+                              <Button v-if="canUpdateTumor && row.node.isEnabled === false" variant="ghost" size="sm" class="h-7 w-7 p-0 text-emerald-600" :title="t('knowledge.enableIndexEntry')" @click="toggleIndexEntryEnabled('tumor', row.node, true)">
                                 <CheckCircle2 class="h-3.5 w-3.5" />
                               </Button>
                             </div>

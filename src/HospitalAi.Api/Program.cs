@@ -116,8 +116,8 @@ if (loginRateLimit.LoginPermitLimit > 0)
         options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
         options.AddPolicy("login", httpContext =>
             RateLimitPartition.GetFixedWindowLimiter(
-                // X-Forwarded-For 首段优先（反向代理部署下取真实客户端），
-                // 缺失时回退 Connection.RemoteIpAddress；医院内网 NAT 由锁定策略兜底。
+                // 分区键取校正后的真实客户端 IP（见 GetClientKey 注释）；
+                // 医院内网 NAT 由账号级锁定策略兜底。
                 GetClientKey(httpContext),
                 _ => new FixedWindowRateLimiterOptions
                 {
@@ -128,18 +128,15 @@ if (loginRateLimit.LoginPermitLimit > 0)
     });
 }
 
+/// <summary>
+/// 限流分区键：取连接的真实客户端 IP。
+/// RemoteIpAddress 已被 UseForwardedHeaders 按 KnownProxies 白名单校正过
+/// （可信代理会写入 X-Forwarded-For / X-Forwarded-Proto）。
+/// 这里不能直读 X-Forwarded-For 原始头——那完全由客户端控制，
+/// 每次换一个值就能拿到新的限流分区，固定窗口限流形同虚设。
+/// </summary>
 static string GetClientKey(HttpContext httpContext)
 {
-    var forwarded = httpContext.Request.Headers["X-Forwarded-For"].ToString();
-    if (!string.IsNullOrWhiteSpace(forwarded))
-    {
-        var first = forwarded.Split(',')[0].Trim();
-        if (!string.IsNullOrEmpty(first))
-        {
-            return first;
-        }
-    }
-
     return httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown-client";
 }
 
@@ -739,6 +736,9 @@ app.MapPut(
     }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeIcdUpdate));
 
 // 索引行停用/启用（WP-C 知识库治理）：错行停用而非删除，可回滚；停用动作写审计。
+// 权限按索引类型分别判定：icd/cm3/tumor 各有自己的 update 权限码，
+// 不能一律用 icd.update——否则只授 cm3/tumor 权限的角色改不动对应索引，
+// 而只授 icd.update 的角色却能改 cm3/tumor（越权）。
 app.MapPatch(
     "/api/v1/knowledge/{kind}-index/{id:guid}/enabled",
     async (
@@ -747,8 +747,22 @@ app.MapPatch(
         UpdateIndexEnabledRequest request,
         HospitalAiDbContext db,
         IRequestContext requestContext,
+        HttpContext httpContext,
         CancellationToken cancellationToken) =>
     {
+        // 每种索引的停用/启用对应其「更新」权限码（与前端按钮判定一致）。
+        var requiredPermission = kind switch
+        {
+            "icd" => AppPermissions.KnowledgeIcdUpdate,
+            "cm3" => AppPermissions.KnowledgeCm3Update,
+            "tumor" => AppPermissions.KnowledgeTumorUpdate,
+            _ => throw new ValidationException($"不支持的索引类型：{kind}（icd / cm3 / tumor）")
+        };
+        if (!RbacPolicies.HasPermission(httpContext.User, requiredPermission))
+        {
+            return Results.Forbid();
+        }
+
         Action invalidate = kind switch
         {
             "icd" => () => app.Services.GetRequiredService<HospitalAi.Application.Coding.IcdIndex.IIcdIndexSource>().Invalidate(),
@@ -791,7 +805,10 @@ app.MapPatch(
         });
         await db.SaveChangesAsync(cancellationToken);
         return Results.Ok(ApiEnvelope.Create(new { id, enabled = request.Enabled }));
-    }).RequireAuthorization(RbacPolicies.PermissionPolicy(AppPermissions.KnowledgeIcdUpdate));
+    })
+    // 端点级只要求「至少有一种索引的更新权限」（具体是哪一种由端点内按 kind 二次判定）；
+    // 若这里硬绑 icd.update，则只授 cm3/tumor 权限的角色会被挡在门外。
+    .RequireAuthorization(RbacPolicies.KnowledgeIndexToggle);
 
 // ICD 索引库单行删除：有子节点时拒绝（避免父链悬空，先删/迁子节点）。
 app.MapDelete(
@@ -1181,6 +1198,7 @@ app.MapGet(
                 item.CodeUncertain,
                 item.JumpKind,
                 item.JumpTarget,
+                item.IsEnabled,
             })
             .ToListAsync(cancellationToken);
 
@@ -1222,6 +1240,7 @@ app.MapGet(
                 item.CodeUncertain,
                 item.JumpKind,
                 item.JumpTarget,
+                item.IsEnabled,
             })
             .ToListAsync(cancellationToken);
 
@@ -1249,6 +1268,7 @@ app.MapGet(
             item.CodeUncertain,
             item.JumpKind,
             item.JumpTarget,
+            item.IsEnabled,
             hasChildren = parentSet.Contains(item.SeqNo),
         });
 

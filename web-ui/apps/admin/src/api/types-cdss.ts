@@ -248,6 +248,8 @@ export interface TumorIndexDto {
   codeUncertain: string | null
   jumpKind: number
   jumpTarget: string | null
+  /** 行启用状态；缺失时按启用处理（后端 tumor 查询投影已补齐该字段）。 */
+  isEnabled: boolean
 }
 
 /** 肿瘤索引库节点树子节点响应。 */

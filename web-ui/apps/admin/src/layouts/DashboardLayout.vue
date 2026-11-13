@@ -197,8 +197,6 @@ const sidebarMenus = computed<LayoutSidebarMenuItem[]>(() => {
   return items.map(convertToSidebarMenuItem)
 })
 
-const activeNav = computed(() => route.path)
-
 /**
  * 当前激活的单栏侧边栏菜单项 key
  * 类似 activeDoubleSidebarId，用于 sidebar 模式
@@ -224,23 +222,6 @@ async function handleLogout() {
  */
 function goAccount() {
   router.push({ name: 'Account' })
-}
-
-/**
- * 导航到指定菜单项
- */
-function navigateTo(item: MenuItem) {
-  if (handleExternalLink(item)) {
-    return
-  }
-  if (item.children?.length) {
-    const firstChild = item.children[0]
-    if (firstChild && !handleExternalLink(firstChild)) {
-      router.push(firstChild.path)
-    }
-  } else {
-    router.push(item.path)
-  }
 }
 
 /**
@@ -317,16 +298,6 @@ function handleDoubleSidebarSelect(parent: MenuItem, child?: MenuItem) {
   }
 }
 
-/**
- * 判断顶部导航项是否为活动状态
- */
-function isTopNavItemActive(item: MenuItem): boolean {
-  if (item.children?.length) {
-    return activeNav.value.startsWith(item.path)
-  }
-  return activeNav.value === item.path || activeNav.value.startsWith(`${item.path}/`)
-}
-
 const showTopNav = computed(
   () =>
     themeStore.layoutMode === 'top-nav' ||
@@ -348,8 +319,6 @@ const hasSidebarContent = computed(() => {
   const topNav = visibleMenuItems.value.find((item) => item.id === activeTopNavId.value)
   return !!topNav
 })
-
-const isTopNav = computed(() => themeStore.layoutMode === 'top-nav')
 
 const showHeader = computed(
   () => themeStore.layoutMode !== 'fullscreen' && themeStore.layoutMode !== 'centered',

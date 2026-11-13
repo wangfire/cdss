@@ -15,7 +15,7 @@ import {
 } from 'lucide-vue-next'
 import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, onUpdated, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useNotificationStore } from '@/stores/notification'
 import { useUserStore } from '@/stores/user'
 import { ApiError, workbenchApi } from '@/api'
@@ -34,7 +34,6 @@ import {
   CardHeader,
   CardTitle,
   Input,
-  Label,
   Progress,
   ScrollArea,
   Select,
@@ -50,7 +49,6 @@ import {
   SheetTitle,
   Switch,
   Tabs,
-  TabsContent,
   TabsList,
   TabsTrigger,
   Textarea,
@@ -59,7 +57,6 @@ import {
 
 const { t } = useI18n()
 const route = useRoute()
-const router = useRouter()
 const userStore = useUserStore()
 
 /* ============== 状态筛选 ============== */
@@ -688,9 +685,10 @@ function updateFilterArrows() {
 function setupFilterScroll() {
   const r = tabsListRef.value as { $el?: HTMLElement } | HTMLElement | null
   const el = (r && ('$el' in r ? r.$el : r)) ?? null
-  if (el === filterListEl && el?.isConnected) { updateFilterArrows(); return }
+  const elNode = el instanceof HTMLElement ? el : null
+  if (elNode && elNode === filterListEl && elNode.isConnected) { updateFilterArrows(); return }
   filterListEl?.removeEventListener('scroll', updateFilterArrows)
-  filterListEl = el instanceof HTMLElement ? el : null
+  filterListEl = elNode
   if (!filterListEl) return
   filterListEl.scrollLeft = 0
   filterListEl.addEventListener('scroll', updateFilterArrows, { passive: true })

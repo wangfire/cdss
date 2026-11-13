@@ -1,6 +1,5 @@
 import { http } from './http'
 import type {
-  WorkbenchTaskResponse,
   WorkbenchTasksPageResponse,
   WorkbenchTaskStatsResponse,
   CodingTaskResponse,

@@ -52,7 +52,6 @@ const kind = ref<EntryKind>('diagnosis')
 const nameInput = ref('')
 const entries = ref<EntryItem[]>([])
 const activeKey = ref<string | null>(null)
-const parsing = ref(false)
 const pickerOpen = ref(false)
 
 const saveOpen = ref(false)

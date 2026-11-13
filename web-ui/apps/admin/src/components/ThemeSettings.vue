@@ -17,7 +17,8 @@ import {
   Slider,
   Switch,
 } from '@tabtab/ui'
-import { useThemeStore, type ThemeMode, type ThemeColor } from '@/stores/theme'
+import { useThemeStore, type ThemeMode } from '@/stores/theme'
+import { type ThemeColor } from '@/config/theme-colors'
 import type { LayoutMode, LayoutVariant } from '@tabtab/ui'
 import { useI18n } from 'vue-i18n'
 
@@ -154,16 +155,6 @@ const themeColorNames = computed(() => {
     ...theme,
     translatedName: t(`settings.themeColorNames.${theme.key}`) || theme.name,
   }))
-})
-
-/**
- * 内容宽度值
- */
-const contentWidthValue = computed({
-  get: () => themeStore.layoutVariant,
-  set: (value: LayoutVariant) => {
-    themeStore.setLayoutVariant(value)
-  },
 })
 
 /**

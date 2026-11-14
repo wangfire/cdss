@@ -46,7 +46,7 @@ $hospitalCode = "DEMO-" + (Get-Date -Format "MMddHHmm")
 $hospital = Post-Json "$api/api/v1/hospitals" $bootstrapHeaders `
     -Body (@{ code = $hospitalCode; name = "演示医院" } | ConvertTo-Json -Compress)
 $hospitalId = $hospital.data.id
-Write-Host ("[1/4] 医院已创建: {0} (hospitalId={1})" -f $hospitalCode, $hospitalId)
+Write-Host ("[1/6] 医院已创建: {0} (hospitalId={1})" -f $hospitalCode, $hospitalId)
 
 # ===== 2. 用真实医院 ID 铸正式 JWT，建角色 / 管理员 =====
 $token = New-DevJwt $key $hospitalId
@@ -60,20 +60,20 @@ $admin = Post-Json "$api/api/v1/users" $headers `
     -Body (@{ code = "admin"; displayName = "系统管理员" } | ConvertTo-Json -Compress)
 Post-Json "$api/api/v1/users/$($admin.data.id)/roles/$($adminRole.data.id)" $headers -Body "{}" | Out-Null
 Post-Json "$api/api/v1/users/$($admin.data.id)/roles/$($coderRole.data.id)" $headers -Body "{}" | Out-Null
-Write-Host ("[2/4] admin 用户已创建（默认密码 admin123），已绑定 ADMIN/CODER")
+Write-Host ("[2/6] admin 用户已创建（默认密码 admin123），已绑定 ADMIN/CODER")
 
 # ===== 3. 字典与规则 =====
 $icd10 = Get-ChildItem (Join-Path $root "data/knowledge/icd10-2026.json")
 $resp = Post-Json "$api/api/v1/code-systems/import" $headers (Get-Content $icd10.FullName -Raw -Encoding UTF8)
-Write-Host ("[3/4] ICD-10 导入: imported={0} updated={1}" -f $resp.data.importedCount, $resp.data.updatedCount)
+Write-Host ("[3/6] ICD-10 导入: imported={0} updated={1}" -f $resp.data.importedCount, $resp.data.updatedCount)
 
 $icd9 = Get-ChildItem (Join-Path $root "data/knowledge/icd9cm3-2026.json")
 $resp = Post-Json "$api/api/v1/code-systems/import" $headers (Get-Content $icd9.FullName -Raw -Encoding UTF8)
-Write-Host ("[3/4] ICD-9-CM-3 导入: imported={0} updated={1}" -f $resp.data.importedCount, $resp.data.updatedCount)
+Write-Host ("[3/6] ICD-9-CM-3 导入: imported={0} updated={1}" -f $resp.data.importedCount, $resp.data.updatedCount)
 
 $rules = Get-ChildItem (Join-Path $root "data/knowledge/coding-rules-2026.json")
 $resp = Post-Json "$api/api/v1/coding-rules/import" $headers (Get-Content $rules.FullName -Raw -Encoding UTF8)
-Write-Host ("[3/4] 规则+同义词导入: synonyms={0} rules={1}" -f $resp.data.synonymCount, $resp.data.ruleCount)
+Write-Host ("[3/6] 规则+同义词导入: synonyms={0} rules={1}" -f $resp.data.synonymCount, $resp.data.ruleCount)
 
 # ===== 4. ICD 索引树（52 批） =====
 $dir = Join-Path $root "data/knowledge/icd-index-batches"
@@ -89,7 +89,59 @@ foreach ($f in $files) {
     $totalUpdated += $resp.data.updatedCount
     Write-Host ("  batch {0}/{1}: +{2} ~{3}" -f $i, $files.Count, $resp.data.importedCount, $resp.data.updatedCount)
 }
-Write-Host ("[4/4] ICD 索引树导入完成: imported={0} updated={1}" -f $totalImported, $totalUpdated)
+Write-Host ("[4/6] ICD 索引树导入完成: imported={0} updated={1}" -f $totalImported, $totalUpdated)
+
+# ===== 5. CM3 手术索引树（20 批，编码录入手术链路 + 知识库 CM3 页数据源） =====
+$dir = Join-Path $root "data/knowledge/cm3-index-batches"
+$files = Get-ChildItem $dir -Filter "batch-*.json" | Sort-Object Name
+$totalImported = 0
+$totalUpdated = 0
+$i = 0
+foreach ($f in $files) {
+    $i++
+    $resp = Post-Json "$api/api/v1/cm3-index/import" $headers `
+        (Get-Content $f.FullName -Raw -Encoding UTF8) -TimeoutSec 300
+    $totalImported += $resp.data.importedCount
+    $totalUpdated += $resp.data.updatedCount
+    Write-Host ("  batch {0}/{1}: +{2} ~{3}" -f $i, $files.Count, $resp.data.importedCount, $resp.data.updatedCount)
+}
+Write-Host ("[5/6] CM3 手术索引树导入完成: imported={0} updated={1}" -f $totalImported, $totalUpdated)
+
+# ===== 6. 肿瘤索引（种子 SQL + 部位补丁；编码录入形态学链路 + 知识库肿瘤页数据源） =====
+# SQL 直接打库（脚本由 build_tumor_index_seed.py 生成，幂等：全删全插）。
+# 连接串：优先 HOSPITAL_AI_CONNECTION_STRING，回落 LocalDB（与 API 开发配置一致）。
+$seedConn = if ($env:HOSPITAL_AI_CONNECTION_STRING) {
+    $env:HOSPITAL_AI_CONNECTION_STRING
+} else {
+    "Server=(localdb)\MSSQLLocalDB;Database=HospitalAi;Integrated Security=True;TrustServerCertificate=True;Encrypt=False"
+}
+$sqlFiles = @(
+    "data/knowledge/tumor-index-seed.sql",
+    "data/knowledge/tumor-index-site-patch.sql"
+)
+$db = New-Object System.Data.SqlClient.SqlConnection $seedConn
+$db.Open()
+try {
+    foreach ($rel in $sqlFiles) {
+        $path = Join-Path $root $rel
+        if (-not (Test-Path $path)) {
+            Write-Host ("[6/6] 跳过缺失文件: {0}" -f $rel) -ForegroundColor Yellow
+            continue
+        }
+        $cmd = $db.CreateCommand()
+        $cmd.CommandTimeout = 300
+        $cmd.CommandText = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)
+        $cmd.ExecuteNonQuery() | Out-Null
+        Write-Host ("  applied: {0}" -f $rel)
+    }
+    $cmd = $db.CreateCommand()
+    $cmd.CommandText = "SELECT COUNT(*) FROM tumor_index"
+    $tumorRows = $cmd.ExecuteScalar()
+    Write-Host ("[6/6] 肿瘤索引导入完成: tumor_index={0} 行" -f $tumorRows)
+}
+finally {
+    $db.Close()
+}
 
 Write-Host ""
 Write-Host "==== 演示环境就绪 ===="

@@ -133,18 +133,27 @@ function generateLocalAvatar(name: string): string {
   }
 
   /**
-   * 判断是否拥有指定权限（任一命中）
+   * 判断是否拥有指定权限（任一命中）。
+   *
+   * 语义（fail-closed，2026-11-14 收紧）：
+   * - 未传 required / 空数组 → false（权限检查没有"空门槛放行"的语义）；
+   *   此前空数组返回 true，若调用方传了派生数组（如权限树节点改名后
+   *   permissionCodesOf 返回 []），按钮会对无权用户可见 —— fail-open。
+   * - 需要表达"不做权限门控"时，调用方不应调用本方法，而不是传空数组。
+   *
+   * 路由守卫不经过本方法（guard.ts 直接比对 meta.permissions?.length），
+   * 未设权限的路由不受影响。
    */
   function hasAnyPermission(required?: string[]): boolean {
-    if (!required || required.length === 0) return true
+    if (!required || required.length === 0) return false
     return required.some(p => permissions.value.includes(p))
   }
 
   /**
-   * 判断是否拥有全部权限
+   * 判断是否拥有全部权限（语义同 hasAnyPermission：空要求 fail-closed）。
    */
   function hasAllPermissions(required?: string[]): boolean {
-    if (!required || required.length === 0) return true
+    if (!required || required.length === 0) return false
     return required.every(p => permissions.value.includes(p))
   }
 

@@ -13,7 +13,7 @@ import {
   Sparkles,
   XCircle,
 } from 'lucide-vue-next'
-import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, onUpdated, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, onUpdated, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { useNotificationStore } from '@/stores/notification'
@@ -445,10 +445,32 @@ function stopProgressPolling() {
 }
 
 function startProgressPolling() {
-  if (!progressTimer) progressTimer = setInterval(() => void refreshRerunProgress(), 5_000)
+  if (!progressTimer) {
+    progressTimer = setInterval(() => {
+      // keepAlive 切走的瞬间可能还有一次定时器触发，跳过即可（clearInterval 下一拍生效）
+      if (!pageActive) return
+      void refreshRerunProgress()
+    }, 5_000)
+  }
 }
 
 onBeforeUnmount(stopProgressPolling)
+
+// keepAlive 场景：切走时 onBeforeUnmount 不触发，5 秒轮询会持续打到后端。
+// 用 onActivated/onDeactivated 显式启停 —— 重跑会话已持久化到 localStorage，
+// 回到本页时 onMounted/onActivated 会恢复轮询，进度与完成通知不丢。
+let pageActive = true
+onActivated(() => {
+  pageActive = true
+  if (rerunSession.value || settingsOpen.value) {
+    void refreshRerunProgress()
+    startProgressPolling()
+  }
+})
+onDeactivated(() => {
+  pageActive = false
+  stopProgressPolling()
+})
 
 // 恢复未完成的重跑会话后立即续跑轮询（页面刷新/HMR 后完成通知不丢）
 onMounted(() => {

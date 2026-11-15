@@ -12,6 +12,8 @@ export const STORAGE_KEYS = {
   TOKEN: 'tabtab-token',
   /** 登录医院 ID 键（用于 X-Hospital-Id 头与后续请求的医院隔离上下文） */
   HOSPITAL: 'tabtab-hospital',
+  /** 通知中心（本地持久化，上限 50 条） */
+  NOTIFICATION: 'tabtab-notification',
 } as const
 
 /**

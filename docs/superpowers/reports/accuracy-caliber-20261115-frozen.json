@@ -1,68 +1,76 @@
 {
+  "GeneratedAt": "2026-11-16T00:20:00+08:00",
+  "Caliber": "offline-icd-index-diag（IcdIndexDiag --batch 万条台账，LLM-off，纯索引通道；与 AccuracyCaliberCommand 同分层/同归一口径直算）",
+  "Scope": "冻结口径：字典标题直达=关、同族标题反查=关（与生产配置 446a61c 一致）；icd_index 51268 行（基线批次，E3 补丁第一轮已回滚）。与在线管道口径（27.5%/43.8%，含向量通道）的差异：本口径为纯索引通道基线，向量通道贡献的约 +7pp Top1 不含在内。",
   "Layers": [
     {
       "Id": "L0",
       "Label": "端到端交付口径（全部诊断名）",
-      "Total": 10000,
-      "WithRec": 9065,
-      "CodingTop1": 2404,
-      "CodingTop3": 2965,
-      "CategoryTop1": 3764
+      "Total": 9967,
+      "WithRec": 7597,
+      "CodingTop1": 2074,
+      "CodingTop3": 2461,
+      "CategoryTop1": 3312,
+      "CodingTop1Pct": 20.8,
+      "CodingTop3Pct": 24.7,
+      "CategoryTop1Pct": 33.2
     },
     {
       "Id": "L0-E1",
       "Label": "单独剔除 Z 状态与医疗接触码",
-      "Total": 8119,
-      "WithRec": 7299,
-      "CodingTop1": 2129,
-      "CodingTop3": 2518,
-      "CategoryTop1": 3369
+      "Total": 8092,
+      "WithRec": 6073,
+      "CodingTop1": 1661,
+      "CodingTop3": 2034,
+      "CategoryTop1": 2770,
+      "CodingTop1Pct": 20.5,
+      "CodingTop3Pct": 25.1,
+      "CategoryTop1Pct": 34.2
     },
     {
       "Id": "L0-E1-E2",
       "Label": "再剔除 V/W/X/Y 外部原因码",
-      "Total": 8089,
-      "WithRec": 7286,
-      "CodingTop1": 2126,
-      "CodingTop3": 2515,
-      "CategoryTop1": 3366
+      "Total": 8062,
+      "WithRec": 6068,
+      "CodingTop1": 1661,
+      "CodingTop3": 2034,
+      "CategoryTop1": 2770,
+      "CodingTop1Pct": 20.6,
+      "CodingTop3Pct": 25.2,
+      "CategoryTop1Pct": 34.4
     },
     {
       "Id": "L1",
       "Label": "范围内可判定口径（剔除 E1/E2/E3/E4/E5）",
-      "Total": 8070,
-      "WithRec": 7282,
-      "CodingTop1": 2125,
-      "CodingTop3": 2514,
-      "CategoryTop1": 3365
+      "Total": 7097,
+      "WithRec": 6067,
+      "CodingTop1": 1661,
+      "CodingTop3": 2034,
+      "CategoryTop1": 2770,
+      "CodingTop1Pct": 23.4,
+      "CodingTop3Pct": 28.7,
+      "CategoryTop1Pct": 39.0
     }
   ],
   "Knowledge": [
     {
       "Name": "主导词可召回率",
-      "Value": "99.8%"
-    },
-    {
-      "Name": "链路出码率（有推荐名/可召回名）",
-      "Value": "90.8%"
-    },
-    {
-      "Name": "索引码回退条占比",
-      "Value": "29.7%"
+      "Value": "88.1% (8778/9967)"
     },
     {
       "Name": "最优推荐为回退的名占比",
-      "Value": "23.4%"
+      "Value": "13.5%"
     }
   ],
   "Counts": {
-    "Total": 10000,
-    "MissingExpected": 1,
-    "E1": 1881,
+    "Total": 9967,
+    "E1": 1875,
     "E2": 30,
-    "E3": 18,
-    "E4": 3,
-    "Excluded": 1930
+    "E3": 1189,
+    "E4": 1,
+    "E5": 1,
+    "Excluded": 2870
   },
-  "NoAttribution": false
+  "NoAttribution": false,
+  "BaselineNote": "对照 10-24 在线轮（L0 27.5%/43.8%）：该轮含向量通道与向量兜底，本轮为纯索引通道，两口径不可直接互换。"
 }

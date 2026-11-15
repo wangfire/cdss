@@ -258,6 +258,7 @@ static List<IcdIndexRow> BuildRows(string conn)
     sql.Open();
     using var cmd = new SqlCommand(
         "SELECT seq_no, index_name, index_code, index_level, parent_seq_no, lead_word_status FROM icd_index", sql);
+    cmd.CommandTimeout = 300;
     using var reader = cmd.ExecuteReader();
     var rows = new List<IcdIndexRow>();
     while (reader.Read())

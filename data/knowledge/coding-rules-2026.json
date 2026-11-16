@@ -42951,6 +42951,20 @@
       "codeSystemCode": "ICD-10",
       "code": "A15.0",
       "entityType": "DIAGNOSIS"
+    },
+    {
+      "term": "痰镜检",
+      "normalizedTerm": "显微镜下痰检查",
+      "codeSystemCode": "ICD-10",
+      "code": "A15.0",
+      "entityType": "DIAGNOSIS"
+    },
+    {
+      "term": "(+)",
+      "normalizedTerm": "证实",
+      "codeSystemCode": "ICD-10",
+      "code": "A15.0",
+      "entityType": "DIAGNOSIS"
     }
   ],
   "rules": [

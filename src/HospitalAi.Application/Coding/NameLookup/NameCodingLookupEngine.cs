@@ -550,14 +550,18 @@ public static class NameCodingLookupEngine
         }
 
         // 同义词变体补钻（编码录入专用，流水线 resolver 按变体全文各自 Resolve 已同口径）：
-        // 主链路被"排除句式与输入矛盾"截断（不伴有提及…证实 vs 输入 显微镜检证实 → 停在肺层
-        // A16.2）或整条无产出时，用等价改写键（证实→确定的）再钻一次——排除冲突消失、
-        // 规范形分支（肺→确定的→被显微镜下痰检查 A15.0）可达，更深的链路并入 paths。
-        // 门控按变体键原文复核（重叠门/修饰词核心词/子行字面包含），只并入走到更深的链路，
-        // 按终点码去重——主链路完好（未被截断且有产出）时不补钻。
-        if (extraVariantKeys is { Count: > 0 } && (sawConflictTruncation || paths.Count == 0))
+        // 触发条件（两个之一）：
+        // ① 主链路被"排除句式与输入矛盾"截断（不伴有提及…证实 vs 输入 显微镜检证实 → 停在肺层）；
+        // ② 主链路有产出但停在浅层——变体可能带规范形词面钻得更深
+        //   （肺结核瘤,痰镜检(+) 的 结核球→另见结核 链停在肺层 A16.2，
+        //    组合变体 显微镜下痰检查+证实 能续钻 确定的→被显微镜下痰检查 到 A15.0）。
+        // 每个变体键独立重钻，门控照过（重叠门/修饰词核心词/子行字面包含），
+        // 走到比现有最长链路更深且终点码未出现过的链路才并入——
+        // 浅层重复与噪声变体不挤占名额。
+        if (extraVariantKeys is { Count: > 0 } && (sawConflictTruncation || paths.Count > 0))
         {
             var knownTerminals = paths.Select(path => path.IndexCode).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var bestPathDepth = paths.Count > 0 ? paths.Max(path => path.Path.Count) : 0;
             foreach (var extraKey in extraVariantKeys)
             {
                 if (string.Equals(extraKey, variantKey, StringComparison.Ordinal))
@@ -570,7 +574,7 @@ public static class NameCodingLookupEngine
                     new LeadWordHit(hit.Node, hit.Alias, 1m, hit.CoveredChars),
                     extraKey);
                 if (retryDrill is null
-                    || retryDrill.Path.Count <= 1
+                    || retryDrill.Path.Count <= bestPathDepth
                     || retryDrill.CodeNode.Code is not { Length: > 0 } retryCode
                     || !knownTerminals.Add(retryCode))
                 {

@@ -3201,4 +3201,71 @@ public sealed class IcdIndexTests
         Assert.Contains(tbBallChip.ModifierPaths,
             path => path.IndexCode == "A16.2" && path.Path.Any(segment => segment.Contains("肺")));
     }
+
+    /// <summary>
+    /// 结核证实分支全夹具（真实索引行 18793/18843/18847/18848/18849）：
+    /// 肺 下两分支 确定的（→被显微镜下痰检查 A15.0）与 不伴有提及…证实（A16.2）。
+    /// </summary>
+    private static IcdIndexSnapshot SmearFullSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(18793, "结核(病)，结核性(干酪样)(变性)(坏疽)(坏死)", "A16.9"),
+        ChildRow(18843, 18793, "肺(空洞性)(纤维变性)(浸润性)(结节性)", "A16.2", 1),
+        ChildRow(18847, 18843, "确定的", null, 2),
+        ChildRow(18848, 18843, "不伴有提及细菌学或组织学证实", "A16.2", 2),
+        ChildRow(18849, 18847, "被显微镜下痰检查，伴有或不伴有痰培养", "A15.0", 3),
+    ]);
+
+    private static IcdDictionarySnapshot SmearFullDictionary() => new([
+        Dict("A15.000X003", "肺结核瘤,痰镜检(+)"),
+        Dict("A15.000", "肺结核,经显微镜下痰检查证实,伴有或不伴有痰培养"),
+        Dict("A16.200X002", "肺结核"),
+    ]);
+
+    /// <summary>结核证实同义词组（真实数据）：证实≡确定的≡(+)，显微镜下痰检查≡痰镜检≡痰涂片。</summary>
+    private static IcdTermSynonymSnapshot SmearSynonyms() => IcdTermSynonymSnapshot.Build([
+        new IcdTermSynonymRow("DIAGNOSIS", "确定的", "证实"),
+        new IcdTermSynonymRow("DIAGNOSIS", "证实", "(+)"),
+        new IcdTermSynonymRow("DIAGNOSIS", "显微镜下痰检查", "痰镜检"),
+        new IcdTermSynonymRow("DIAGNOSIS", "显微镜下痰检查", "痰涂片"),
+    ]);
+
+    [Fact]
+    public void 肺结核瘤痰镜检阳性_组合改写一次换两词达A15()
+    {
+        // 输入含两个同义词命中（痰镜检 + (+)，分属两组）：单替换变体每次只换一个词，
+        // 四层链路需要 显微镜下痰检查+确定的 两级词面同时在场——组合改写按命中位置
+        // 笛卡尔枚举后，全规范变体（肺结核瘤,显微镜下痰检查证实）同时满足两级。
+        // 用户 2026-11-16 方案 A（组合改写）验收用例。
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "肺结核瘤,痰镜检(+)", topK: 8,
+            icdSnapshot: SmearFullSnapshot(), tumorSnapshot: null, icdDictionary: SmearFullDictionary(),
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true),
+            termSynonyms: SmearSynonyms());
+
+        foreach (var item in response.Recommendations)
+        {
+            Console.Error.WriteLine("[组合改写-诊断] " + item.Code + " " + item.Title + " path=" + string.Join("/", item.Path));
+        }
+
+        Assert.Equal("A15.000X003", response.Recommendations[0].Code);
+        var a15 = response.Recommendations[0];
+        Assert.Contains(a15.Path, segment => segment.Contains("确定的"));
+        Assert.Contains(a15.Path, segment => segment.Contains("显微镜下痰检查"));
+    }
+
+    [Fact]
+    public void 肺结核瘤痰镜检阴性_不进确定的分支_不得达A15()
+    {
+        // 负例哨兵（用户口径）：(-) 未登记为 证实/确定的 的同义词（语义上阴性应对应
+        // A16.0 检查为阴性，配 证实 会降级误码），且 (±) 分属不同等价组结构上不互通——
+        // 阴性输入不得凭组合改写进入 确定的 分支（A15.x 阳性专属）。
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "肺结核瘤,痰镜检(-)", topK: 8,
+            icdSnapshot: SmearFullSnapshot(), tumorSnapshot: null, icdDictionary: SmearFullDictionary(),
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true),
+            termSynonyms: SmearSynonyms());
+
+        Assert.DoesNotContain(response.Recommendations, item => item.Code.StartsWith("A15.", StringComparison.Ordinal));
+    }
 }

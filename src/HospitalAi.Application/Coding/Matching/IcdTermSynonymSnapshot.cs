@@ -154,6 +154,31 @@ public sealed class IcdTermSynonymSnapshot
         var expanded = new List<string>(MaxExpandedTexts) { text };
         // 全类规范改写排在最前，保持既有检索顺序与打分口径。
         AddUnique(expanded, Render(text, hits, rules, -1, null));
+
+        // 组合改写：输入含多个命中（如 痰镜检(+) 的 痰镜检 与 (+) 分属两组）时，
+        // 单替换变体每次只换一个词，四层索引链路需要两级修饰词同时换成规范形
+        // （显微镜下痰检查 + 确定的）——逐位替换永远凑不齐。按命中位置做组合枚举：
+        // 每个命中独立取组内任一成员（笛卡尔积），上限由 MaxExpandedTexts 兜住。
+        // 生成序：全规范 → 逐位单替换 → 组合补齐（既有单替换变体的顺序不变）。
+        var combinationBudget = MaxExpandedTexts - expanded.Count;
+        if (combinationBudget > 0 && hits.Count >= 2)
+        {
+            // 每个命中的候选成员（组内全部，含命中词本身之外的排列）。
+            var choicesPerHit = hits
+                .Select(hit => rules.Groups[hit.GroupIndex].Members
+                    .Where(member => !string.Equals(member, hit.Term, StringComparison.Ordinal))
+                    .ToList())
+                .ToList();
+            if (choicesPerHit.All(choices => choices.Count > 0))
+            {
+                // 组合总数有界时才枚举（最坏 k×m 会被预算截断，不爆内存）。
+                foreach (var combination in EnumerateCombinations(choicesPerHit, combinationBudget))
+                {
+                    AddUnique(expanded, RenderCombination(text, hits, rules, combination));
+                }
+            }
+        }
+
         for (var index = 0; index < hits.Count && expanded.Count < MaxExpandedTexts; index++)
         {
             foreach (var member in rules.Groups[hits[index].GroupIndex].Members)
@@ -169,6 +194,56 @@ public sealed class IcdTermSynonymSnapshot
         }
 
         return expanded;
+    }
+
+    /// <summary>组合枚举（笛卡尔积），产出至多 budget 个组合即停。</summary>
+    private static IEnumerable<string?[]> EnumerateCombinations(List<List<string>> choices, int budget)
+    {
+        var total = 1;
+        foreach (var choicesAtPosition in choices)
+        {
+            total *= choicesAtPosition.Count;
+            if (total > budget * 64)
+            {
+                // 组合爆炸保护：超出预算 64 倍的规模直接放弃组合枚举
+                //（实际输入命中数 ≤3、组成员 ≤6，最坏 216 也远够小）。
+                yield break;
+            }
+        }
+
+        var indices = new int[choices.Count];
+        while (true)
+        {
+            var combination = new string?[choices.Count];
+            for (var index = 0; index < choices.Count; index++)
+            {
+                combination[index] = choices[index][indices[index]];
+            }
+
+            yield return combination;
+            if (--budget <= 0)
+            {
+                yield break;
+            }
+
+            var cursor = choices.Count - 1;
+            while (cursor >= 0)
+            {
+                indices[cursor]++;
+                if (indices[cursor] < choices[cursor].Count)
+                {
+                    break;
+                }
+
+                indices[cursor] = 0;
+                cursor--;
+            }
+
+            if (cursor < 0)
+            {
+                yield break;
+            }
+        }
     }
 
     /// <summary>
@@ -206,8 +281,9 @@ public sealed class IcdTermSynonymSnapshot
     }
 
     /// <summary>
-    /// 按命中区间拼装检索文本：overrideIndex 指向的命中替换为 overrideTerm，
-    /// 其余命中一律替换为所属类标签（多类输入也只产生一条组合文本）。
+    /// 按命中区间拼装检索文本：overrideIndex 指向的命中替换为 overrideTerm
+    /// （-1 = 全部命中替换为所属类标签），其余命中一律替换为所属类标签
+    /// （多类输入也只产生一条组合文本）。组合改写模式见 <see cref="RenderCombination"/>。
     /// </summary>
     private static string Render(string text, List<Hit> hits, TypeRules rules, int overrideIndex, string? overrideTerm)
     {
@@ -219,6 +295,25 @@ public sealed class IcdTermSynonymSnapshot
             builder.Append(index == overrideIndex
                 ? overrideTerm
                 : rules.Groups[hits[index].GroupIndex].Canonical);
+            cursor = hits[index].Index + hits[index].Length;
+        }
+
+        builder.Append(text.AsSpan(cursor));
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// 组合改写拼装：overrides[hitIndex] 指定每个命中的替换词（null = 该位取类标签）。
+    /// 与 Render(-1) 的区别是允许各命中替换为组内任意成员而非全部归规范词。
+    /// </summary>
+    private static string RenderCombination(string text, List<Hit> hits, TypeRules rules, string?[] overrides)
+    {
+        var builder = new System.Text.StringBuilder(text.Length);
+        var cursor = 0;
+        for (var index = 0; index < hits.Count; index++)
+        {
+            builder.Append(text.AsSpan(cursor, hits[index].Index - cursor));
+            builder.Append(overrides[index] ?? rules.Groups[hits[index].GroupIndex].Canonical);
             cursor = hits[index].Index + hits[index].Length;
         }
 

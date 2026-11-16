@@ -348,6 +348,11 @@ public static class NameCodingLookupEngine
         // 截断链路及其候选：同义词补钻走出更深正链后整体让位（详见尾部补钻块）。
         NameLookupModifierPath? conflictTruncatedPath = null;
         List<RecommendationAccumulator>? truncatedCandidates = null;
+        // P3 选层证据词门控（方案 A 专项）：输入含证据词（病理(+)、痰镜检(+)、涂阴培阳）
+        // 时，主链路若未解释任何证据词面（证据词被同义词改写后的规范词也不算已解释——
+        // 那要等变体补钻来覆盖），主链路暂缓交付，等补钻深链出来后让位。
+        // 案例依据：继发性肺结核…涂阴培阳 的 结核→多发性 A19.9（覆盖 0.267 噪声链）
+        // 与 肺结核瘤,病理(+) 的 结核→结缔组织 链——证据词一个都没进链路。
         var drill = IcdIndexMatcher.Drill(
             snapshot,
             new LeadWordHit(hit.Node, hit.Alias, 1m, hit.CoveredChars),
@@ -505,8 +510,7 @@ public static class NameCodingLookupEngine
                 var childDrill = IcdIndexMatcher.Drill(
                     snapshot,
                     new LeadWordHit(child, childAlias, 1m, childAlias.Key.Length),
-                    variantKey);
-                if (childDrill is null)
+                    variantKey);                if (childDrill is null)
                 {
                     continue;
                 }
@@ -581,8 +585,7 @@ public static class NameCodingLookupEngine
                     var grandDrill = IcdIndexMatcher.Drill(
                         snapshot,
                         new LeadWordHit(grandchild, grandAlias, 1m, grandAlias.Key.Length),
-                        variantKey);
-                    if (grandDrill is null)
+                        variantKey);                    if (grandDrill is null)
                     {
                         continue;
                     }

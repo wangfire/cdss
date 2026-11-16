@@ -149,13 +149,16 @@ public static class IndexCodeExpander
         string fallbackCodeSystem = "ICD-10",
         TumorIndexSnapshot? tumor = null,
         bool titleReverseEnabled = true,
-        string? canonicalPathKey = null)
+        string? canonicalPathKey = null,
+        IReadOnlyList<string>? pathSegments = null,
+        IcdTermSynonymSnapshot? synonyms = null)
     {
         // 覆盖度分母用剥掉不确定性引导语后的输入核："十二指肠溃疡伴出血可能性大" 的 性 会给
         // 慢性十二指肠溃疡伴有出血 白送一分覆盖，把与输入逐字相等的 K26.400X001 挤到 Top-2。
         var inputKey = TextMatch.StripUncertaintyPhrases(inputText);
         var results = ExpandCore(parsed, dictionary, inputText, inputKey, pathKey, fallbackCodeSystem,
-            tumor: tumor, titleReverseEnabled: titleReverseEnabled, canonicalPathKey: canonicalPathKey);
+            tumor: tumor, titleReverseEnabled: titleReverseEnabled, canonicalPathKey: canonicalPathKey,
+            pathSegments: pathSegments, synonyms: synonyms);
 
         // 先按编码收敛，再统一排序，避免下游按编码去重时由字典行序决定谁占住 Top-N 名额。
         return Rank(results
@@ -175,7 +178,9 @@ public static class IndexCodeExpander
         bool inAlternatives = false,
         TumorIndexSnapshot? tumor = null,
         bool titleReverseEnabled = true,
-        string? canonicalPathKey = null)
+        string? canonicalPathKey = null,
+        IReadOnlyList<string>? pathSegments = null,
+        IcdTermSynonymSnapshot? synonyms = null)
     {
         switch (parsed.Kind)
         {
@@ -317,7 +322,9 @@ public static class IndexCodeExpander
 
                     var items = ExpandByPrefix(prefix, dictionary, inputText, inputKey, pathKey,
                         parsed.Kind, excludeJoint: false, inAlternatives, note: null,
-                        canonicalPathKey: canonicalPathKey);
+                        canonicalPathKey: canonicalPathKey,
+                        pathSegments: pathSegments,
+                        synonyms: synonyms);
                     return items.Count > 0 ? items : FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
                         fallbackCodeSystem, titleReverseEnabled);
                 }
@@ -334,7 +341,9 @@ public static class IndexCodeExpander
         bool excludeJoint,
         bool inAlternatives,
         string? note,
-        string? canonicalPathKey = null)
+        string? canonicalPathKey = null,
+        IReadOnlyList<string>? pathSegments = null,
+        IcdTermSynonymSnapshot? synonyms = null)
     {
         var rows = dictionary.Prefix(prefixUpper);
         if (excludeJoint)
@@ -343,7 +352,9 @@ public static class IndexCodeExpander
         }
 
         return RankRows(rows, inputText, inputKey, pathKey, format, inAlternatives, note,
-            canonicalPathKey: canonicalPathKey);
+            canonicalPathKey: canonicalPathKey,
+            pathSegments: pathSegments,
+            synonyms: synonyms);
     }
 
     private static IReadOnlyList<ExpandedItem> ExpandConditional(
@@ -445,7 +456,9 @@ public static class IndexCodeExpander
         IndexCodeFormatKind format,
         bool inAlternatives,
         string? note,
-        string? canonicalPathKey = null)
+        string? canonicalPathKey = null,
+        IReadOnlyList<string>? pathSegments = null,
+        IcdTermSynonymSnapshot? synonyms = null)
     {
         if (rows.Count == 0 || inputKey.Length == 0)
         {
@@ -497,7 +510,14 @@ public static class IndexCodeExpander
 
             if (!inputPass && pathCover.Ratio < 1.0m && (canonicalRatio is not { } ratio || ratio < 1.0m))
             {
-                continue;
+                // 同义词解释门（2026-11-16）：链路节点词面被字典标题"同义解释"时放行——
+                // 索引分支词 仅被培养 与字典标题 仅经痰培养所证实/痰培养(+) 同义不同字，
+                // 字面覆盖永远凑不齐，整族被误杀成"字典库无此码"回退（A15.1 的教训）。
+                // 判据：链路每个非连接节点，要么被输入解释，要么被标题按等价类解释。
+                if (!SynonymExplainsPath(pathSegments, titleKey, inputKey, synonyms))
+                {
+                    continue;
+                }
             }
 
             // 路径通道按 0.9 参与打分：一层链路的 pathKey 就是主导词本身，标题含主导词即
@@ -741,6 +761,46 @@ public static class IndexCodeExpander
         {
             var qualifier = TextMatch.NormalizeKey(match.Groups[1].Value);
             if (qualifier.Length > 0 && !inputKey.Contains(qualifier, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 同义词解释门：链路的每个非连接节点要么出现在输入里，要么与字典标题同义
+    /// （<see cref="IcdTermSynonymSnapshot.TextCoversTerm"/> 双向等价类判定）。
+    /// 用于"索引分支词与字典标题同义不同字"的放行（仅被培养 ≡ 仅经痰培养所证实）。
+    /// 无同义词数据或无链路节点时不放行（保持既有严格口径）。
+    /// </summary>
+    private static bool SynonymExplainsPath(
+        IReadOnlyList<string>? pathSegments,
+        string titleKey,
+        string separatorKey,
+        IcdTermSynonymSnapshot? synonyms)
+    {
+        if (synonyms is null || pathSegments is null || pathSegments.Count == 0
+            || titleKey.Length == 0 || separatorKey.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (var segment in pathSegments)
+        {
+            var nodeKey = TextMatch.NormalizeKey(segment);
+            if (nodeKey.Length == 0)
+            {
+                continue;
+            }
+
+            if (separatorKey.Contains(nodeKey, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!synonyms.TextCoversTerm(separatorKey, nodeKey, TermSynonymTypes.Diagnosis))
             {
                 return false;
             }

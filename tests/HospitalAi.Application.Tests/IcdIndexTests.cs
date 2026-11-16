@@ -3289,6 +3289,11 @@ public sealed class IcdIndexTests
         new IcdTermSynonymRow("DIAGNOSIS", "证实", "(+)"),
         new IcdTermSynonymRow("DIAGNOSIS", "显微镜下痰检查", "痰镜检"),
         new IcdTermSynonymRow("DIAGNOSIS", "显微镜下痰检查", "痰涂片"),
+        new IcdTermSynonymRow("DIAGNOSIS", "确定的被组织学", "病理(+)"),
+        new IcdTermSynonymRow("DIAGNOSIS", "确定的被组织学", "病理检查(+)"),
+        new IcdTermSynonymRow("DIAGNOSIS", "确定的被组织学", "组织学(+)"),
+        new IcdTermSynonymRow("DIAGNOSIS", "确定的仅被培养", "痰培养(+)"),
+        new IcdTermSynonymRow("DIAGNOSIS", "确定的仅被培养", "涂阴培阳"),
     ]);
 
     [Fact]

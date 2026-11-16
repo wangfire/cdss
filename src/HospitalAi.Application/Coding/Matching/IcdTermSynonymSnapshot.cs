@@ -135,6 +135,60 @@ public sealed class IcdTermSynonymSnapshot
         return new IcdTermSynonymSnapshot(byType);
     }
 
+    /// <summary>
+    /// 文本是否"解释"了术语：文本含术语本身，或文本中的命中词与术语同属一个
+    /// 等价类（字典标题写 痰培养(+)、索引分支词面是 仅被培养 ——同义不同字的
+    /// 放行判据，供字典展开门控的路径词同义覆盖使用）。
+    /// 术语与组内任一成员互为子串也算解释（短语规范词 确定的仅被培养 同时
+    /// 覆盖 确定的 与 仅被培养 两级词面）。
+    /// </summary>
+    public bool TextCoversTerm(string? text, string term, string termType)
+    {
+        if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(term)
+            || !_rulesByType.TryGetValue(termType, out var rules) || rules.Groups.Count == 0)
+        {
+            return false;
+        }
+
+        if (text.Contains(term, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var position = 0;
+        while (position < text.Length)
+        {
+            var matched = false;
+            foreach (var rule in rules.Sources)
+            {
+                if (position + rule.Term.Length > text.Length
+                    || string.CompareOrdinal(text, position, rule.Term, 0, rule.Term.Length) != 0)
+                {
+                    continue;
+                }
+
+                var group = rules.Groups[rule.GroupIndex];
+                if (group.Members.Any(member =>
+                        member.Contains(term, StringComparison.Ordinal)
+                        || term.Contains(member, StringComparison.Ordinal)))
+                {
+                    return true;
+                }
+
+                position += rule.Term.Length;
+                matched = true;
+                break;
+            }
+
+            if (!matched)
+            {
+                position++;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>原输入 + 规范改写 + 等价类互换改写（未命中任何类时只有原输入）。</summary>
     public IReadOnlyList<string> ExpandVariants(string? text, string termType)
     {

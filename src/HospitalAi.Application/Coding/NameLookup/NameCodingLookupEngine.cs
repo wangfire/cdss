@@ -769,6 +769,22 @@ public static class NameCodingLookupEngine
     }
 
     /// <summary>
+    /// 候选的极性排序权重（P1 R1 极性匹配优先）：
+    /// 输入极性与候选极性一致 → 2；输入无证据词或候选未标注 → 1；相反 → 0。
+    /// 只做同分附近的次序调整，冲突候选已由 R2 剔除。
+    /// </summary>
+    private static int PolarityRank(string? candidatePolarity, string inputPolarity)
+    {
+        if (inputPolarity is not ("Positive" or "Negative")
+            || candidatePolarity is not ("Positive" or "Negative"))
+        {
+            return 1;
+        }
+
+        return string.Equals(candidatePolarity, inputPolarity, StringComparison.Ordinal) ? 2 : 0;
+    }
+
+    /// <summary>
     /// 输入的证据极性识别（P0）：从输入原文找证据词——
     /// 阳性：(+)、阳性、培阳、涂阳、涂片(+) 等"已证实"措辞；
     /// 阴性：(-)、阴性、未做、未查 等"未证实/阴性"措辞；
@@ -1173,17 +1189,23 @@ public static class NameCodingLookupEngine
         // 提示码降级只认 demoteHint（主导词行级），既有子行提示码不参与——对它们一律降级实测
         // 会把正牌精确码一起按下（大脑中动脉狭窄 I66.001、急性子宫炎 N71.002、
         // 1型糖尿病性感觉运动性周围神经病 E10.400X026+G63.2* 各让给泛码，约 60 名 Top1 回退）。
+        // P1 R1 极性匹配优先：输入含阳性/阴性证据词时，极性一致的候选排在前面
+        // （阳性输入 → 阳性分支优先；阴性输入 → 阴性分支优先）。只影响同分附近的次序，
+        // 极性冲突的候选已在 R2 剔除。
+        var inputPolarity = DeriveInputPolarity(text);
         foreach (var group in candidates
             .GroupBy(item => item.Code, StringComparer.OrdinalIgnoreCase)
             .Select(group => group
                 .OrderBy(item => item.IsIndexFallback)
                 .ThenBy(item => item.IsSeeAlsoHint)
+                .ThenByDescending(item => PolarityRank(item.Polarity, inputPolarity))
                 .ThenByDescending(item => item.Score)
                 .ThenByDescending(item => item.WholeTitleDepth)
                 .ThenByDescending(item => item.TitleSpecificity)
                 .First())
             .OrderBy(item => item.IsIndexFallback)
             .ThenBy(item => item.IsSeeAlsoHint)
+            .ThenByDescending(item => PolarityRank(item.Polarity, inputPolarity))
             .ThenByDescending(item => item.Score)
             .ThenByDescending(item => item.WholeTitleDepth)
             .ThenByDescending(item => item.TitleSpecificity)

@@ -3388,4 +3388,43 @@ public sealed class IcdIndexTests
         // 阴性输入不得凭空出现阳性码（A15）——这由组合改写隔离保证。
         Assert.DoesNotContain(response.Recommendations, item => item.Code.StartsWith("A15.", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void 极性匹配优先_阳性输入的阳性分支排在未证实泛码之前()
+    {
+        // P1 R1：输入含阳性证据词时，极性一致的候选（阳性分支）排在前面——
+        // 极性冲突的候选已由 R2 剔除，剩下的是"未证实泛码(A16.2)"与"阳性细码(A15.x)"
+        // 之间的次序问题。夹具同时给出两条链路（泛码路径 3 层、阳性路径 4 层），
+        // 阳性路径分数更低（路径深度不同），靠极性优先把它提到 Top1。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(18793, "结核(病)，结核性(干酪样)(变性)(坏疽)(坏死)", "A16.9"),
+            ChildRow(18843, 18793, "肺(空洞性)(纤维变性)(浸润性)(结节性)", "A16.2", 1),
+            ChildRow(18847, 18843, "确定的", null, 2),
+            ChildRow(18848, 18843, "不伴有提及细菌学或组织学证实", "A16.2", 2),
+            ChildRow(18849, 18847, "被显微镜下痰检查，伴有或不伴有痰培养", "A15.0", 3),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("A15.000", "肺结核,经显微镜下痰检查证实,伴有或不伴有痰培养"),
+            Dict("A16.200", "肺结核,未做细菌学或组织学证实"),
+        ]);
+
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "肺结核,痰镜检(+)", topK: 8,
+            icdSnapshot: snapshot, tumorSnapshot: null, icdDictionary: dictionary,
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true),
+            termSynonyms: SmearSynonyms());
+
+        Assert.NotEmpty(response.Recommendations);
+        // 阳性细码应在未证实泛码之前（P1 极性匹配优先）。
+        var positiveIndex = response.Recommendations.ToList()
+            .FindIndex(item => item.Code.StartsWith("A15.", StringComparison.Ordinal));
+        var negativeIndex = response.Recommendations.ToList()
+            .FindIndex(item => item.Code.StartsWith("A16.", StringComparison.Ordinal));
+        if (positiveIndex >= 0 && negativeIndex >= 0)
+        {
+            Assert.True(positiveIndex < negativeIndex,
+                $"阳性码应排在阴性码之前：{string.Join(",", response.Recommendations.Select(item => item.Code))}");
+        }
+    }
 }

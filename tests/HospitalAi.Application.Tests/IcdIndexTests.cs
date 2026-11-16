@@ -3143,6 +3143,13 @@ public sealed class IcdIndexTests
         Assert.Equal("A15.000", response.Recommendations[0].Code);
         var a15 = response.Recommendations[0];
         Assert.Contains(a15.Path, segment => segment.Contains("确定的"));
+        // 截断链路让位：更深正链（肺→确定的→被显微镜下痰检查）出现后，
+        // 排除句式截断出的肺层链路（A16.2，语义=未证实，与输入矛盾）不再展示，
+        // 其候选 A16.200X002/A16.200 也一并撤下。
+        Assert.DoesNotContain(response.LeadTerms.SelectMany(term => term.ModifierPaths),
+            path => path.IndexCode == "A16.2");
+        Assert.DoesNotContain(response.Recommendations,
+            item => item.Code.StartsWith("A16.2", StringComparison.Ordinal));
     }
 
     [Fact]

@@ -268,6 +268,9 @@ public static class NameCodingLookupEngine
         DrillResult? redirectOwnFallback = null;
         // 排除句式冲突截断发生过 → 同义词变体补钻才有意义（详见函数尾部补钻块）。
         var sawConflictTruncation = false;
+        // 截断链路及其候选：同义词补钻走出更深正链后整体让位（详见尾部补钻块）。
+        NameLookupModifierPath? conflictTruncatedPath = null;
+        List<RecommendationAccumulator>? truncatedCandidates = null;
         var drill = IcdIndexMatcher.Drill(
             snapshot,
             new LeadWordHit(hit.Node, hit.Alias, 1m, hit.CoveredChars),
@@ -341,7 +344,11 @@ public static class NameCodingLookupEngine
                         1m,
                         CodeFromAncestorFallback: false,
                         Jumps: ["截断: 排除句式与输入矛盾"]);
-                    paths.Add(BuildIcdPath(hit, text, truncatedResult, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: false));
+                    // 记录截断链路及其新增候选（引用级）：同义词补钻走出更深正链时整体让位。
+                    var beforeTruncation = candidates.ToHashSet(ReferenceEqualityComparer.Instance);
+                    conflictTruncatedPath = BuildIcdPath(hit, text, truncatedResult, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: false);
+                    paths.Add(conflictTruncatedPath);
+                    truncatedCandidates = candidates.Where(item => !beforeTruncation.Contains(item)).ToList();
                 }
             }
         }
@@ -580,6 +587,20 @@ public static class NameCodingLookupEngine
 
                 paths.Add(BuildIcdPath(hit, text, retryDrill, dictionary, tumor, candidates, channels, extraKey,
                     seeAlsoHint: false));
+
+                // 更深的正链已出 → 截断链路让位：链路与候选一并撤下（A16.2 未证实码
+                // 与输入 显微镜检证实 语义矛盾，正链出现后不再是可用答案）。
+                if (conflictTruncatedPath is not null)
+                {
+                    paths.Remove(conflictTruncatedPath);
+                    if (truncatedCandidates is not null)
+                    {
+                        candidates.RemoveAll(truncatedCandidates.Contains);
+                    }
+
+                    conflictTruncatedPath = null;
+                    truncatedCandidates = null;
+                }
             }
         }
 

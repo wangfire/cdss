@@ -212,40 +212,6 @@ public static class NameCodingLookupEngine
                 : [];
         }
 
-        // 跨 chip 浅层链让位（551e973 原则的 chip 间延伸）：某 chip 的链路是另一 chip
-        // 更深链路的严格路径前缀（结核→肺 ⊂ 结核→肺→确定的→被显微镜下痰检查）时，
-        // 浅层链路（未证实语义，与输入 痰镜检(+) 矛盾）从其 chip 移除——
-        // 深层链路已完整解释同一查询，浅层只是同路径的中途草稿。
-        // 仅对链路显示让位；来自其他证据（如 18793 树的自有完整下钻）的推荐
-        // 不在此处裁撤，交由既有排序与门控口径处理。
-        foreach (var leadTerm in leadTerms)
-        {
-            if (leadTerm.ModifierPaths.Count <= 1)
-            {
-                continue;
-            }
-
-            var keptPaths = new List<NameLookupModifierPath>();
-            foreach (var path in leadTerm.ModifierPaths)
-            {
-                var superseded = leadTerm.ModifierPaths.Any(other =>
-                    !ReferenceEquals(other, path)
-                    && other.Path.Count > path.Path.Count
-                    && path.Path.Select((segment, index) => segment == other.Path[index]).All(equal => equal));
-                if (!superseded)
-                {
-                    keptPaths.Add(path);
-                }
-            }
-
-            if (keptPaths.Count != leadTerm.ModifierPaths.Count)
-            {
-                pathBuffer[leadTerm.SeqNo] = keptPaths;
-                leadTerms.Remove(leadTerm);
-                leadTerms.Add(leadTerm with { ModifierPaths = keptPaths });
-            }
-        }
-
         // 上屏资格（两阶段）：hidden 未剔；转示须有链路——无产出的转示
         // （阑尾切除术 的 切除→消融(切除)）属纯噪声不上屏，也不能当容器（989c7e5：
         // 不能拿不上屏的命中去吃掉真主导词 chip）。能进上屏集的转示（肠炎→小肠炎
@@ -281,6 +247,35 @@ public static class NameCodingLookupEngine
 
             AppendLeadTerm(leadTerms, hit.SeqNo, hit.Term, hit.HitAlias,
                 hit.CoveredChars, hit.Position, hit.TailHit, paths, hit.RedirectKey);
+        }
+
+        // 全局浅层链让位（551e973 原则的统一裁决，一条规则覆盖所有场景）：
+        // 任意 chip 的链路是另一 chip 更深链路的严格路径前缀（结核→肺 ⊂
+        // 结核→肺→确定的→被显微镜下痰检查）时，浅层链路（未证实等中途草稿语义）
+        // 从其 chip 移除——深层链路已完整解释同一查询。在 leadTerms 组装后做，
+        // 同 chip 内（截断 vs 补钻）、跨 chip（续查 vs 独立下钻）天然全覆盖；
+        // 肺干酪性结核/肺结核瘤 等一切同树浅深并列从此统一生效，不再逐条修。
+        // 只动链路展示：候选池的对应让位由下方推荐池裁决处理。
+        var allPaths = leadTerms.SelectMany(term => term.ModifierPaths).ToList();
+        foreach (var leadTerm in leadTerms.ToList())
+        {
+            if (leadTerm.ModifierPaths.Count == 0)
+            {
+                continue;
+            }
+
+            var keptPaths = leadTerm.ModifierPaths
+                .Where(path => !allPaths.Any(other =>
+                    !ReferenceEquals(other, path)
+                    && other.Path.Count > path.Path.Count
+                    && path.Path.Select((segment, index) => segment == other.Path[index]).All(equal => equal)))
+                .ToList();
+            if (keptPaths.Count != leadTerm.ModifierPaths.Count)
+            {
+                pathBuffer[leadTerm.SeqNo] = keptPaths;
+                leadTerms.Remove(leadTerm);
+                leadTerms.Add(leadTerm with { ModifierPaths = keptPaths });
+            }
         }
 
         // 跨 chip 浅层候选让位（551e973 原则的推荐池延伸）：某候选的链路路径是

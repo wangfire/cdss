@@ -3237,6 +3237,31 @@ public sealed class IcdIndexTests
             item => item.Code.StartsWith("A16.2", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void 肺干酪性结核痰镜检阳性_浅层链让位为共性规则()
+    {
+        // 用户 2026-11-16 共性追问：肺干酪性结核,痰镜检(+) 与 肺结核瘤,痰镜检(+)
+        // 是同一问题——只要全局存在更深的证实分支链（结核→肺→确定的→被显微镜下
+        // 痰检查 A15.0），任何 chip 的浅层链（结核→肺 A16.2）都按路径前缀让位，
+        // 不再逐条修。统一裁决在 leadTerms 组装后做（一条规则覆盖同 chip 内/
+        // 跨 chip/续查/补钻全部场景）。
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "肺干酪性结核,痰镜检(+)", topK: 8,
+            icdSnapshot: SmearFullSnapshot(), tumorSnapshot: null, icdDictionary: SmearFullDictionary(),
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true),
+            termSynonyms: SmearSynonyms());
+
+        Assert.True(response.Recommendations.Count > 0);
+        Assert.StartsWith("A15.", response.Recommendations[0].Code);
+        Assert.DoesNotContain(response.Recommendations,
+            item => item.Code.StartsWith("A16.2", StringComparison.Ordinal));
+        // 链路展示同步让位：任何 chip 都不再携带浅层 A16.2 链。
+        Assert.All(
+            response.LeadTerms.SelectMany(term => term.ModifierPaths),
+            path => Assert.NotEqual("A16.2", path.IndexCode));
+    }
+
     /// <summary>
     /// 结核证实分支全夹具（真实索引行 18793/18843/18847/18848/18849）：
     /// 肺 下两分支 确定的（→被显微镜下痰检查 A15.0）与 不伴有提及…证实（A16.2）。

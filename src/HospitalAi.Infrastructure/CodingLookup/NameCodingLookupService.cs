@@ -1,6 +1,7 @@
 using HospitalAi.Application.Abstractions;
 using HospitalAi.Application.Coding.Cm3Index;
 using HospitalAi.Application.Coding.IcdIndex;
+using HospitalAi.Application.Coding.Matching;
 using HospitalAi.Application.Coding.NameLookup;
 using HospitalAi.Contracts.CodingRecommendations;
 using Microsoft.Extensions.Logging;
@@ -19,6 +20,7 @@ public sealed class NameCodingLookupService(
     IIcdDictionarySource dictionarySource,
     ICm3IndexSource cm3IndexSource,
     ITitleChannelConfigSource titleChannelConfigSource,
+    IIcdTermSynonymSource synonymSource,
     IRequestContext requestContext,
     ILogger<NameCodingLookupService> logger) : INameCodingLookupService
 {
@@ -69,7 +71,22 @@ public sealed class NameCodingLookupService(
             request.Kind, request.Text, request.TopK,
             icdSnapshot, tumorSnapshot, icdDictionary,
             cm3Snapshot, cm3Dictionary,
-            titleChannelConfigSource.Get());
+            titleChannelConfigSource.Get(),
+            isProcedure ? null : LoadSynonymSnapshot(cancellationToken));
         return Task.FromResult(response);
+    }
+
+    /// <summary>同义词快照加载失败只损失等价改写能力，主链路照常（口径同肿瘤表）。</summary>
+    private IcdTermSynonymSnapshot? LoadSynonymSnapshot(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return synonymSource.GetSnapshot(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "同义词快照加载失败，编码录入按无等价改写执行");
+            return null;
+        }
     }
 }

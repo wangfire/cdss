@@ -50,7 +50,8 @@ public static class NameCodingLookupEngine
         IcdDictionarySnapshot? icdDictionary,
         Cm3IndexSnapshot? cm3Snapshot,
         IcdDictionarySnapshot? cm3Dictionary,
-        NameLookupTitleChannels? channels = null)
+        NameLookupTitleChannels? channels = null,
+        IcdTermSynonymSnapshot? termSynonyms = null)
     {
         var titleChannels = channels ?? NameLookupTitleChannels.AllEnabled;
         var isProcedure = kind == ProcedureKind;
@@ -64,7 +65,8 @@ public static class NameCodingLookupEngine
 
         return isProcedure
             ? LookupProcedure(text, inputKey, topK, cm3Snapshot, cm3Dictionary, degraded, codeSystem, titleChannels)
-            : LookupDiagnosis(text, inputKey, topK, icdSnapshot, tumorSnapshot, icdDictionary, degraded, codeSystem, titleChannels);
+            : LookupDiagnosis(text, inputKey, topK, icdSnapshot, tumorSnapshot, icdDictionary, degraded, codeSystem, titleChannels,
+                termSynonyms);
     }
 
     // ===== 诊断侧（icd_index + tumor_index + ICD-10 字典）=====
@@ -78,7 +80,8 @@ public static class NameCodingLookupEngine
         IcdDictionarySnapshot? dictionary,
         List<string> degraded,
         string codeSystem,
-        NameLookupTitleChannels channels)
+        NameLookupTitleChannels channels,
+        IcdTermSynonymSnapshot? termSynonyms = null)
     {
         if (snapshot is null)
         {
@@ -115,6 +118,23 @@ public static class NameCodingLookupEngine
                 if (rewrittenKey.Length > 0)
                 {
                     renameVariantKeys.Add(rewrittenKey);
+                }
+            }
+        }
+
+        // 术语同义词等价改写（证实≡确定的 一族）：主导词常以变体拼写命中，而下钻与
+        // 字典展开门控面对的子行/标题写的是规范形——命中键缺规范形字面时（输入
+        // 显微镜检证实 vs 子行 确定的），修饰词分支整支进不去。变体键交给
+        // DrillIcdLead 作补钻输入（chip 召回仍以原文为准，不新增主导词 chip）。
+        var synonymVariantKeys = new List<string>();
+        if (termSynonyms is not null)
+        {
+            foreach (var variantText in termSynonyms.ExpandVariants(text, TermSynonymTypes.Diagnosis))
+            {
+                var synonymKey = TextMatch.NormalizeKey(variantText);
+                if (synonymKey.Length > 0 && synonymKey != inputKey && !synonymVariantKeys.Contains(synonymKey))
+                {
+                    synonymVariantKeys.Add(synonymKey);
                 }
             }
         }
@@ -187,7 +207,8 @@ public static class NameCodingLookupEngine
             // pruned（被包含且无豁免）不下钻：DrillIcdLead 的副作用是往 candidates 累积推荐。
             pathBuffer[hit.SeqNo] = !prunedLeads.Contains(hit.SeqNo) && index < drillBudget && dictionary is not null
                 ? DrillIcdLead(hit, text, variantKey, snapshot!, tumor, dictionary, candidates, channels,
-                    renameAnchored: renameVariantKeys.Contains(variantKey))
+                    renameAnchored: renameVariantKeys.Contains(variantKey),
+                    extraVariantKeys: synonymVariantKeys)
                 : [];
         }
 
@@ -240,10 +261,13 @@ public static class NameCodingLookupEngine
         IcdDictionarySnapshot dictionary,
         List<RecommendationAccumulator> candidates,
         NameLookupTitleChannels channels,
-        bool renameAnchored = false)
+        bool renameAnchored = false,
+        IReadOnlyList<string>? extraVariantKeys = null)
     {
         var paths = new List<NameLookupModifierPath>();
         DrillResult? redirectOwnFallback = null;
+        // 排除句式冲突截断发生过 → 同义词变体补钻才有意义（详见函数尾部补钻块）。
+        var sawConflictTruncation = false;
         var drill = IcdIndexMatcher.Drill(
             snapshot,
             new LeadWordHit(hit.Node, hit.Alias, 1m, hit.CoveredChars),
@@ -308,6 +332,7 @@ public static class NameCodingLookupEngine
                 var truncatedCode = truncated.LastOrDefault(node => node.Code is { Length: > 0 });
                 if (truncatedCode is not null)
                 {
+                    sawConflictTruncation = true;
                     var truncatedResult = new DrillResult(
                         truncated[^1],
                         truncatedCode,
@@ -515,6 +540,47 @@ public static class NameCodingLookupEngine
             && !paths.SelectMany(path => path.Codes).Any(code => !code.IsIndexFallback))
         {
             paths.Add(BuildIcdPath(hit, text, ownFallback, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: false));
+        }
+
+        // 同义词变体补钻（编码录入专用，流水线 resolver 按变体全文各自 Resolve 已同口径）：
+        // 主链路被"排除句式与输入矛盾"截断（不伴有提及…证实 vs 输入 显微镜检证实 → 停在肺层
+        // A16.2）或整条无产出时，用等价改写键（证实→确定的）再钻一次——排除冲突消失、
+        // 规范形分支（肺→确定的→被显微镜下痰检查 A15.0）可达，更深的链路并入 paths。
+        // 门控按变体键原文复核（重叠门/修饰词核心词/子行字面包含），只并入走到更深的链路，
+        // 按终点码去重——主链路完好（未被截断且有产出）时不补钻。
+        if (extraVariantKeys is { Count: > 0 } && (sawConflictTruncation || paths.Count == 0))
+        {
+            var knownTerminals = paths.Select(path => path.IndexCode).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var extraKey in extraVariantKeys)
+            {
+                if (string.Equals(extraKey, variantKey, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var retryDrill = IcdIndexMatcher.Drill(
+                    snapshot,
+                    new LeadWordHit(hit.Node, hit.Alias, 1m, hit.CoveredChars),
+                    extraKey);
+                if (retryDrill is null
+                    || retryDrill.Path.Count <= 1
+                    || retryDrill.CodeNode.Code is not { Length: > 0 } retryCode
+                    || !knownTerminals.Add(retryCode))
+                {
+                    continue;
+                }
+
+                if (PathOverlapRatio(retryDrill.Path, extraKey) < MinPathOverlap
+                    || !retryDrill.Path.Skip(1).Where(node => !IcdIndexMatcher.IsConnectorNode(node))
+                        .All(node => ModifierNodeAllowed(node, extraKey, snapshot, retryDrill.Path))
+                    || !retryDrill.Path.Skip(1).All(node => ChildNotCoveredByPathLiteral(node, retryDrill.Path, extraKey)))
+                {
+                    continue;
+                }
+
+                paths.Add(BuildIcdPath(hit, text, retryDrill, dictionary, tumor, candidates, channels, extraKey,
+                    seeAlsoHint: false));
+            }
         }
 
         return paths;

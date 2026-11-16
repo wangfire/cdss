@@ -42937,6 +42937,13 @@
       "codeSystemCode": "ICD-10",
       "code": "N48.1",
       "entityType": "DIAGNOSIS"
+    },
+    {
+      "term": "证实",
+      "normalizedTerm": "确定的",
+      "codeSystemCode": "ICD-10",
+      "code": "A15.0",
+      "entityType": "DIAGNOSIS"
     }
   ],
   "rules": [

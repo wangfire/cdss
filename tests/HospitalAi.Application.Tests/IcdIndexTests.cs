@@ -3107,4 +3107,55 @@ public sealed class IcdIndexTests
         Assert.False(top1.IsIndexFallback, $"应为正常展开候选而非回退：{top1.Note}");
         Assert.Equal("脑梗死", top1.Title);
     }
+
+    /// <summary>肺结核夹具（真实索引行 18793/18843/18847/18848/18849）：结核 → 肺 → 确定的/不伴有…证实 两分支。</summary>
+    private static IcdIndexSnapshot TuberculosisSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(18793, "结核(病)，结核性(干酪样)(变性)(坏疽)(坏死)", "A16.9"),
+        ChildRow(18843, 18793, "肺(空洞性)(纤维变性)(浸润性)(结节性)", "A16.2", 1),
+        ChildRow(18847, 18843, "确定的", null, 2),
+        ChildRow(18848, 18843, "不伴有提及细菌学或组织学证实", "A16.2", 2),
+        ChildRow(18849, 18847, "被显微镜下痰检查，伴有或不伴有痰培养", "A15.0", 3),
+    ]);
+
+    private static IcdDictionarySnapshot TuberculosisDictionary() => new([
+        Dict("A15.000", "肺结核,经显微镜下痰检查证实,伴有或不伴有痰培养"),
+        Dict("A16.200", "肺结核,未做细菌学或组织学证实"),
+    ]);
+
+    [Fact]
+    public void 肺结核_同义词改写解锁确定的分支_A15可达()
+    {
+        // 真实索引行：结核(病) → 肺(空洞性)… 下有 确定的 → 被显微镜下痰检查 A15.0 与
+        // 不伴有提及细菌学或组织学证实 A16.2 两个分支。输入 肺结核（显微镜检证实） 的
+        // 证实 会命中 A16.2 分支并与 确定的 分支构成排除句式冲突（截断到肺层）——
+        // 登记同义词 证实≡确定的 后，等价改写键（确定的）补钻走通 A15.0 全链，
+        // Top1 由未证实泛码升级为显微镜证实细码（用户 2026-11-16 编码录入报告）。
+        var synonyms = IcdTermSynonymSnapshot.Build([
+            new IcdTermSynonymRow("DIAGNOSIS", "确定的", "证实"),
+        ]);
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "肺结核（显微镜检证实）", topK: 8,
+            icdSnapshot: TuberculosisSnapshot(), tumorSnapshot: null, icdDictionary: TuberculosisDictionary(),
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true),
+            termSynonyms: synonyms);
+
+        Assert.Equal("A15.000", response.Recommendations[0].Code);
+        var a15 = response.Recommendations[0];
+        Assert.Contains(a15.Path, segment => segment.Contains("确定的"));
+    }
+
+    [Fact]
+    public void 肺结核_无同义词时维持截断链路不回归()
+    {
+        // 反例哨兵：未登记同义词时维持原口径——排除句式冲突截断到肺层 A16.2，
+        // 不得凭空进入 确定的 分支（补钻只在变体键存在时发生）。
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "肺结核（显微镜检证实）", topK: 8,
+            icdSnapshot: TuberculosisSnapshot(), tumorSnapshot: null, icdDictionary: TuberculosisDictionary(),
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true));
+
+        Assert.DoesNotContain(response.Recommendations, item => item.Code == "A15.000");
+    }
 }

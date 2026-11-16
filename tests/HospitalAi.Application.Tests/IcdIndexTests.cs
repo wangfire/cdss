@@ -3208,12 +3208,13 @@ public sealed class IcdIndexTests
     }
 
     [Fact]
-    public void 肺结核瘤痰镜检阳性_结核球chip并列展示浅层与深层链路()
+    public void 肺结核瘤痰镜检阳性_结核球chip浅层链让位深层链()
     {
-        // 用户 2026-11-16 追问（截图）：结核球 chip 只显示 另见续查的浅层链路
-        // （结核(病)→肺(空洞性) A16.2），看不到同义词组合改写走出的深层链
-        // （…→确定的→被显微镜下痰检查 A15.0）。续查块现用原文与变体键各钻一次：
-        // 浅层（另见后查到的位置）与深层（变体词面走到的证实分支）并列交付。
+        // 用户 2026-11-16 两次追问的最终口径：结核球 chip 的 另见续查 用原文与变体键
+        // 各钻一次后，原文浅链（结核(病)→肺(空洞性) A16.2，语义=未证实，与输入
+        // 痰镜检(+) 矛盾）是变体深链（…→确定的→被显微镜下痰检查 A15.0）的严格前缀
+        // ——551e973 让位原则延伸到续查链：浅层草稿整体撤下（链路+候选），
+        // 深链独占展示。不同分支的链路（非前缀关系）仍并列。
         var response = NameCodingLookupEngine.Lookup(
             NameCodingLookupEngine.DiagnosisKind, "肺结核瘤,痰镜检(+)", topK: 8,
             icdSnapshot: TuberculomaPointerSnapshot(), tumorSnapshot: null, icdDictionary: TuberculomaDictionary(),
@@ -3223,14 +3224,17 @@ public sealed class IcdIndexTests
 
         var tbBallChip = response.LeadTerms.FirstOrDefault(term => term.SeqNo == 19280);
         Assert.NotNull(tbBallChip);
-        Assert.Contains(tbBallChip.ModifierPaths,
-            path => path.IndexCode == "A16.2" && path.Path.Any(segment => segment.Contains("肺")));
-        Assert.Contains(tbBallChip.ModifierPaths,
-            path => path.IndexCode == "A15.0"
-                && path.Path.Any(segment => segment.Contains("确定的"))
-                && path.Path.Any(segment => segment.Contains("显微镜下痰检查")));
-        // 深层链路的候选码进推荐且 Top1 是证实细码。
+        // 深链独占：浅层 A16.2 链路及其候选（A16.201/200 等）全部让位。
+        Assert.DoesNotContain(tbBallChip.ModifierPaths,
+            path => path.IndexCode == "A16.2");
+        var deepPath = Assert.Single(tbBallChip.ModifierPaths);
+        Assert.Equal("A15.0", deepPath.IndexCode);
+        Assert.Contains(deepPath.Path, segment => segment.Contains("确定的"));
+        Assert.Contains(deepPath.Path, segment => segment.Contains("显微镜下痰检查"));
+        // 深层链路的候选码进推荐且 Top1 是证实细码；A16.2 候选一并撤下。
         Assert.Equal("A15.000X003", response.Recommendations[0].Code);
+        Assert.DoesNotContain(response.Recommendations,
+            item => item.Code.StartsWith("A16.2", StringComparison.Ordinal));
     }
 
     /// <summary>

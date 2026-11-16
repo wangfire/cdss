@@ -212,6 +212,40 @@ public static class NameCodingLookupEngine
                 : [];
         }
 
+        // 跨 chip 浅层链让位（551e973 原则的 chip 间延伸）：某 chip 的链路是另一 chip
+        // 更深链路的严格路径前缀（结核→肺 ⊂ 结核→肺→确定的→被显微镜下痰检查）时，
+        // 浅层链路（未证实语义，与输入 痰镜检(+) 矛盾）从其 chip 移除——
+        // 深层链路已完整解释同一查询，浅层只是同路径的中途草稿。
+        // 仅对链路显示让位；来自其他证据（如 18793 树的自有完整下钻）的推荐
+        // 不在此处裁撤，交由既有排序与门控口径处理。
+        foreach (var leadTerm in leadTerms)
+        {
+            if (leadTerm.ModifierPaths.Count <= 1)
+            {
+                continue;
+            }
+
+            var keptPaths = new List<NameLookupModifierPath>();
+            foreach (var path in leadTerm.ModifierPaths)
+            {
+                var superseded = leadTerm.ModifierPaths.Any(other =>
+                    !ReferenceEquals(other, path)
+                    && other.Path.Count > path.Path.Count
+                    && path.Path.Select((segment, index) => segment == other.Path[index]).All(equal => equal));
+                if (!superseded)
+                {
+                    keptPaths.Add(path);
+                }
+            }
+
+            if (keptPaths.Count != leadTerm.ModifierPaths.Count)
+            {
+                pathBuffer[leadTerm.SeqNo] = keptPaths;
+                leadTerms.Remove(leadTerm);
+                leadTerms.Add(leadTerm with { ModifierPaths = keptPaths });
+            }
+        }
+
         // 上屏资格（两阶段）：hidden 未剔；转示须有链路——无产出的转示
         // （阑尾切除术 的 切除→消融(切除)）属纯噪声不上屏，也不能当容器（989c7e5：
         // 不能拿不上屏的命中去吃掉真主导词 chip）。能进上屏集的转示（肠炎→小肠炎
@@ -248,6 +282,27 @@ public static class NameCodingLookupEngine
             AppendLeadTerm(leadTerms, hit.SeqNo, hit.Term, hit.HitAlias,
                 hit.CoveredChars, hit.Position, hit.TailHit, paths, hit.RedirectKey);
         }
+
+        // 跨 chip 浅层候选让位（551e973 原则的推荐池延伸）：某候选的链路路径是
+        // 另一候选链路路径的严格前缀（结核→肺 ⊂ 结核→肺→确定的→被显微镜下痰检查）时，
+        // 浅层候选（未证实语义）被同路径的深链候选覆盖——撤下。
+        // 口径收窄：只让位"码不同但路径互为前缀"的同树候选（A16.200/A16.201 vs
+        // A15.000/A15.001），不同树的并列候选（伤寒 vs 胆囊炎）路径无前缀关系不受影响。
+        var deepPaths = candidates
+            .Select(item => item.Path)
+            .Where(path => path.Count >= 3)
+            .ToList();
+        candidates.RemoveAll(candidate =>
+        {
+            if (candidate.Path.Count < 2)
+            {
+                return false;
+            }
+
+            return deepPaths.Any(deepPath =>
+                deepPath.Count > candidate.Path.Count
+                && candidate.Path.Select((segment, index) => segment == deepPath[index]).All(equal => equal));
+        });
 
         return Assemble(kind: DiagnosisKind, text, inputKey, codeSystem, channels, directs, leadTerms, candidates, topK, degraded);
     }
@@ -559,8 +614,9 @@ public static class NameCodingLookupEngine
         // 现译名锚定（结核瘤→结核球）在此前一步已把 chip 召回，这里补上 另见 的续查）。
         // 仅限本行无码：本行带码的另见走上方 LeadSeeAlsoHint 提示通道（Top1 不动）。
         // 续查输入用原文与同义词变体各钻一次：组合改写变体（显微镜下痰检查+确定的）
-        // 能在目标树走到更深的证实分支（A15.0），与原文的浅层链路并列展示——
-        // 浅层是"另见前查到的位置"，深层是"变体词面走到的答案"，编码员两层都要看。
+        // 能在目标树走到更深的证实分支（A15.0）。深链覆盖浅链：变体链路是原文链路的
+        // 同路径延伸时，浅层草稿（停在祖先层，码=未证实语义，与输入矛盾）整体让位
+        // （551e973 原则延伸到续查链）；分属不同分支的链路照常并列。
         if (paths.Count == 0
             && hit.Node.JumpKind == IndexJumpKind.SeeAlso
             && hit.Node.Code is null
@@ -586,6 +642,7 @@ public static class NameCodingLookupEngine
                     }
                 }
 
+                var continuationDrafts = new List<(NameLookupModifierPath Path, List<RecommendationAccumulator> FreshCandidates)>();
                 var deliveredTerminals = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var continuationKey in continuationKeys)
                 {
@@ -606,8 +663,26 @@ public static class NameCodingLookupEngine
                         continue;
                     }
 
-                    paths.Add(BuildIcdPath(hit, text, leadSeeAlsoDrill, dictionary, tumor, candidates, channels, continuationKey,
-                        seeAlsoHint: false));
+                    var beforeDraft = candidates.ToHashSet(ReferenceEqualityComparer.Instance);
+                    var draftPath = BuildIcdPath(hit, text, leadSeeAlsoDrill, dictionary, tumor, candidates, channels, continuationKey,
+                        seeAlsoHint: false);
+                    continuationDrafts.Add((draftPath, candidates.Where(item => !beforeDraft.Contains(item)).ToList()));
+                }
+
+                // 深链覆盖浅链裁决：链路路径是另一条链路的严格前缀 = 停在祖先层的浅链，
+                // 其候选（未证实语义）随链路一并撤下；不同分支的链路照常并列。
+                foreach (var draft in continuationDrafts)
+                {
+                    var superseded = continuationDrafts.Any(other =>
+                        !ReferenceEquals(other.Path, draft.Path)
+                        && IsPathPrefix(draft.Path.Path, other.Path.Path));
+                    if (superseded)
+                    {
+                        candidates.RemoveAll(draft.FreshCandidates.Contains);
+                        continue;
+                    }
+
+                    paths.Add(draft.Path);
                 }
             }
         }
@@ -670,6 +745,15 @@ public static class NameCodingLookupEngine
 
         return paths;
     }
+
+    /// <summary>
+    /// 链路路径 A 是否为链路路径 B 的严格前缀（逐节点引用相等）：
+    /// 成立即 A 停在 B 的祖先层——深链覆盖浅链裁决的判据
+    /// （551e973 截断让位原则在续查链上的延伸）。
+    /// </summary>
+    private static bool IsPathPrefix(IReadOnlyList<string> prefix, IReadOnlyList<string> longer)
+        => prefix.Count < longer.Count
+            && prefix.Select((segment, index) => segment == longer[index]).All(equal => equal);
 
     private static NameLookupModifierPath BuildIcdPath(
         NameLeadTermSplitter.IcdLeadTermHit hit,

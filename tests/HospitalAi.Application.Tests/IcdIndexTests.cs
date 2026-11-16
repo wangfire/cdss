@@ -3239,8 +3239,7 @@ public sealed class IcdIndexTests
 
     [Fact]
     public void 肺干酪性结核痰镜检阳性_浅层链让位为共性规则()
-    {
-        // 用户 2026-11-16 共性追问：肺干酪性结核,痰镜检(+) 与 肺结核瘤,痰镜检(+)
+    {        // 用户 2026-11-16 共性追问：肺干酪性结核,痰镜检(+) 与 肺结核瘤,痰镜检(+)
         // 是同一问题——只要全局存在更深的证实分支链（结核→肺→确定的→被显微镜下
         // 痰检查 A15.0），任何 chip 的浅层链（结核→肺 A16.2）都按路径前缀让位，
         // 不再逐条修。统一裁决在 leadTerms 组装后做（一条规则覆盖同 chip 内/
@@ -3326,6 +3325,63 @@ public sealed class IcdIndexTests
             new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true),
             termSynonyms: SmearSynonyms());
 
+        Assert.DoesNotContain(response.Recommendations, item => item.Code.StartsWith("A15.", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// R2 极性冲突夹具（真实索引行 18793/18843/18848/18852/18853）：
+    /// 肺 下四个极性分支——不伴有…证实(A16.2 未证实)、未做检查(A16.1)、检查为阴性(A16.0)、
+    /// 确定的（阳性，→被显微镜下痰检查 A15.0）。
+    /// </summary>
+    private static IcdIndexSnapshot PolarityConflictSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(18793, "结核(病)，结核性(干酪样)(变性)(坏疽)(坏死)", "A16.9"),
+        ChildRow(18843, 18793, "肺(空洞性)(纤维变性)(浸润性)(结节性)", "A16.2", 1),
+        ChildRow(18848, 18843, "不伴有提及细菌学或组织学证实", "A16.2", 2),
+        ChildRow(18852, 18843, "未做细菌学和组织学检查的", "A16.1", 2),
+        ChildRow(18853, 18843, "细菌学和组织学检查为阴性", "A16.0", 2),
+        ChildRow(18847, 18843, "确定的", null, 2),
+        ChildRow(18849, 18847, "被显微镜下痰检查，伴有或不伴有痰培养", "A15.0", 3),
+    ]);
+
+    private static IcdDictionarySnapshot PolarityConflictDictionary() => new([
+        Dict("A15.000", "肺结核,经显微镜下痰检查证实,伴有或不伴有痰培养"),
+        Dict("A16.200", "肺结核,未做细菌学或组织学证实"),
+        Dict("A16.100", "肺结核,未做细菌学和组织学检查的"),
+        Dict("A16.000", "肺结核,细菌学和组织学检查为阴性"),
+    ]);
+
+    [Fact]
+    public void 阳性输入_阴性分支候选不得出现_语义反转防护()
+    {
+        // P0 R2：输入含阳性证据词（痰镜检(+)）时，终点极性为 阴性/未做检查 的候选
+        // （A16.100 未做检查 / A16.000 阴性）必须剔除——用户 2026-11-16 案例
+        // "结核性肺纤维变性,病理(+)" 曾产出 A16.023 病理(-)，属临床级语义反转。
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "肺结核瘤,痰镜检(+)", topK: 8,
+            icdSnapshot: PolarityConflictSnapshot(), tumorSnapshot: null, icdDictionary: PolarityConflictDictionary(),
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true));
+
+        Assert.DoesNotContain(response.Recommendations, item => item.Code == "A16.000");
+        Assert.DoesNotContain(response.Recommendations, item => item.Code == "A16.100");
+        // 链路展示同样不含阴性分支。
+        Assert.All(
+            response.LeadTerms.SelectMany(term => term.ModifierPaths),
+            path => Assert.NotEqual("A16.0", path.IndexCode));
+    }
+
+    [Fact]
+    public void 阴性输入_阳性分支仍作并列候选_不误删()
+    {
+        // 反例哨兵：R2 只在"输入为阳性"时剔除阴性分支；输入为阴性时
+        // 阳性分支照常保留（可能是"待排/复查"语境），不得反向误删。
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "肺结核瘤,痰镜检(-)", topK: 8,
+            icdSnapshot: PolarityConflictSnapshot(), tumorSnapshot: null, icdDictionary: PolarityConflictDictionary(),
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true));
+
+        // 阴性输入不得凭空出现阳性码（A15）——这由组合改写隔离保证。
         Assert.DoesNotContain(response.Recommendations, item => item.Code.StartsWith("A15.", StringComparison.Ordinal));
     }
 }

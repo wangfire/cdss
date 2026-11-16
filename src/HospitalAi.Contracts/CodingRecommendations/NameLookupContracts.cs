@@ -68,7 +68,9 @@ public sealed record NameLookupModifierPath(
     [property: JsonPropertyName("fromAncestorFallback")] bool FromAncestorFallback,
     [property: JsonPropertyName("jumps")] IReadOnlyList<string> Jumps,
     [property: JsonPropertyName("seeAlsoHint")] bool SeeAlsoHint,
-    [property: JsonPropertyName("codes")] IReadOnlyList<NameLookupCodeItem> Codes);
+    [property: JsonPropertyName("codes")] IReadOnlyList<NameLookupCodeItem> Codes,
+    /// <summary>链路终点的证据极性（Positive/Negative/Unspecified），由终态索引节点推导。</summary>
+    [property: JsonPropertyName("polarity")] string? Polarity = null);
 
 /// <summary>链路展开出的候选码（来自字典展开或显式索引回退）。</summary>
 public sealed record NameLookupCodeItem(

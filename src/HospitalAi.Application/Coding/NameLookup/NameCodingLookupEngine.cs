@@ -208,7 +208,8 @@ public static class NameCodingLookupEngine
             pathBuffer[hit.SeqNo] = !prunedLeads.Contains(hit.SeqNo) && index < drillBudget && dictionary is not null
                 ? DrillIcdLead(hit, text, variantKey, snapshot!, tumor, dictionary, candidates, channels,
                     renameAnchored: renameVariantKeys.Contains(variantKey),
-                    extraVariantKeys: synonymVariantKeys)
+                    extraVariantKeys: synonymVariantKeys,
+                    synonyms: termSynonyms)
                 : [];
         }
 
@@ -278,6 +279,32 @@ public static class NameCodingLookupEngine
             }
         }
 
+        // R2 极性冲突剔除（P0）：输入含阳性证据词（病理(+)、痰镜检(+)、培阳、涂阳）时，
+        // 终点极性为 阴性/未做检查 的链路整体移除——语义反转防护
+        // （2026-11-16 用户案例：结核性肺纤维变性,病理(+) 曾产出 A16.023 病理(-)）。
+        // 反向不做剔除：输入含阴性证据词时阳性分支仍作并列候选（可能是"待排"语境）。
+        // 只删不加：最坏结果是候选变少，不会引入新错码。
+        var inputPolarity = DeriveInputPolarity(text);
+        if (inputPolarity == "Positive")
+        {
+            foreach (var leadTerm in leadTerms.ToList())
+            {
+                var kept = leadTerm.ModifierPaths
+                    .Where(path => path.Polarity is not ("Negative" or "NotPerformed"))
+                    .ToList();
+                if (kept.Count != leadTerm.ModifierPaths.Count)
+                {
+                    pathBuffer[leadTerm.SeqNo] = kept;
+                    leadTerms.Remove(leadTerm);
+                    leadTerms.Add(leadTerm with { ModifierPaths = kept });
+                }
+            }
+
+            // 候选池同步撤下极性冲突的候选（否则推荐列表仍会出现 A16.023 病理(-)）。
+            candidates.RemoveAll(candidate =>
+                candidate.Polarity is "Negative" or "NotPerformed");
+        }
+
         // 跨 chip 浅层候选让位（551e973 原则的推荐池延伸）：某候选的链路路径是
         // 另一候选链路路径的严格前缀（结核→肺 ⊂ 结核→肺→确定的→被显微镜下痰检查）时，
         // 浅层候选（未证实语义）被同路径的深链候选覆盖——撤下。
@@ -312,7 +339,8 @@ public static class NameCodingLookupEngine
         List<RecommendationAccumulator> candidates,
         NameLookupTitleChannels channels,
         bool renameAnchored = false,
-        IReadOnlyList<string>? extraVariantKeys = null)
+        IReadOnlyList<string>? extraVariantKeys = null,
+        IcdTermSynonymSnapshot? synonyms = null)
     {
         var paths = new List<NameLookupModifierPath>();
         DrillResult? redirectOwnFallback = null;
@@ -344,7 +372,7 @@ public static class NameCodingLookupEngine
                 .All(node => ModifierNodeAllowed(node, variantKey, snapshot, drill.Path))
             && drill.Path.Skip(1).All(node => ChildNotCoveredByPathLiteral(node, drill.Path, variantKey)))
         {
-            paths.Add(BuildIcdPath(hit, text, drill, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: false));
+            paths.Add(BuildIcdPath(hit, text, drill, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: false, synonyms: synonyms));
 
             // 另见-1 提示链路：本地带码时 Top1 不动，目标树的更细码挂为提示（口径同流水线）。
             // 提示链路同样过修饰词核心词核对（防另见目标树里的枚举借道）。
@@ -358,7 +386,7 @@ public static class NameCodingLookupEngine
                         continue;
                     }
 
-                    paths.Add(BuildIcdPath(hit, text, hint, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: true));
+                    paths.Add(BuildIcdPath(hit, text, hint, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: true, synonyms: synonyms));
                 }
             }
         }
@@ -396,7 +424,7 @@ public static class NameCodingLookupEngine
                         Jumps: ["截断: 排除句式与输入矛盾"]);
                     // 记录截断链路及其新增候选（引用级）：同义词补钻走出更深正链时整体让位。
                     var beforeTruncation = candidates.ToHashSet(ReferenceEqualityComparer.Instance);
-                    conflictTruncatedPath = BuildIcdPath(hit, text, truncatedResult, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: false);
+                    conflictTruncatedPath = BuildIcdPath(hit, text, truncatedResult, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: false, synonyms: synonyms);
                     paths.Add(conflictTruncatedPath);
                     truncatedCandidates = candidates.Where(item => !beforeTruncation.Contains(item)).ToList();
                 }
@@ -503,7 +531,7 @@ public static class NameCodingLookupEngine
                         var ownComposed = new DrillResult(
                             child, child, ownPath, hit.Alias.Key + childAlias.Key,
                             1m, CodeFromAncestorFallback: false, Jumps: []);
-                        var newPath = BuildIcdPath(hit, text, ownComposed, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: false);
+                        var newPath = BuildIcdPath(hit, text, ownComposed, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: false, synonyms: synonyms);
                         // 避免与主链路重复（主链路已有相同 pathKey+indexCode 时跳过）
                         if (!paths.Any(p => p.PathKey == newPath.PathKey && p.IndexCode == newPath.IndexCode))
                         {
@@ -525,7 +553,7 @@ public static class NameCodingLookupEngine
                     childDrill.CoverRatio,
                     childDrill.CodeFromAncestorFallback,
                     childDrill.Jumps);
-                var childPath = BuildIcdPath(hit, text, composed, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: false);
+                var childPath = BuildIcdPath(hit, text, composed, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: false, synonyms: synonyms);
                 // 避免与主链路重复（主链路已有相同 pathKey+indexCode 时跳过）
                 if (!paths.Any(p => p.PathKey == childPath.PathKey && p.IndexCode == childPath.IndexCode))
                 {
@@ -584,7 +612,7 @@ public static class NameCodingLookupEngine
                         grandDrill.CoverRatio,
                         grandDrill.CodeFromAncestorFallback,
                         grandDrill.Jumps);
-                    paths.Add(BuildIcdPath(hit, text, composed, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: false));
+                    paths.Add(BuildIcdPath(hit, text, composed, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: false, synonyms: synonyms));
                 }
             }
         }
@@ -596,7 +624,7 @@ public static class NameCodingLookupEngine
         if (redirectOwnFallback is { } ownFallback
             && !paths.SelectMany(path => path.Codes).Any(code => !code.IsIndexFallback))
         {
-            paths.Add(BuildIcdPath(hit, text, ownFallback, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: false));
+            paths.Add(BuildIcdPath(hit, text, ownFallback, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: false, synonyms: synonyms));
         }
 
         // 同义词变体补钻（编码录入专用，流水线 resolver 按变体全文各自 Resolve 已同口径）：
@@ -660,7 +688,7 @@ public static class NameCodingLookupEngine
 
                     var beforeDraft = candidates.ToHashSet(ReferenceEqualityComparer.Instance);
                     var draftPath = BuildIcdPath(hit, text, leadSeeAlsoDrill, dictionary, tumor, candidates, channels, continuationKey,
-                        seeAlsoHint: false);
+                        seeAlsoHint: false, synonyms: synonyms);
                     continuationDrafts.Add((draftPath, candidates.Where(item => !beforeDraft.Contains(item)).ToList()));
                 }
 
@@ -720,7 +748,7 @@ public static class NameCodingLookupEngine
                 }
 
                 paths.Add(BuildIcdPath(hit, text, retryDrill, dictionary, tumor, candidates, channels, extraKey,
-                    seeAlsoHint: false));
+                    seeAlsoHint: false, synonyms: synonyms));
 
                 // 更深的正链已出 → 截断链路让位：链路与候选一并撤下（A16.2 未证实码
                 // 与输入 显微镜检证实 语义矛盾，正链出现后不再是可用答案）。
@@ -740,6 +768,45 @@ public static class NameCodingLookupEngine
 
         return paths;
     }
+
+    /// <summary>
+    /// 输入的证据极性识别（P0）：从输入原文找证据词——
+    /// 阳性：(+)、阳性、培阳、涂阳、涂片(+) 等"已证实"措辞；
+    /// 阴性：(-)、阴性、未做、未查 等"未证实/阴性"措辞；
+    /// 都没写 → None（不参与极性裁决）。
+    /// 顺序：阴性优先于阳性（"未做检查"含"未"，不应被"检查"类词误判）。
+    /// </summary>
+    private static string DeriveInputPolarity(string inputText)
+    {
+        if (string.IsNullOrWhiteSpace(inputText))
+        {
+            return "None";
+        }
+
+        foreach (var keyword in NegativeInputPolarityKeywords)
+        {
+            if (inputText.Contains(keyword, StringComparison.Ordinal))
+            {
+                return "Negative";
+            }
+        }
+
+        foreach (var keyword in PositiveInputPolarityKeywords)
+        {
+            if (inputText.Contains(keyword, StringComparison.Ordinal))
+            {
+                return "Positive";
+            }
+        }
+
+        return "None";
+    }
+
+    private static readonly string[] NegativeInputPolarityKeywords =
+        ["(-)", "阴性", "未做", "未查", "未做细菌学"];
+
+    private static readonly string[] PositiveInputPolarityKeywords =
+        ["(+)", "阳性", "培阳", "涂阳"];
 
     /// <summary>
     /// 链路路径 A 是否为链路路径 B 的严格前缀（逐节点引用相等）：
@@ -768,7 +835,8 @@ public static class NameCodingLookupEngine
         // 把它压在 A41.900 泛词之后等于用"只做提示"挡住编码员要用的细码（万条实测 26 名）。
         bool demoteHint = false,
         // 提示链路只交付整标题精确码（非精确的并列尾部属噪声，按"少而准"整条不收）。
-        bool hintExactOnly = false)
+        bool hintExactOnly = false,
+        IcdTermSynonymSnapshot? synonyms = null)
     {
         // 展示链路严格按索引树路径（不加步骤、不折叠中间层）：
         // 霍乱 → 由于01群霍乱弧菌 → 埃尔托生物型 与库中真实层级一致。
@@ -783,7 +851,11 @@ public static class NameCodingLookupEngine
         var expanded = IndexCodeExpander.Expand(
             parsed, dictionary, text, drill.PathKey, CodesPerPath,
             NameCodingLookupEngine.DiagnosisCodeSystem, tumor, titleReverseEnabled: channels.IcdTitleReverse,
-            canonicalPathKey: drill.ExpansionPathKey);
+            canonicalPathKey: drill.ExpansionPathKey,
+            // 链路节点词面（供同义词解释门：仅被培养 ≡ 仅经痰培养所证实）+
+            // 同义词快照（字典标题与索引分支词同义不同字的放行依据）。
+            pathSegments: drill.Path.Select(node => node.Term).ToList(),
+            synonyms: synonyms);
         foreach (var item in expanded)
         {
             if (item.IsIndexFallback && !FallbackDeliveryAllowed(drill, inputKey))
@@ -804,12 +876,17 @@ public static class NameCodingLookupEngine
                 Score(item),
                 hit.Term, path, item.IsIndexFallback, item.Note,
                 item.WholeTitleDepth, item.TitleSpecificity, hit.CoveredChars, drill.Path.Count,
-                demoteHint && item.WholeTitleDepth < 1m));
+                demoteHint && item.WholeTitleDepth < 1m,
+                // 候选的证据极性取链路终点节点（P0：供 R2 剔除语义反转候选）。
+                drill.Path.Count > 0 ? drill.Path[^1].Polarity : null));
         }
 
         return new NameLookupModifierPath(
             path, drill.PathKey, indexCode, drill.CodeFromAncestorFallback,
-            drill.Jumps, seeAlsoHint, codes);
+            drill.Jumps, seeAlsoHint, codes,
+            // 链路终点的证据极性（P0）：取链路实际停下的那个节点（末节点），
+            // 而非 CodeNode——祖先回退时 CodeNode 是祖先，语义与终点不同。
+            Polarity: drill.Path.Count > 0 ? drill.Path[^1].Polarity : null);
     }
 
     // ===== 手术侧（cm3_index + ICD-9-CM-3 字典）=====
@@ -1818,5 +1895,7 @@ public static class NameCodingLookupEngine
         decimal TitleSpecificity = 0m,
         int LeadCoveredChars = 0,
         int PathCount = 0,
-        bool IsSeeAlsoHint = false);
+        bool IsSeeAlsoHint = false,
+        /// <summary>链路终点证据极性（P0，Positive/Negative/Unspecified），供 R2 极性冲突剔除。</summary>
+        string? Polarity = null);
 }

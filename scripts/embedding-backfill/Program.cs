@@ -4,6 +4,7 @@
 using System.Data;
 using HospitalAi.Infrastructure.Embeddings;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 var connectionString = args.Length > 0
@@ -11,7 +12,10 @@ var connectionString = args.Length > 0
     : Environment.GetEnvironmentVariable("HOSPITAL_AI_CONNECTION_STRING")
         ?? throw new InvalidOperationException("缺连接串：传参或设 HOSPITAL_AI_CONNECTION_STRING");
 
-var provider = new OnnxEmbeddingProvider(Options.Create(new EmbeddingOptions()));
+// 一次性工具走空日志器（控制台工具无需结构化日志；构造函数签名随主工程 ILogger 化同步更新）。
+var provider = new OnnxEmbeddingProvider(
+    Options.Create(new EmbeddingOptions()),
+    NullLogger<OnnxEmbeddingProvider>.Instance);
 if (!provider.IsAvailable)
 {
     Console.Error.WriteLine("嵌入模型不可用：检查 models/bge-small-zh-v1.5/（model.onnx + vocab.txt）");

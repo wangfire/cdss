@@ -604,6 +604,43 @@ public static class NameCodingLookupEngine
             }
         }
 
+        // 主导词行自身的"另见-1"（"结核球 - 另见 结核"）：本行无码、目标树下走不出
+        // 与输入匹配的修饰词（脊髓/脑/脑(脊)膜 都不在输入里）时，编码员口径是
+        // "另见 即转查"——按目标主导词重钻并把走出的链路作为本 chip 的链路交付
+        // （肺结核瘤,痰镜检(+) 的 结核球 chip 由此接到 结核(病)→肺(空洞性) 链路，
+        // 现译名锚定（结核瘤→结核球）在此前一步已把 chip 召回，这里补上 另见 的续查）。
+        // 仅限本行无码：本行带码的另见走上方 LeadSeeAlsoHint 提示通道（Top1 不动）。
+        if (paths.Count == 0
+            && hit.Node.JumpKind == IndexJumpKind.SeeAlso
+            && hit.Node.Code is null
+            && hit.Node.JumpTarget is { Length: > 0 } leadSeeAlsoTarget
+            && IcdIndexMatcher.ResolveJumpLead(snapshot, leadSeeAlsoTarget) is { } leadSeeAlsoLead
+            && leadSeeAlsoLead.SeqNo != hit.Node.SeqNo)
+        {
+            var leadSeeAlsoSeedKey = IcdIndexMatcher.JumpSeedKey(leadSeeAlsoLead, variantKey);
+            var leadSeeAlsoSeedAlias = leadSeeAlsoLead.Aliases.FirstOrDefault(alias => alias.MatchKey == leadSeeAlsoSeedKey)
+                ?? leadSeeAlsoLead.Aliases.FirstOrDefault();
+            if (leadSeeAlsoSeedAlias is not null)
+            {
+                var leadSeeAlsoDrill = IcdIndexMatcher.Drill(
+                    snapshot,
+                    new LeadWordHit(leadSeeAlsoLead, leadSeeAlsoSeedAlias, 1m, leadSeeAlsoSeedAlias.Key.Length),
+                    variantKey,
+                    jumpTrace: $"{hit.Node.Term} ⇢ {leadSeeAlsoTarget}");
+                if (leadSeeAlsoDrill is not null
+                    && leadSeeAlsoDrill.Path.Count > 1
+                    && leadSeeAlsoDrill.CodeNode.Code is { Length: > 0 }
+                    && PathOverlapRatio(leadSeeAlsoDrill.Path, variantKey) >= MinPathOverlap
+                    && leadSeeAlsoDrill.Path.Skip(1).Where(node => !IcdIndexMatcher.IsConnectorNode(node))
+                        .All(node => ModifierNodeAllowed(node, variantKey, snapshot, leadSeeAlsoDrill.Path))
+                    && leadSeeAlsoDrill.Path.Skip(1).All(node => ChildNotCoveredByPathLiteral(node, leadSeeAlsoDrill.Path, variantKey)))
+                {
+                    paths.Add(BuildIcdPath(hit, text, leadSeeAlsoDrill, dictionary, tumor, candidates, channels, variantKey,
+                        seeAlsoHint: false));
+                }
+            }
+        }
+
         return paths;
     }
 

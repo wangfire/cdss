@@ -3165,4 +3165,40 @@ public sealed class IcdIndexTests
 
         Assert.DoesNotContain(response.Recommendations, item => item.Code == "A15.000");
     }
+
+    /// <summary>结核瘤指针链夹具（真实索引行 19279/19280/19281-19283）：现译名 → 另见 两级指针。</summary>
+    private static IcdIndexSnapshot TuberculomaPointerSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(19279, "结核瘤 - 现译名 结核球"),
+        LeadRow(19280, "结核球 - 另见 结核"),
+        ChildRow(19281, 19280, "脊髓", "A17.8†G07*", 1),
+        ChildRow(19282, 19280, "脑", "A17.8†G07*", 1),
+        ChildRow(19283, 19280, "脑(脊)膜", "A17.1†G07*", 1),
+        LeadRow(18793, "结核(病)，结核性(干酪样)(变性)(坏疽)(坏死)", "A16.9"),
+        ChildRow(18843, 18793, "肺(空洞性)(纤维变性)(浸润性)(结节性)", "A16.2", 1),
+    ]);
+
+    private static IcdDictionarySnapshot TuberculomaDictionary() => new([
+        Dict("A16.201", "肺结核瘤"),
+        Dict("A16.200", "肺结核,未做细菌学或组织学证实"),
+    ]);
+
+    [Fact]
+    public void 肺结核瘤_现译名锚定后另见续查到结核树()
+    {
+        // 真实指针链（用户 2026-11-16 报告）：结核瘤 - 现译名 结核球 → 结核球 - 另见 结核。
+        // 现译名改写把 chip 锚到 结核球（renameAnchored），但 结核球 下的修饰词
+        // （脊髓/脑/脑(脊)膜）都不在输入里 → 主导词行自身走不出链路。编码员口径
+        // "另见 即转查"：按目标主导词 结核 重钻，肺(空洞性) 分支（输入写 肺）可达，
+        // 结核球 chip 交付 结核(病)→肺(空洞性) 链路（此前 paths=0 链路整块缺失）。
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "肺结核瘤,痰镜检(+)", topK: 8,
+            icdSnapshot: TuberculomaPointerSnapshot(), tumorSnapshot: null, icdDictionary: TuberculomaDictionary(),
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true));
+
+        var tbBallChip = response.LeadTerms.FirstOrDefault(term => term.SeqNo == 19280);
+        Assert.NotNull(tbBallChip);
+        Assert.Contains(tbBallChip.ModifierPaths,
+            path => path.IndexCode == "A16.2" && path.Path.Any(segment => segment.Contains("肺")));
+    }
 }

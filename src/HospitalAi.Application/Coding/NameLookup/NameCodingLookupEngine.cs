@@ -552,6 +552,66 @@ public static class NameCodingLookupEngine
         // 同义词变体补钻（编码录入专用，流水线 resolver 按变体全文各自 Resolve 已同口径）：
         // 触发条件（两个之一）：
         // ① 主链路被"排除句式与输入矛盾"截断（不伴有提及…证实 vs 输入 显微镜检证实 → 停在肺层）；
+        // 主导词行自身的"另见-1"（"结核球 - 另见 结核"）：本行无码、目标树下走不出
+        // 与输入匹配的修饰词（脊髓/脑/脑(脊)膜 都不在输入里）时，编码员口径是
+        // "另见 即转查"——按目标主导词重钻并把走出的链路作为本 chip 的链路交付
+        // （肺结核瘤,痰镜检(+) 的 结核球 chip 由此接到 结核(病)→肺(空洞性) 链路，
+        // 现译名锚定（结核瘤→结核球）在此前一步已把 chip 召回，这里补上 另见 的续查）。
+        // 仅限本行无码：本行带码的另见走上方 LeadSeeAlsoHint 提示通道（Top1 不动）。
+        // 续查输入用原文与同义词变体各钻一次：组合改写变体（显微镜下痰检查+确定的）
+        // 能在目标树走到更深的证实分支（A15.0），与原文的浅层链路并列展示——
+        // 浅层是"另见前查到的位置"，深层是"变体词面走到的答案"，编码员两层都要看。
+        if (paths.Count == 0
+            && hit.Node.JumpKind == IndexJumpKind.SeeAlso
+            && hit.Node.Code is null
+            && hit.Node.JumpTarget is { Length: > 0 } leadSeeAlsoTarget
+            && IcdIndexMatcher.ResolveJumpLead(snapshot, leadSeeAlsoTarget) is { } leadSeeAlsoLead
+            && leadSeeAlsoLead.SeqNo != hit.Node.SeqNo)
+        {
+            var leadSeeAlsoSeedKey = IcdIndexMatcher.JumpSeedKey(leadSeeAlsoLead, variantKey);
+            var leadSeeAlsoSeedAlias = leadSeeAlsoLead.Aliases.FirstOrDefault(alias => alias.MatchKey == leadSeeAlsoSeedKey)
+                ?? leadSeeAlsoLead.Aliases.FirstOrDefault();
+            if (leadSeeAlsoSeedAlias is not null)
+            {
+                // 原文键优先（保持既有链路语义），同义词变体键补深（去重按终点码）。
+                var continuationKeys = new List<string> { variantKey };
+                if (extraVariantKeys is { Count: > 0 })
+                {
+                    foreach (var extraKey in extraVariantKeys)
+                    {
+                        if (!continuationKeys.Contains(extraKey, StringComparer.Ordinal))
+                        {
+                            continuationKeys.Add(extraKey);
+                        }
+                    }
+                }
+
+                var deliveredTerminals = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var continuationKey in continuationKeys)
+                {
+                    var leadSeeAlsoDrill = IcdIndexMatcher.Drill(
+                        snapshot,
+                        new LeadWordHit(leadSeeAlsoLead, leadSeeAlsoSeedAlias, 1m, leadSeeAlsoSeedAlias.Key.Length),
+                        continuationKey,
+                        jumpTrace: $"{hit.Node.Term} ⇢ {leadSeeAlsoTarget}");
+                    if (leadSeeAlsoDrill is null
+                        || leadSeeAlsoDrill.Path.Count <= 1
+                        || leadSeeAlsoDrill.CodeNode.Code is not { Length: > 0 } continuationCode
+                        || !deliveredTerminals.Add(continuationCode)
+                        || PathOverlapRatio(leadSeeAlsoDrill.Path, continuationKey) < MinPathOverlap
+                        || !leadSeeAlsoDrill.Path.Skip(1).Where(node => !IcdIndexMatcher.IsConnectorNode(node))
+                            .All(node => ModifierNodeAllowed(node, continuationKey, snapshot, leadSeeAlsoDrill.Path))
+                        || !leadSeeAlsoDrill.Path.Skip(1).All(node => ChildNotCoveredByPathLiteral(node, leadSeeAlsoDrill.Path, continuationKey)))
+                    {
+                        continue;
+                    }
+
+                    paths.Add(BuildIcdPath(hit, text, leadSeeAlsoDrill, dictionary, tumor, candidates, channels, continuationKey,
+                        seeAlsoHint: false));
+                }
+            }
+        }
+
         // ② 主链路有产出但停在浅层——变体可能带规范形词面钻得更深
         //   （肺结核瘤,痰镜检(+) 的 结核球→另见结核 链停在肺层 A16.2，
         //    组合变体 显微镜下痰检查+证实 能续钻 确定的→被显微镜下痰检查 到 A15.0）。
@@ -604,43 +664,6 @@ public static class NameCodingLookupEngine
 
                     conflictTruncatedPath = null;
                     truncatedCandidates = null;
-                }
-            }
-        }
-
-        // 主导词行自身的"另见-1"（"结核球 - 另见 结核"）：本行无码、目标树下走不出
-        // 与输入匹配的修饰词（脊髓/脑/脑(脊)膜 都不在输入里）时，编码员口径是
-        // "另见 即转查"——按目标主导词重钻并把走出的链路作为本 chip 的链路交付
-        // （肺结核瘤,痰镜检(+) 的 结核球 chip 由此接到 结核(病)→肺(空洞性) 链路，
-        // 现译名锚定（结核瘤→结核球）在此前一步已把 chip 召回，这里补上 另见 的续查）。
-        // 仅限本行无码：本行带码的另见走上方 LeadSeeAlsoHint 提示通道（Top1 不动）。
-        if (paths.Count == 0
-            && hit.Node.JumpKind == IndexJumpKind.SeeAlso
-            && hit.Node.Code is null
-            && hit.Node.JumpTarget is { Length: > 0 } leadSeeAlsoTarget
-            && IcdIndexMatcher.ResolveJumpLead(snapshot, leadSeeAlsoTarget) is { } leadSeeAlsoLead
-            && leadSeeAlsoLead.SeqNo != hit.Node.SeqNo)
-        {
-            var leadSeeAlsoSeedKey = IcdIndexMatcher.JumpSeedKey(leadSeeAlsoLead, variantKey);
-            var leadSeeAlsoSeedAlias = leadSeeAlsoLead.Aliases.FirstOrDefault(alias => alias.MatchKey == leadSeeAlsoSeedKey)
-                ?? leadSeeAlsoLead.Aliases.FirstOrDefault();
-            if (leadSeeAlsoSeedAlias is not null)
-            {
-                var leadSeeAlsoDrill = IcdIndexMatcher.Drill(
-                    snapshot,
-                    new LeadWordHit(leadSeeAlsoLead, leadSeeAlsoSeedAlias, 1m, leadSeeAlsoSeedAlias.Key.Length),
-                    variantKey,
-                    jumpTrace: $"{hit.Node.Term} ⇢ {leadSeeAlsoTarget}");
-                if (leadSeeAlsoDrill is not null
-                    && leadSeeAlsoDrill.Path.Count > 1
-                    && leadSeeAlsoDrill.CodeNode.Code is { Length: > 0 }
-                    && PathOverlapRatio(leadSeeAlsoDrill.Path, variantKey) >= MinPathOverlap
-                    && leadSeeAlsoDrill.Path.Skip(1).Where(node => !IcdIndexMatcher.IsConnectorNode(node))
-                        .All(node => ModifierNodeAllowed(node, variantKey, snapshot, leadSeeAlsoDrill.Path))
-                    && leadSeeAlsoDrill.Path.Skip(1).All(node => ChildNotCoveredByPathLiteral(node, leadSeeAlsoDrill.Path, variantKey)))
-                {
-                    paths.Add(BuildIcdPath(hit, text, leadSeeAlsoDrill, dictionary, tumor, candidates, channels, variantKey,
-                        seeAlsoHint: false));
                 }
             }
         }

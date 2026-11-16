@@ -3166,7 +3166,7 @@ public sealed class IcdIndexTests
         Assert.DoesNotContain(response.Recommendations, item => item.Code == "A15.000");
     }
 
-    /// <summary>结核瘤指针链夹具（真实索引行 19279/19280/19281-19283）：现译名 → 另见 两级指针。</summary>
+    /// <summary>结核瘤指针链夹具（真实索引行 19279/19280 + 结核树证实分支 18843/18847/18848/18849）。</summary>
     private static IcdIndexSnapshot TuberculomaPointerSnapshot() => IcdIndexSnapshotBuilder.Build([
         LeadRow(19279, "结核瘤 - 现译名 结核球"),
         LeadRow(19280, "结核球 - 另见 结核"),
@@ -3175,11 +3175,16 @@ public sealed class IcdIndexTests
         ChildRow(19283, 19280, "脑(脊)膜", "A17.1†G07*", 1),
         LeadRow(18793, "结核(病)，结核性(干酪样)(变性)(坏疽)(坏死)", "A16.9"),
         ChildRow(18843, 18793, "肺(空洞性)(纤维变性)(浸润性)(结节性)", "A16.2", 1),
+        ChildRow(18847, 18843, "确定的", null, 2),
+        ChildRow(18848, 18843, "不伴有提及细菌学或组织学证实", "A16.2", 2),
+        ChildRow(18849, 18847, "被显微镜下痰检查，伴有或不伴有痰培养", "A15.0", 3),
     ]);
 
     private static IcdDictionarySnapshot TuberculomaDictionary() => new([
         Dict("A16.201", "肺结核瘤"),
         Dict("A16.200", "肺结核,未做细菌学或组织学证实"),
+        Dict("A15.000X003", "肺结核瘤,痰镜检(+)"),
+        Dict("A15.000", "肺结核,经显微镜下痰检查证实,伴有或不伴有痰培养"),
     ]);
 
     [Fact]
@@ -3200,6 +3205,32 @@ public sealed class IcdIndexTests
         Assert.NotNull(tbBallChip);
         Assert.Contains(tbBallChip.ModifierPaths,
             path => path.IndexCode == "A16.2" && path.Path.Any(segment => segment.Contains("肺")));
+    }
+
+    [Fact]
+    public void 肺结核瘤痰镜检阳性_结核球chip并列展示浅层与深层链路()
+    {
+        // 用户 2026-11-16 追问（截图）：结核球 chip 只显示 另见续查的浅层链路
+        // （结核(病)→肺(空洞性) A16.2），看不到同义词组合改写走出的深层链
+        // （…→确定的→被显微镜下痰检查 A15.0）。续查块现用原文与变体键各钻一次：
+        // 浅层（另见后查到的位置）与深层（变体词面走到的证实分支）并列交付。
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "肺结核瘤,痰镜检(+)", topK: 8,
+            icdSnapshot: TuberculomaPointerSnapshot(), tumorSnapshot: null, icdDictionary: TuberculomaDictionary(),
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true),
+            termSynonyms: SmearSynonyms());
+
+        var tbBallChip = response.LeadTerms.FirstOrDefault(term => term.SeqNo == 19280);
+        Assert.NotNull(tbBallChip);
+        Assert.Contains(tbBallChip.ModifierPaths,
+            path => path.IndexCode == "A16.2" && path.Path.Any(segment => segment.Contains("肺")));
+        Assert.Contains(tbBallChip.ModifierPaths,
+            path => path.IndexCode == "A15.0"
+                && path.Path.Any(segment => segment.Contains("确定的"))
+                && path.Path.Any(segment => segment.Contains("显微镜下痰检查")));
+        // 深层链路的候选码进推荐且 Top1 是证实细码。
+        Assert.Equal("A15.000X003", response.Recommendations[0].Code);
     }
 
     /// <summary>

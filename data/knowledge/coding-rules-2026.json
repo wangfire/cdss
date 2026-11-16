@@ -42944,6 +42944,13 @@
       "codeSystemCode": "ICD-10",
       "code": "A15.0",
       "entityType": "DIAGNOSIS"
+    },
+    {
+      "term": "痰涂片",
+      "normalizedTerm": "显微镜下痰检查",
+      "codeSystemCode": "ICD-10",
+      "code": "A15.0",
+      "entityType": "DIAGNOSIS"
     }
   ],
   "rules": [

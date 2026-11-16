@@ -74,8 +74,9 @@ public sealed class IcdIndexNode
     /// 链路终点的证据极性（P0 极性标签）：从节点名推导——父节点名含"确定的"→其子行为阳性；
     /// 节点名含"阴性"/"未做"/"不伴有…证实"→阴性/未做/未证实；无匹配→Unspecified。
     /// 用于输入含阳性/阴性证据词时，阻止阴性输入落阳性分支（语义反转防护）。
+    /// 可写：快照构建期按父链继承补标（init-only 无法二次赋值）。
     /// </summary>
-    public string Polarity { get; init; } = "Unspecified";
+    public string Polarity { get; set; } = "Unspecified";
 
     /// <summary>
     /// 索引自带的"另一种写法"（"X - 又称 Y"、"X(又称 Y)"）里的 Y 列表。
@@ -249,6 +250,57 @@ public static class IcdIndexSnapshotBuilder
                 && !ReferenceEquals(parent, node))
             {
                 parent.Children.Add(node);
+            }
+        }
+
+        // 极性继承（P0，双向）：
+        // ① 自顶向下——子节点名无极性词时继承父链极性（父在"确定的"下 → 子为阳性分支）；
+        // ② 自底向上——节点自身无极性词、但其下挂了阳性分支（"确定的"）时，
+        //    该节点本身是"未证实的分叉点"，极性记为 Negative——
+        //    肺(空洞性) A16.2 的下级是 确定的(阳性)/不伴有证实(阴性)，A16.2 语义是"未证实"，
+        //    不继承则阳性输入落 A16.2 无法被 R2 剔除（用户案例 2026-11-16）。
+        foreach (var node in nodes.Values.OrderBy(node => node.Level))
+        {
+            if (node.Polarity != "Unspecified")
+            {
+                continue;
+            }
+
+            var parentPolarity = "Unspecified";
+            var current = node;
+            var guard = 0;
+            while (current.ParentSeqNo != 0
+                && nodes.TryGetValue(current.ParentSeqNo, out var parentNode)
+                && !ReferenceEquals(parentNode, current)
+                && guard++ < 8)
+            {
+                if (parentNode.Polarity != "Unspecified")
+                {
+                    parentPolarity = parentNode.Polarity;
+                    break;
+                }
+
+                current = parentNode;
+            }
+
+            if (parentPolarity != "Unspecified")
+            {
+                node.Polarity = parentPolarity;
+            }
+        }
+
+        // ② 分叉点标注：有阳性子分支、自身无极性词的节点 → Negative（未证实分叉点）。
+        foreach (var node in nodes.Values)
+        {
+            if (node.Polarity != "Unspecified" || node.Children.Count == 0)
+            {
+                continue;
+            }
+
+            var hasPositiveChild = node.Children.Any(child => child.Polarity == "Positive");
+            if (hasPositiveChild)
+            {
+                node.Polarity = "Negative";
             }
         }
 
@@ -520,15 +572,23 @@ public static class IcdIndexSnapshotBuilder
 
     /// <summary>
     /// 从节点名推导证据极性（P0 极性标签，数据驱动而非人工维护）：
-    /// 节点名含"阴性/未做/未查/未证实"→ NEGATIVE；
-    /// 节点名含"确定的"/"证实"（且无阴性关键词）→ POSITIVE；
+    /// 节点名含"阴性/未做/未查/未证实/未特指/不伴有…"→ Negative；
+    /// 节点名含"确定的"（其下全为阳性分支）→ Positive；
     /// 其余 → Unspecified（不参与极性裁决）。
+    /// 注意："伴有或不伴有痰培养"（A15.0 节点）含"不伴有"但语义中立，
+    /// 故阳性分支的判定优先——含"确定的/证实/阳性"且不含明确否定词时判 Positive。
     /// </summary>
     private static string DerivePolarity(string term)
     {
-        foreach (var keyword in NegativePolarityKeywords)
+        var isNegative = NegativePolarityKeywords.Any(keyword =>
+            term.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+        if (isNegative)
         {
-            if (term.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            // "伴有或不伴有…"是中性表述（伴随培养与否都不改变"镜检证实"的事实），
+            // 不按否定处理：仅当节点名以否定语义为主（不伴有提及…证实 / 未做…检查）时判阴性。
+            var neutralConjunction = term.Contains("伴有或不伴有", StringComparison.OrdinalIgnoreCase)
+                || term.Contains("伴有或不提及", StringComparison.OrdinalIgnoreCase);
+            if (!neutralConjunction)
             {
                 return "Negative";
             }
@@ -546,10 +606,10 @@ public static class IcdIndexSnapshotBuilder
     }
 
     private static readonly string[] NegativePolarityKeywords =
-        ["阴性", "未做", "未查", "未证实", "未特指"];
+        ["阴性", "未做", "未查", "未证实", "未特指", "不伴有", "不提及"];
 
     private static readonly string[] PositivePolarityKeywords =
-        ["确定的", "证实", "阳性", "培阳", "涂阳"];
+        ["确定的", "阳性", "培阳", "涂阳"];
 
     private static void AddAnotherNames(List<string> target, string value)
     {

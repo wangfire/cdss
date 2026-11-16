@@ -299,7 +299,6 @@ public static class NameCodingLookupEngine
                     leadTerms.Add(leadTerm with { ModifierPaths = kept });
                 }
             }
-
             // 候选池同步撤下极性冲突的候选（否则推荐列表仍会出现 A16.023 病理(-)）。
             candidates.RemoveAll(candidate =>
                 candidate.Polarity is "Negative" or "NotPerformed");

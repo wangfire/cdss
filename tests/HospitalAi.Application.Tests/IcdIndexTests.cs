@@ -3193,18 +3193,22 @@ public sealed class IcdIndexTests
         // 真实指针链（用户 2026-11-16 报告）：结核瘤 - 现译名 结核球 → 结核球 - 另见 结核。
         // 现译名改写把 chip 锚到 结核球（renameAnchored），但 结核球 下的修饰词
         // （脊髓/脑/脑(脊)膜）都不在输入里 → 主导词行自身走不出链路。编码员口径
-        // "另见 即转查"：按目标主导词 结核 重钻，肺(空洞性) 分支（输入写 肺）可达，
-        // 结核球 chip 交付 结核(病)→肺(空洞性) 链路（此前 paths=0 链路整块缺失）。
+        // "另见 即转查"：按目标主导词 结核 重钻，肺(空洞性) 分支（输入写 肺）可达。
+        // 注：P0 R2 极性裁决后，"肺(空洞性)" 作为未证实分叉点被标 Negative，
+        // 阳性输入（痰镜检(+)）下该浅链会被剔除；深层链（→确定的→被显微镜下痰检查
+        // A15.0）靠同义词变体（痰镜检≡确定的被显微镜下痰检查）钻出，Positive 保留。
         var response = NameCodingLookupEngine.Lookup(
             NameCodingLookupEngine.DiagnosisKind, "肺结核瘤,痰镜检(+)", topK: 8,
             icdSnapshot: TuberculomaPointerSnapshot(), tumorSnapshot: null, icdDictionary: TuberculomaDictionary(),
             cm3Snapshot: null, cm3Dictionary: null,
-            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true));
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true),
+            termSynonyms: SmearSynonyms());
 
         var tbBallChip = response.LeadTerms.FirstOrDefault(term => term.SeqNo == 19280);
         Assert.NotNull(tbBallChip);
         Assert.Contains(tbBallChip.ModifierPaths,
-            path => path.IndexCode == "A16.2" && path.Path.Any(segment => segment.Contains("肺")));
+            path => path.IndexCode == "A15.0"
+                && path.Path.Any(segment => segment.Contains("被显微镜下痰检查")));
     }
 
     [Fact]

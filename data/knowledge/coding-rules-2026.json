@@ -42965,6 +42965,69 @@
       "codeSystemCode": "ICD-10",
       "code": "A15.0",
       "entityType": "DIAGNOSIS"
+    },
+    {
+      "term": "涂阴培阳",
+      "normalizedTerm": "确定的仅被培养",
+      "codeSystemCode": "ICD-10",
+      "code": "A15.1",
+      "entityType": "DIAGNOSIS"
+    },
+    {
+      "term": "痰培养(+)",
+      "normalizedTerm": "确定的仅被培养",
+      "codeSystemCode": "ICD-10",
+      "code": "A15.1",
+      "entityType": "DIAGNOSIS"
+    },
+    {
+      "term": "培阳",
+      "normalizedTerm": "确定的仅被培养",
+      "codeSystemCode": "ICD-10",
+      "code": "A15.1",
+      "entityType": "DIAGNOSIS"
+    },
+    {
+      "term": "痰涂片(+)",
+      "normalizedTerm": "确定的被显微镜下痰检查",
+      "codeSystemCode": "ICD-10",
+      "code": "A15.0",
+      "entityType": "DIAGNOSIS"
+    },
+    {
+      "term": "痰镜检(+)",
+      "normalizedTerm": "确定的被显微镜下痰检查",
+      "codeSystemCode": "ICD-10",
+      "code": "A15.0",
+      "entityType": "DIAGNOSIS"
+    },
+    {
+      "term": "涂阳",
+      "normalizedTerm": "确定的被显微镜下痰检查",
+      "codeSystemCode": "ICD-10",
+      "code": "A15.0",
+      "entityType": "DIAGNOSIS"
+    },
+    {
+      "term": "病理(+)",
+      "normalizedTerm": "确定的被组织学",
+      "codeSystemCode": "ICD-10",
+      "code": "A15.2",
+      "entityType": "DIAGNOSIS"
+    },
+    {
+      "term": "病理检查(+)",
+      "normalizedTerm": "确定的被组织学",
+      "codeSystemCode": "ICD-10",
+      "code": "A15.2",
+      "entityType": "DIAGNOSIS"
+    },
+    {
+      "term": "组织学(+)",
+      "normalizedTerm": "确定的被组织学",
+      "codeSystemCode": "ICD-10",
+      "code": "A15.2",
+      "entityType": "DIAGNOSIS"
     }
   ],
   "rules": [

@@ -1228,6 +1228,28 @@ public static class NameCodingLookupEngine
             }
         }
 
+        // P2 R3 极性缺失降级提示：输入含阳性证据词，但推荐里没有任何极性一致的候选
+        // （全被 R2 剔除或选层未走到）——说明"证实分支没找到"，给出可解释提示。
+        // 挂 degradedFlags（前端已有该字段的展示位），不改变推荐内容本身。
+        if (inputPolarity is "Positive" or "Negative"
+            && recommendations.All(item => item.DictionaryDirect)
+            && leadTerms.Count > 0)
+        {
+            var polarityLabel = inputPolarity == "Positive" ? "阳性" : "阴性";
+            degraded.Add($"POLARITY.UNMATCHED.{inputPolarity.ToUpperInvariant()}");
+        }
+        else if (inputPolarity is "Positive" or "Negative")
+        {
+            var polarityLabel = inputPolarity == "Positive" ? "阳性" : "阴性";
+            var matched = recommendations.Any(item =>
+                leadTerms.Where(term => term.Term == item.LeadTerm)
+                    .Any(term => term.ModifierPaths.Any(path => path.Polarity == inputPolarity)));
+            if (!matched && recommendations.Count > 0)
+            {
+                degraded.Add($"POLARITY.UNMATCHED.{inputPolarity.ToUpperInvariant()}");
+            }
+        }
+
         return new NameLookupResponse(kind, text, inputKey, codeSystem, ChannelsInfo(channels), directs, leadTerms, recommendations, degraded,
             EmptyReasonOf(kind, recommendations, leadTerms));
     }

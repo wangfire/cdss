@@ -148,13 +148,14 @@ public static class IndexCodeExpander
         int maxResults,
         string fallbackCodeSystem = "ICD-10",
         TumorIndexSnapshot? tumor = null,
-        bool titleReverseEnabled = true)
+        bool titleReverseEnabled = true,
+        string? canonicalPathKey = null)
     {
         // 覆盖度分母用剥掉不确定性引导语后的输入核："十二指肠溃疡伴出血可能性大" 的 性 会给
         // 慢性十二指肠溃疡伴有出血 白送一分覆盖，把与输入逐字相等的 K26.400X001 挤到 Top-2。
         var inputKey = TextMatch.StripUncertaintyPhrases(inputText);
         var results = ExpandCore(parsed, dictionary, inputText, inputKey, pathKey, fallbackCodeSystem,
-            tumor: tumor, titleReverseEnabled: titleReverseEnabled);
+            tumor: tumor, titleReverseEnabled: titleReverseEnabled, canonicalPathKey: canonicalPathKey);
 
         // 先按编码收敛，再统一排序，避免下游按编码去重时由字典行序决定谁占住 Top-N 名额。
         return Rank(results
@@ -173,7 +174,8 @@ public static class IndexCodeExpander
         string fallbackCodeSystem,
         bool inAlternatives = false,
         TumorIndexSnapshot? tumor = null,
-        bool titleReverseEnabled = true)
+        bool titleReverseEnabled = true,
+        string? canonicalPathKey = null)
     {
         switch (parsed.Kind)
         {
@@ -314,7 +316,8 @@ public static class IndexCodeExpander
                     }
 
                     var items = ExpandByPrefix(prefix, dictionary, inputText, inputKey, pathKey,
-                        parsed.Kind, excludeJoint: false, inAlternatives, note: null);
+                        parsed.Kind, excludeJoint: false, inAlternatives, note: null,
+                        canonicalPathKey: canonicalPathKey);
                     return items.Count > 0 ? items : FallbackItems(parsed, dictionary, inputText, inputKey, pathKey,
                         fallbackCodeSystem, titleReverseEnabled);
                 }
@@ -330,7 +333,8 @@ public static class IndexCodeExpander
         IndexCodeFormatKind format,
         bool excludeJoint,
         bool inAlternatives,
-        string? note)
+        string? note,
+        string? canonicalPathKey = null)
     {
         var rows = dictionary.Prefix(prefixUpper);
         if (excludeJoint)
@@ -338,7 +342,8 @@ public static class IndexCodeExpander
             rows = rows.Where(row => !row.Code.Contains('+', StringComparison.Ordinal)).ToList();
         }
 
-        return RankRows(rows, inputText, inputKey, pathKey, format, inAlternatives, note);
+        return RankRows(rows, inputText, inputKey, pathKey, format, inAlternatives, note,
+            canonicalPathKey: canonicalPathKey);
     }
 
     private static IReadOnlyList<ExpandedItem> ExpandConditional(
@@ -439,7 +444,8 @@ public static class IndexCodeExpander
         string pathKey,
         IndexCodeFormatKind format,
         bool inAlternatives,
-        string? note)
+        string? note,
+        string? canonicalPathKey = null)
     {
         if (rows.Count == 0 || inputKey.Length == 0)
         {
@@ -474,7 +480,22 @@ public static class IndexCodeExpander
             // 命中路径词被标题完整覆盖时放行（修饰词就是标题核心词的场景）。
             var inputPass = inputCover.Ratio >= GateRatio
                 && (inputKey.Length < 3 || maxSegment >= GateMaxSegment || inputCover.Ratio >= 1.0m);
-            if (!inputPass && pathCover.Ratio < 1.0m)
+            // 规范形路径放行（只增不减的加法门）：主导词以别名变体命中（梗塞）时，
+            // 字典标题写规范形（脑梗死），命中路径的单字覆盖差一个字（2/3）会整族误杀；
+            // 规范形路径（梗死脑，Reverse=脑梗死 连续贯通）与命中路径任一贯通即放行。
+            // 评分仍用命中路径的 pathCover——放行是资格判定，不改既有候选的得分序。
+            decimal? canonicalRatio = null;
+            if (!string.IsNullOrEmpty(canonicalPathKey) && canonicalPathKey != pathKey)
+            {
+                var canonicalCover = Best(
+                    Best(
+                        TextMatch.CoverageOf(canonicalPathKey, titleKey),
+                        TextMatch.CoverageOf(canonicalPathKey, titleKey, countSingleCharSegments: true)),
+                    TextMatch.CoverageOf(TextMatch.Reverse(canonicalPathKey), titleKey, countSingleCharSegments: true));
+                canonicalRatio = canonicalCover.Ratio;
+            }
+
+            if (!inputPass && pathCover.Ratio < 1.0m && (canonicalRatio is not { } ratio || ratio < 1.0m))
             {
                 continue;
             }

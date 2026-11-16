@@ -662,8 +662,11 @@ public sealed class IcdIndexDiagnosisResolver(
             pathDisplay += " [跳转: " + string.Join("; ", drill.Jumps) + "]";
         }
 
+        // 字典展开门控用规范形路径：标题写规范形（脑梗死），命中别名（梗塞）拼的路径
+        // 会让单字覆盖差一个字而整族误杀（详见 DrillResult.ExpansionPathKey）。
+        var expansionPathKey = drill.ExpansionPathKey ?? drill.PathKey;
         var expanded = IndexCodeExpander.Expand(
-            parsed, dictionary, inputText, drill.PathKey, maxResults, diagnosisCodeSystem, tumor,
+            parsed, dictionary, inputText, expansionPathKey, maxResults, diagnosisCodeSystem, tumor,
             titleReverseEnabled);
 
         // 形态学码在肿瘤表没查到部位（输入只写 "C细胞癌"，没有部位词）：索引在同一节点下备了
@@ -681,7 +684,7 @@ public sealed class IcdIndexDiagnosisResolver(
             indexCode = unspecifiedCode;
             parsed = ParsedIndexCode.Parse(unspecifiedCode);
             expanded = IndexCodeExpander.Expand(
-                parsed, dictionary, inputText, drill.PathKey, maxResults, diagnosisCodeSystem, tumor,
+                parsed, dictionary, inputText, expansionPathKey, maxResults, diagnosisCodeSystem, tumor,
                 titleReverseEnabled);
         }
 

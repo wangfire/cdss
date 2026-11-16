@@ -25,7 +25,15 @@ public sealed record DrillResult(
     /// 另见-1 提示链路：本地自带编码（病案信息简单，直接采用本行码）时 Top1 不变，
     /// 但 另见 目标树里按输入还能走出的更细码交给调用方作并列候选，用于提示"漏填修饰词"。
     /// </summary>
-    IReadOnlyList<DrillResult>? SeeAlsoHints = null);
+    IReadOnlyList<DrillResult>? SeeAlsoHints = null,
+    /// <summary>
+    /// 规范形路径键（专供字典展开门控）：主导词段取节点规范别名（逗号切分的首段，
+    /// 权重 1.0），后续层级与 PathKey 同源累加。PathKey 用的是"输入命中的那个别名"
+    /// （梗塞），而字典标题写规范形（脑梗死）——别名等价（梗塞≡梗死）若不传导到
+    /// 展开门控，单字覆盖 2/3&lt;1.0 会把整族字典行误杀成"字典库无此码"回退
+    /// （陈旧性脑梗塞 → I63.9 的教训，2026-11-16）。与 PathKey 等长同构，仅主导词段不同。
+    /// </summary>
+    string? ExpansionPathKey = null);
 
 /// <summary>
 /// 主导词召回 + 逐级修饰词下钻。
@@ -535,6 +543,7 @@ public static class IcdIndexMatcher
             snapshot,
             leadHit.Node,
             leadHit.Alias.Key,
+            CanonicalLeadKey(leadHit.Node, leadHit.Alias.MatchKey),
             inputKey,
             hops: 0,
             maxHops,
@@ -547,6 +556,7 @@ public static class IcdIndexMatcher
         IcdIndexSnapshot snapshot,
         IcdIndexNode lead,
         string initialPathKey,
+        string canonicalLeadKey,
         string inputKey,
         int hops,
         int maxHops,
@@ -556,6 +566,10 @@ public static class IcdIndexMatcher
     {
         var path = new List<IcdIndexNode> { lead };
         var pathKey = initialPathKey;
+        // 规范形路径：主导词段用节点规范别名，后续层级与 pathKey 同步累加同一子节点词。
+        // 详见 DrillResult.ExpansionPathKey 的说明——字典标题写规范形（脑梗死），
+        // 命中别名（梗塞）拼出的路径会把整族字典行误杀成回退。
+        var expansionPathKey = canonicalLeadKey;
         var inputQualifiers = TextMatch.ExtractQualifiers(inputKey);
         var currentCover = CoverageOfPath(pathKey, inputKey);
         var current = lead;
@@ -581,6 +595,7 @@ public static class IcdIndexMatcher
         {
             IcdIndexNode? bestChild = null;
             string bestChildKey = string.Empty;
+            string? bestChildMatchKey = null;
             int bestGain = 0;
             var bestRatio = 0m;
             var bestSegment = 0;
@@ -617,6 +632,7 @@ public static class IcdIndexMatcher
 
                 var childBestGain = 0;
                 string? childBestKey = null;
+                string? childBestMatchKey = null;
                 var childBestRatio = 0m;
                 var childBestSegment = 0;
                 foreach (var alias in child.Aliases)
@@ -672,6 +688,7 @@ public static class IcdIndexMatcher
                     {
                         childBestGain = gain;
                         childBestKey = combined;
+                        childBestMatchKey = alias.MatchKey;
                         childBestRatio = combinedCover.Ratio;
                         childBestSegment = combinedCover.MaxSegment;
                     }
@@ -724,6 +741,7 @@ public static class IcdIndexMatcher
                     bestSegment = childBestSegment;
                     bestChild = child;
                     bestChildKey = childBestKey;
+                    bestChildMatchKey = childBestMatchKey;
                     bestConnectors = connectors;
                 }
             }
@@ -742,10 +760,11 @@ public static class IcdIndexMatcher
             current = bestChild;
             path.Add(current);
             pathKey = bestChildKey;
+            expansionPathKey += bestChildMatchKey;
             currentCover = CoverageOfPath(pathKey, inputKey);
         }
 
-        var local = BuildResult(current, CodeNodeOf(path), path, pathKey, inputKey, jumps);
+        var local = BuildResult(current, CodeNodeOf(path), path, pathKey, inputKey, jumps, expansionPathKey);
 
         // "见 X" 改道与本树下钻并列取优：跳转子节点仅靠虚字符挣到增益时
         // （"阻塞(性)" 下 "器官或部位,先天性NEC -见 闭锁"）不得劫走 J44.9 链路。
@@ -757,7 +776,7 @@ public static class IcdIndexMatcher
             var jumpAlias = JumpSeedKey(jumpLead, inputKey);
             var jumpTrace = new List<string> { $"{jumpChild.Term} → {jumpChild.JumpTarget}" };
             var jumped = DrillFromLead(
-                snapshot, jumpLead, jumpAlias, inputKey,
+                snapshot, jumpLead, jumpAlias, CanonicalLeadKey(jumpLead, jumpAlias), inputKey,
                 hops + 1, maxHops, visited, jumpTrace, genericJumps);
             if (jumped is not null)
             {
@@ -792,7 +811,7 @@ public static class IcdIndexMatcher
             var alsoAlias = JumpSeedKey(alsoLead, inputKey);
             var alsoTrace = new List<string> { $"{alsoChild.Term} ⇢ {alsoChild.JumpTarget}" };
             var alsoJumped = DrillFromLead(
-                snapshot, alsoLead, alsoAlias, inputKey,
+                snapshot, alsoLead, alsoAlias, CanonicalLeadKey(alsoLead, alsoAlias), inputKey,
                 hops + 1, maxHops, visited, alsoTrace);
             if (alsoJumped is not null && !alsoJumped.CodeFromAncestorFallback)
             {
@@ -821,7 +840,8 @@ public static class IcdIndexMatcher
             && NodeAllows(hintLead, inputQualifiers, inputKey)
             && !visited.Contains(hintLead.SeqNo)
             && DrillFromLead(
-                snapshot, hintLead, JumpSeedKey(hintLead, inputKey), inputKey,
+                snapshot, hintLead, JumpSeedKey(hintLead, inputKey),
+                CanonicalLeadKey(hintLead, JumpSeedKey(hintLead, inputKey)), inputKey,
                 hops + 1, maxHops, [.. visited, hintLead.SeqNo],
                 [$"{hintChild.Term} ⇢ {hintChild.JumpTarget}"], genericJumps: null) is { } alt
             && alt.Path.Count > 1
@@ -868,7 +888,7 @@ public static class IcdIndexMatcher
             }
 
             return DrillFromLead(
-                snapshot, child, alias.MatchKey, inputKey,
+                snapshot, child, alias.MatchKey, CanonicalLeadKey(child, alias.MatchKey), inputKey,
                 hops: 0, maxHops: 1, visited: [lead.SeqNo, child.SeqNo], jumps: [jumpTrace]);
         }
 
@@ -1072,7 +1092,8 @@ public static class IcdIndexMatcher
         List<IcdIndexNode> path,
         string pathKey,
         string inputKey,
-        List<string> jumps)
+        List<string> jumps,
+        string? expansionPathKey = null)
     {
         if (codeNode is null)
         {
@@ -1087,8 +1108,23 @@ public static class IcdIndexMatcher
             pathKey,
             cover.Ratio,
             !ReferenceEquals(codeNode, terminal),
-            jumps.AsReadOnly());
+            jumps.AsReadOnly(),
+            ExpansionPathKey: expansionPathKey);
     }
+
+    /// <summary>
+    /// 节点的规范形别名键：权重 1.0 别名里取最短 MatchKey —— 逗号切分首段是索引书主词条目
+    /// （"梗死，梗塞" 的 梗死），装饰节点（"瘢痕(粘连)(挛缩)…"）的首段是长装饰串，
+    /// 剥括号的裸头段（瘢痕）才是与字典标题对齐的规范形。
+    /// 无 1.0 权重别名时回落到调用方给的命中键。
+    /// </summary>
+    private static string CanonicalLeadKey(IcdIndexNode node, string fallback)
+        => node.Aliases.Where(alias => alias.Weight >= 1.0m)
+            .OrderBy(alias => alias.MatchKey.Length)
+            .Select(alias => alias.MatchKey)
+            .FirstOrDefault(key => key.Length > 0) is { } canonical
+            ? canonical
+            : fallback;
 
     /// <summary>无码终点回退最近有码祖先；全链无码返回 null。</summary>
     private static IcdIndexNode? CodeNodeOf(List<IcdIndexNode> path)

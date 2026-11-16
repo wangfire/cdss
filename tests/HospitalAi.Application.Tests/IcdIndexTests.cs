@@ -3077,4 +3077,34 @@ public sealed class IcdIndexTests
 
         Assert.DoesNotContain(response.Recommendations, item => item.Code.StartsWith("L98.8", StringComparison.Ordinal));
     }
+
+    /// <summary>别名变体主导词夹具（真实索引行 seq 12443/12444）：梗死，梗塞 → 脑(另见 梗死，大脑) I63.9。</summary>
+    private static IcdIndexSnapshot SynonymLeadSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(12443, "梗死，梗塞"),
+        ChildRow(12444, 12443, "脑(另见 梗死，大脑)", "I63.9", 1),
+    ]);
+
+    private static IcdDictionarySnapshot SynonymLeadDictionary() => new([
+        Dict("I63.900", "脑梗死"),
+        Dict("I63.901", "脑干梗死"),
+    ]);
+
+    [Fact]
+    public void 陈旧性脑梗塞_别名变体主导词按规范形过字典展开门控()
+    {
+        // 梗塞 命中主导词 梗死，梗塞 的变体别名（权重 0.85，规范形是 梗死）。
+        // 此前 pathKey 用命中别名 梗塞 拼子行 脑 → "梗塞脑"，字典标题 脑梗死 的 死
+        // 不在路径里：输入覆盖 2/6<0.6、路径单字覆盖 2/3<1.0 → I63.9 全族字典行
+        // 被门控误杀，回退"同前缀最泛码"并打黄牌"索引编码（字典库无此码）"——
+        // 而 I63.900 明明就在字典里（用户 2026-11-16 编码录入页报告）。
+        // 修复：drill 追踪规范形路径（梗死+脑，Reverse=脑梗死 连续贯通），
+        // 字典展开门控按规范形放行，推荐回归正常展开候选（无黄牌）。
+        var resolver = new IcdIndexDiagnosisResolver(leadWordTopK: 8, maxResults: 3, diagnosisCodeSystem: "ICD-10");
+        var results = resolver.Resolve(SynonymLeadSnapshot(), SynonymLeadDictionary(), "陈旧性脑梗塞");
+
+        var top1 = results.FirstOrDefault(item => item.Code == "I63.900");
+        Assert.NotNull(top1);
+        Assert.False(top1.IsIndexFallback, $"应为正常展开候选而非回退：{top1.Note}");
+        Assert.Equal("脑梗死", top1.Title);
+    }
 }

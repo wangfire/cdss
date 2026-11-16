@@ -548,9 +548,12 @@ public static class NameCodingLookupEngine
         var parsed = ParsedIndexCode.Parse(indexCode);
         // 展开门控的输入恒用用户原文：改写变体（癫癎）服务索引召回，字典标题写的是临床写法（癫痫）。
         // 同族标题反查随运行时开关（IcdTitleReverseEnabled）启停，与流水线同源。
+        // 门控路径用规范形（ExpansionPathKey）：命中别名（梗塞）拼的路径会让字典标题
+        // 脑梗死 的单字覆盖差一个字而整族误杀成"字典库无此码"回退（2026-11-16 用户报告）。
         var expanded = IndexCodeExpander.Expand(
             parsed, dictionary, text, drill.PathKey, CodesPerPath,
-            NameCodingLookupEngine.DiagnosisCodeSystem, tumor, titleReverseEnabled: channels.IcdTitleReverse);
+            NameCodingLookupEngine.DiagnosisCodeSystem, tumor, titleReverseEnabled: channels.IcdTitleReverse,
+            canonicalPathKey: drill.ExpansionPathKey);
         foreach (var item in expanded)
         {
             if (item.IsIndexFallback && !FallbackDeliveryAllowed(drill, inputKey))

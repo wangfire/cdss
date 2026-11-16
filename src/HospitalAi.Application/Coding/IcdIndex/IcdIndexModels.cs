@@ -71,6 +71,13 @@ public sealed class IcdIndexNode
     public required string CoreTerm { get; init; }
 
     /// <summary>
+    /// 链路终点的证据极性（P0 极性标签）：从节点名推导——父节点名含"确定的"→其子行为阳性；
+    /// 节点名含"阴性"/"未做"/"不伴有…证实"→阴性/未做/未证实；无匹配→Unspecified。
+    /// 用于输入含阳性/阴性证据词时，阻止阴性输入落阳性分支（语义反转防护）。
+    /// </summary>
+    public string Polarity { get; init; } = "Unspecified";
+
+    /// <summary>
     /// 索引自带的"另一种写法"（"X - 又称 Y"、"X(又称 Y)"）里的 Y 列表。
     /// 全库 13 条 0 级行用它声明等价译名，其中最要命的一条是 "癫癎 - 又称 癫痫"：
     /// 索引主导词用字（异体字 癎）与临床写法（痫）不一致时，主导词根本召不回来，
@@ -507,8 +514,42 @@ public static class IcdIndexSnapshotBuilder
             JumpTarget = jumpTarget,
             JumpTargetIsCode = jumpTargetIsCode,
             AnotherNames = anotherNames,
+            Polarity = DerivePolarity(text),
         };
     }
+
+    /// <summary>
+    /// 从节点名推导证据极性（P0 极性标签，数据驱动而非人工维护）：
+    /// 节点名含"阴性/未做/未查/未证实"→ NEGATIVE；
+    /// 节点名含"确定的"/"证实"（且无阴性关键词）→ POSITIVE；
+    /// 其余 → Unspecified（不参与极性裁决）。
+    /// </summary>
+    private static string DerivePolarity(string term)
+    {
+        foreach (var keyword in NegativePolarityKeywords)
+        {
+            if (term.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            {
+                return "Negative";
+            }
+        }
+
+        foreach (var keyword in PositivePolarityKeywords)
+        {
+            if (term.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            {
+                return "Positive";
+            }
+        }
+
+        return "Unspecified";
+    }
+
+    private static readonly string[] NegativePolarityKeywords =
+        ["阴性", "未做", "未查", "未证实", "未特指"];
+
+    private static readonly string[] PositivePolarityKeywords =
+        ["确定的", "证实", "阳性", "培阳", "涂阳"];
 
     private static void AddAnotherNames(List<string> target, string value)
     {

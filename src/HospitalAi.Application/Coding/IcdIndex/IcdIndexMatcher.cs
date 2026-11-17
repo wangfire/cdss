@@ -766,9 +766,16 @@ public static class IcdIndexMatcher
                     && (bestIsEvidence
                         || (evidenceKeys is { Count: > 0 }
                             && SubtreeReachesEvidence(bestChild, evidenceKeys, EvidenceDescentDepth)));
+                // 完全锚定的竞争分支不受前瞻抢占：血行播散性肺结核…涂阴培阳 的 播散性
+                // （别名逐字在输入里、gain=3）是输入明确点名的分布分支——证据前瞻只能从
+                // "借字面涨分的噪声分支"（多发性 靠 继发性 的 发性、结缔组织 靠 被组织学 的
+                // 组织）手里抢选层权，不能从输入点名的分支手里抢（否则 A19 血行播散性
+                // 整族被拖进 A15 肺结核，万条 CAP 实测 6 条族级回归）。
+                var bestFullyAnchored = bestChildMatchKey is { Length: > 0 } bestMatchKey
+                    && TextMatch.CoverageOf(bestMatchKey, inputKey).Ratio >= 1.0m;
                 if (childBestKey is not null
                     && childBestGain >= 1
-                    && (childReachesEvidence && !bestReachesEvidence
+                    && (childReachesEvidence && !bestReachesEvidence && !bestFullyAnchored
                         || (childReachesEvidence == bestReachesEvidence
                             && (childIsEvidence && !bestIsEvidence
                                 || (childIsEvidence == bestIsEvidence

@@ -43028,6 +43028,13 @@
       "codeSystemCode": "ICD-10",
       "code": "A15.2",
       "entityType": "DIAGNOSIS"
+    },
+    {
+      "term": "伴有细菌学和组织学证实",
+      "normalizedTerm": "确定的被组织学",
+      "codeSystemCode": "ICD-10",
+      "code": "A15.2",
+      "entityType": "DIAGNOSIS"
     }
   ],
   "rules": [

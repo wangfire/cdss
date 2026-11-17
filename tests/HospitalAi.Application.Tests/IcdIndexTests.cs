@@ -3283,7 +3283,9 @@ public sealed class IcdIndexTests
         Dict("A16.200X002", "肺结核"),
     ]);
 
-    /// <summary>结核证实同义词组（真实数据）：证实≡确定的≡(+)，显微镜下痰检查≡痰镜检≡痰涂片。</summary>
+    /// <summary>结核证实同义词组（真实数据，与 tools/knowledge/seed_icd_term_synonyms_evidence.sql 同源）：
+    /// 证实≡确定的≡(+)，显微镜下痰检查≡痰镜检≡痰涂片，确定的被组织学≡病理(+)≡病理检查(+)≡组织学(+)≡伴有细菌学和组织学证实
+    /// （非肺部位树的"已证实"分支词面，A15.509/A15.802 等字典真码挂在它下面），确定的仅被培养≡痰培养(+)≡涂阴培阳≡培阳。</summary>
     private static IcdTermSynonymSnapshot SmearSynonyms() => IcdTermSynonymSnapshot.Build([
         new IcdTermSynonymRow("DIAGNOSIS", "确定的", "证实"),
         new IcdTermSynonymRow("DIAGNOSIS", "证实", "(+)"),
@@ -3292,8 +3294,10 @@ public sealed class IcdIndexTests
         new IcdTermSynonymRow("DIAGNOSIS", "确定的被组织学", "病理(+)"),
         new IcdTermSynonymRow("DIAGNOSIS", "确定的被组织学", "病理检查(+)"),
         new IcdTermSynonymRow("DIAGNOSIS", "确定的被组织学", "组织学(+)"),
+        new IcdTermSynonymRow("DIAGNOSIS", "确定的被组织学", "伴有细菌学和组织学证实"),
         new IcdTermSynonymRow("DIAGNOSIS", "确定的仅被培养", "痰培养(+)"),
         new IcdTermSynonymRow("DIAGNOSIS", "确定的仅被培养", "涂阴培阳"),
+        new IcdTermSynonymRow("DIAGNOSIS", "确定的仅被培养", "培阳"),
     ]);
 
     [Fact]
@@ -3652,6 +3656,89 @@ public sealed class IcdIndexTests
 
         // 无极性输入不参与极性裁决，不挂标记。
         Assert.Null(IcdIndexDiagnosisResolver.PolarityUnmatchedFlag("肺结核瘤", matched));
+    }
+
+    [Fact]
+    public void 流水线极性识别_标志物语境不触发证据极性()
+    {
+        // 血液学标志物/染色语境的「阳性/阴性」是疾病分型依据不是检验结果——
+        // 误判会给非结核输入套上证据极性（CAP 万条实测 8+ 条淋巴瘤/白血病/肺炎）。
+        // 判据：紧邻前缀是拉丁字母数字串（EBV/CD30/ALK/BCR-ABL/Ph1/Rh）或标志物词干
+        // （病毒/抗体/抗原/革兰/凝固酶）→ 跳过该出现位置。
+        static DiagnosisIndexRecommendation Rec(string code) =>
+            new("ICD-10", code, code, 1m, false, false, "", null);
+
+        foreach (var markerInput in new[]
+                 {
+                     "革兰氏阴性细菌性肺炎", "革兰阳性菌脓毒症", "凝固酶阴性葡萄球菌脓毒症",
+                     "CD30阳性弥漫大B细胞淋巴瘤", "间变性大细胞淋巴瘤,ALK阴性",
+                     "非典型性慢性髓系白血病,BCR/ABL阴性", "EB病毒阳性T细胞淋巴增殖性疾病",
+                     "老年人EBV阳性弥漫大B细胞淋巴瘤", "慢性髓系白血病,BCR/ABL阳性", "Rh阴性抗D抗体异常",
+                 })
+        {
+            Assert.Null(IcdIndexDiagnosisResolver.PolarityUnmatchedFlag(
+                markerInput, [Rec("X00.000")]));
+        }
+
+        // 检验结果语境的极性仍然成立。
+        Assert.Equal("POLARITY.UNMATCHED.NEGATIVE",
+            IcdIndexDiagnosisResolver.PolarityUnmatchedFlag("肺结核瘤,痰镜检(-)", [Rec("X00.000")]));
+        Assert.Equal("POLARITY.UNMATCHED.POSITIVE",
+            IcdIndexDiagnosisResolver.PolarityUnmatchedFlag("肺结核瘤,病理(+)", [Rec("X00.000")]));
+        // 细胞学(组织学)(-) 括号混写也认。
+        Assert.Equal("POLARITY.UNMATCHED.NEGATIVE",
+            IcdIndexDiagnosisResolver.PolarityUnmatchedFlag("空洞型肺结核,细胞学(组织学)(-)", [Rec("X00.000")]));
+    }
+
+    [Fact]
+    public void 流水线证据前瞻_不抢占输入点名的分布分支()
+    {
+        // 血行播散性肺结核…涂阴培阳 的 播散性（别名逐字在输入里、gain=3）是输入
+        // 点名的分布分支——证据子树前瞻只能从借字面的噪声分支（多发性 靠 继发性 的
+        // 发性）手里抢选层权，不能把 A19 血行播散性整族拖进 A15 肺结核
+        // （CAP 万条实测 6 条族级回归的根因）。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(18793, "结核(病)，结核性(干酪样)(变性)(坏疽)(坏死)", "A16.9"),
+            ChildRow(18809, 18793, "播散性(另见 结核，粟粒性)", "A19.9", 1),
+            ChildRow(18843, 18793, "肺(空洞性)(纤维变性)(浸润性)(结节性)", "A16.2", 1),
+            ChildRow(18847, 18843, "确定的", null, 2),
+            ChildRow(18851, 18847, "仅被培养", "A15.1", 3),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("A19.900X004", "全身血行播散性结核"),
+            Dict("A15.100X003", "继发性肺结核(初治,多耐药)涂阴培阳"),
+        ]);
+        var results = EvidenceResolver().Resolve(
+            snapshot, dictionary, "血行播散性肺结核(初治,耐多药)涂阴培阳",
+            synonyms: SmearSynonyms());
+
+        Assert.NotEmpty(results);
+        Assert.StartsWith("A19.9", results[0].Code);
+    }
+
+    [Fact]
+    public void 流水线证据前瞻_仍能从借字面噪声分支手里抢回证据链()
+    {
+        // 反例哨兵：继发性肺结核…涂阴培阳 的 多发性 借 继发性 的 发性 2 字涨 gain=2，
+        // 压过正牌 肺（gain=1）——证据前瞻必须在这种情况下把选层抢回肺分支
+        // （多发性不是完全锚定：别名 多 字不在输入里），A15.1 真码可达。
+        var snapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(18793, "结核(病)，结核性(干酪样)(变性)(坏疽)(坏死)", "A16.9"),
+            ChildRow(18830, 18793, "多发性", "A19.9", 1),
+            ChildRow(18843, 18793, "肺(空洞性)(纤维变性)(浸润性)(结节性)", "A16.2", 1),
+            ChildRow(18847, 18843, "确定的", null, 2),
+            ChildRow(18851, 18847, "仅被培养", "A15.1", 3),
+        ]);
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("A19.900X004", "全身血行播散性结核"),
+            Dict("A15.100X003", "继发性肺结核(初治,多耐药)涂阴培阳"),
+        ]);
+        var results = EvidenceResolver().Resolve(
+            snapshot, dictionary, "继发性肺结核(初治,多耐药)涂阴培阳",
+            synonyms: SmearSynonyms());
+
+        Assert.NotEmpty(results);
+        Assert.StartsWith("A15.1", results[0].Code);
     }
 
     [Fact]

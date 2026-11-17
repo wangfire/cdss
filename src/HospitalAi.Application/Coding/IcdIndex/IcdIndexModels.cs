@@ -894,6 +894,9 @@ internal static class IcdIndexPolarity
     /// 输入的证据极性识别：阳性——(+)、阳性、培阳、涂阳 等"已证实"措辞；
     /// 阴性——(-)、阴性、未做、未查 等"未证实/阴性"措辞；都没写 → None（不参与极性裁决）。
     /// 顺序：阴性优先于阳性（"未做检查"含"未"，不应被"检查"类词误判）。
+    /// 「阳性/阴性」只有在**检验结果语境**才成立——标志物语境（EBV阳性、CD30阳性、
+    /// ALK阴性、BCR/ABL阴性、Ph1阳性、Rh阴性、革兰氏阴性、凝固酶阴性）是疾病分型依据，
+    /// 不是检验结果，误判会给非结核输入套上证据极性（万条 CAP 实测 8+ 条淋巴瘤/白血病/肺炎）。
     /// </summary>
     public static string DeriveInputPolarity(string? inputText)
     {
@@ -904,7 +907,7 @@ internal static class IcdIndexPolarity
 
         foreach (var keyword in NegativeInputPolarityKeywords)
         {
-            if (inputText.Contains(keyword, StringComparison.Ordinal))
+            if (ContainsResultPolarityWord(inputText, keyword))
             {
                 return "Negative";
             }
@@ -912,7 +915,7 @@ internal static class IcdIndexPolarity
 
         foreach (var keyword in PositiveInputPolarityKeywords)
         {
-            if (inputText.Contains(keyword, StringComparison.Ordinal))
+            if (ContainsResultPolarityWord(inputText, keyword))
             {
                 return "Positive";
             }
@@ -926,6 +929,80 @@ internal static class IcdIndexPolarity
 
     private static readonly string[] PositiveInputPolarityKeywords =
         ["(+)", "阳性", "培阳", "涂阳"];
+
+    /// <summary>
+    /// 词面命中且不是标志物语境：逐一检查「阳性/阴性」的每个出现位置，
+    /// 紧邻前缀是拉丁字母数字串（EBV/CD30/ALK/BCR-ABL/Ph1/Rh）或标志物词干
+    /// （病毒/抗体/抗原/革兰/凝固酶）时跳过——那些位置是分型标记不是检验结果。
+    /// </summary>
+    private static bool ContainsResultPolarityWord(string text, string word)
+    {
+        var searchStart = 0;
+        while (searchStart <= text.Length - word.Length)
+        {
+            var hit = text.IndexOf(word, searchStart, StringComparison.Ordinal);
+            if (hit < 0)
+            {
+                return false;
+            }
+
+            if (!IsMarkerContext(text, hit))
+            {
+                return true;
+            }
+
+            searchStart = hit + word.Length;
+        }
+
+        return false;
+    }
+
+    /// <summary>标志物词干：这些词紧贴「阳性/阴性」时，阳性/阴性是分型标记不是检验结果。</summary>
+    private static readonly string[] MarkerStems =
+        ["病毒", "抗体", "抗原", "革兰氏", "革兰", "凝固酶", "染色体", "基因", "受体"];
+
+    /// <summary>
+    /// 「阳性/阴性」出现位置的前缀是否为标志物语境：
+    /// ① 向左吞 ASCII 字母/数字/斜杠/连字符（EBV、CD30、ALK、BCR/ABL、Ph1、Rh）；
+    /// ② 吞完后词干以标志物词收尾（EB病毒、抗D抗体、革兰氏、凝固酶）。
+    /// ①② 任一成立即标志物语境。位置在词首（无前缀）不是标志物。
+    /// </summary>
+    private static bool IsMarkerContext(string text, int polarityStart)
+    {
+        if (polarityStart == 0)
+        {
+            return false;
+        }
+
+        var start = polarityStart;
+        while (start > 0)
+        {
+            var previous = text[start - 1];
+            if (previous is '/' or '-' or '－' or '／')
+            {
+                start--;
+                continue;
+            }
+
+            // ASCII 字母数字（EBV/CD30/ALK/Ph1/Rh）；中文汉字不算（"结核阳性"是检验语境）。
+            if (previous < 0x80 && (char.IsAsciiLetterOrDigit(previous)))
+            {
+                start--;
+                continue;
+            }
+
+            break;
+        }
+
+        if (start < polarityStart)
+        {
+            return true;
+        }
+
+        return MarkerStems.Any(stem =>
+            start >= stem.Length
+            && string.CompareOrdinal(text, start - stem.Length, stem, 0, stem.Length) == 0);
+    }
 
     /// <summary>
     /// 候选的极性排序权重（P1 极性匹配优先）：输入极性与候选极性一致 → 2；

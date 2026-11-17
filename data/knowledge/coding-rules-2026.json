@@ -43035,6 +43035,13 @@
       "codeSystemCode": "ICD-10",
       "code": "A15.2",
       "entityType": "DIAGNOSIS"
+    },
+    {
+      "term": "经证实",
+      "normalizedTerm": "被未特指的方法证实",
+      "codeSystemCode": "ICD-10",
+      "code": "A15.3",
+      "entityType": "DIAGNOSIS"
     }
   ],
   "rules": [

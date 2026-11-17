@@ -1204,7 +1204,11 @@ public static class IcdIndexMatcher
         return false;
     }
 
-    /// <summary>节点的证据判据词面：核心词 + 各别名 MatchKey（去重，归一化）。</summary>
+    /// <summary>节点的证据判据词面：核心词 + 各别名 MatchKey（去重，归一化）。
+    /// 别名词面须 ≥4 字才参与——「特指的」这类 3 字别名段会让「器官，特指的 NEC」
+    /// 这类部位噪声行靠子串撞上组词面（被未特指的方法证实 ⊃ 特指的）被误判成
+    /// 证据节点赢下选层（肺结核瘤经证实(+) 实测 Top1 掉 A18.800）；真实证据
+    /// 分支的别名（被显微镜下痰检查/伴有细菌学和组织学证实）都是长词面。</summary>
     private static IEnumerable<string> NodeEvidenceFaces(IcdIndexNode node)
     {
         var core = TextMatch.NormalizeKey(node.CoreTerm);
@@ -1216,7 +1220,7 @@ public static class IcdIndexMatcher
         foreach (var alias in node.Aliases)
         {
             var matchKey = TextMatch.NormalizeKey(alias.MatchKey);
-            if (matchKey.Length >= 2 && !string.Equals(matchKey, core, StringComparison.Ordinal))
+            if (matchKey.Length >= 4 && !string.Equals(matchKey, core, StringComparison.Ordinal))
             {
                 yield return matchKey;
             }

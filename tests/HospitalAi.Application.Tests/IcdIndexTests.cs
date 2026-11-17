@@ -3452,6 +3452,7 @@ public sealed class IcdIndexTests
         Dict("A15.201", "肺结核瘤,病理(+)"),
         Dict("A15.100", "肺结核,仅经痰培养所证实"),
         Dict("A18.800X001", "结核性结缔组织病"),
+        Dict("A16.201", "肺结核瘤"),
     ]);
 
     [Fact]
@@ -3632,6 +3633,28 @@ public sealed class IcdIndexTests
     }
 
     [Fact]
+    public void 流水线极性缺失降级标记_证据未兑现时挂出()
+    {
+        // P2 R3 流水线的极性缺失提示：输入含阳性证据词但交付候选里没有极性一致的
+        // （证实分支没找到）→ 挂 POLARITY.UNMATCHED.POSITIVE，供下游知道
+        // "证据语义未兑现"。面板引擎同口径（NameCodingLookupEngine 的 degraded 位）。
+        var unmatched = EvidenceResolver().Resolve(
+            EvidenceGateSnapshot(), EvidenceGateDictionary(), "肺结核瘤,痰镜检(+)");
+
+        Assert.Equal("POLARITY.UNMATCHED.POSITIVE",
+            IcdIndexDiagnosisResolver.PolarityUnmatchedFlag("肺结核瘤,痰镜检(+)", unmatched));
+
+        // 证据深链走到时（候选极性一致）不挂标记。
+        var matched = EvidenceResolver().Resolve(
+            EvidenceGateSnapshot(), EvidenceGateDictionary(), "肺结核瘤,病理(+)",
+            synonyms: SmearSynonyms());
+        Assert.Null(IcdIndexDiagnosisResolver.PolarityUnmatchedFlag("肺结核瘤,病理(+)", matched));
+
+        // 无极性输入不参与极性裁决，不挂标记。
+        Assert.Null(IcdIndexDiagnosisResolver.PolarityUnmatchedFlag("肺结核瘤", matched));
+    }
+
+    [Fact]
     public void 流水线证据分支_字典真码优先于回退码()
     {
         // 变体输入（肺结核瘤,病理(+) → 肺结核瘤,确定的被组织学）走出的证据链，
@@ -3648,5 +3671,51 @@ public sealed class IcdIndexTests
         Assert.NotEmpty(results);
         Assert.Equal("A15.201", results[0].Code);
         Assert.False(results[0].IsIndexFallback);
+    }
+
+    [Fact]
+    public void 流水线阳性输入_未证实泛码被R2剔除()
+    {
+        // R2 极性冲突剔除：阳性输入且候选池里有极性一致的阳性分支时，
+        // 终点极性为阴性/未证实 的候选整体剔除——未证实泛码 A16.201（肺(空洞性)
+        // 分叉点已标 Negative）不得与证据码并列出现在推荐里。
+        var results = EvidenceResolver().Resolve(
+            EvidenceGateSnapshot(), EvidenceGateDictionary(), "肺结核瘤,病理(+)",
+            synonyms: SmearSynonyms());
+
+        Assert.NotEmpty(results);
+        Assert.Equal("A15.201", results[0].Code);
+        Assert.DoesNotContain(results, item => item.Code.StartsWith("A16.", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void 面板与流水线在字典标题直达开启时口径一致()
+    {
+        // 口径对齐检查：面板引擎与流水线的字典标题直达都在 R2 之后收集，
+        // 直达候选不带链路极性——标题 "肺结核瘤"（无证实/否定字样）本身不声明极性，
+        // 因此 A16.201 在两侧都作为并列候选保留，Top1 都是证据码 A15.201。
+        // 两侧都不得出现 A18.8 噪声分支，也不得让未证实码抢到 Top1。
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("A15.201", "肺结核瘤,病理(+)"),
+            Dict("A16.201", "肺结核瘤"),
+            Dict("A18.800X001", "结核性结缔组织病"),
+        ]);
+        var pipeline = EvidenceResolver().Resolve(
+            EvidenceGateSnapshot(), dictionary, "肺结核瘤,病理(+)",
+            synonyms: SmearSynonyms());
+
+        var panel = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "肺结核瘤,病理(+)", topK: 8,
+            icdSnapshot: EvidenceGateSnapshot(), tumorSnapshot: null, icdDictionary: dictionary,
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: true, Cm3TitleDirect: false, IcdTitleReverse: true),
+            termSynonyms: SmearSynonyms());
+
+        Assert.NotEmpty(pipeline);
+        Assert.NotEmpty(panel.Recommendations);
+        Assert.Equal("A15.201", pipeline[0].Code);
+        Assert.Equal("A15.201", panel.Recommendations[0].Code);
+        Assert.DoesNotContain(pipeline, item => item.Code.StartsWith("A18.", StringComparison.Ordinal));
+        Assert.DoesNotContain(panel.Recommendations, item => item.Code.StartsWith("A18.", StringComparison.Ordinal));
     }
 }

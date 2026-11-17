@@ -253,6 +253,43 @@ public sealed class V22LitePipelineTests
                 && item.CurrentCode == FractureCode);
     }
 
+    /// <summary>
+    /// P0-P3 极性族的流水线验收：输入 肺结核瘤,病理(+) 时，
+    /// 索引链路走证据分支（结核→肺→确定的→被组织学 A15.2），字典真码 A15.201；
+    /// 未证实泛码 A16.2 被 R2 剔除（同义词变体走出的证据深链存在时才剔）。
+    /// 夹具用真实索引行 18793/18843/18847/18850 与真实字典行 A15.201。
+    /// </summary>
+    [Fact]
+    public async Task 极性族_阳性输入走证据分支出字典真码()
+    {
+        const string input = "肺结核瘤,病理(+)";
+        await using var database = await V22TestDatabase.CreateAsync();
+        var (hospitalId, taskId, message) = await database.SeedV22TaskAsync("【出院诊断】" + input + "。");
+
+        await database.SeedIcdIndexRowAsync(18793, "结核(病)，结核性(干酪样)(变性)(坏疽)(坏死)", "A16.9");
+        await database.SeedIcdIndexRowAsync(18843, "肺(空洞性)(纤维变性)(浸润性)(结节性)", "A16.2", indexLevel: 1, parentSeqNo: 18793);
+        await database.SeedIcdIndexRowAsync(18847, "确定的", null, indexLevel: 2, parentSeqNo: 18843);
+        await database.SeedIcdIndexRowAsync(18850, "被组织学", "A15.2", indexLevel: 3, parentSeqNo: 18847);
+        await database.SeedCodeAsync(hospitalId, "ICD-10", "A15.201", "肺结核瘤,病理(+)");
+        await database.SeedCodeAsync(hospitalId, "ICD-10", "A16.201", "肺结核瘤");
+        // 证据同义词组：病理(+) ≡ 确定的被组织学（与知识种子同源）。
+        await database.SeedIcdTermSynonymAsync("DIAGNOSIS", "确定的被组织学", "病理(+)");
+
+        await database.CreateV22Runner().RunAsync(message);
+
+        await using var context = database.CreateContext();
+        var recommendations = await context.CodingRecommendations
+            .OrderBy(item => item.Rank)
+            .ToListAsync();
+
+        Assert.NotEmpty(recommendations);
+        Assert.Equal("A15.201", recommendations[0].Code);
+        // 证据码必须走索引链路（召回通道 ICD_INDEX），不是字典直匹配。
+        Assert.All(recommendations, item => Assert.Equal("ICD_INDEX", item.RecallChannel));
+        // 噪声分支（结缔组织 A18.8）不得出现——它一个证据词面都不解释。
+        Assert.DoesNotContain(recommendations, item => item.Code.StartsWith("A18.", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void 七维评分_缺失维度按实际参与维度重新归一化()
     {

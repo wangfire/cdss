@@ -439,6 +439,30 @@ public sealed class V22TestDatabase : IAsyncDisposable
     }
 
     /// <summary>
+    /// 播种一条索引链路术语同义词（icd_term_synonym 平台级表）——证据极性族的
+    /// 等价类（病理(+)≡确定的被组织学…）靠它接通变体改写与证据选层。
+    /// </summary>
+    public async Task SeedIcdTermSynonymAsync(
+        string termType,
+        string canonicalTerm,
+        string variantTerm)
+    {
+        var now = DateTimeOffset.UtcNow;
+        await using var context = CreateContext();
+        context.IcdTermSynonyms.Add(new IcdTermSynonymRecord
+        {
+            Id = Guid.NewGuid(),
+            TermType = termType,
+            CanonicalTerm = canonicalTerm,
+            VariantTerm = variantTerm,
+            IsEnabled = true,
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        await context.SaveChangesAsync();
+    }
+
+    /// <summary>
     /// 播种一条版本化 JSON 条件阻断规则：候选编码相同时命中并阻断安全推荐。
     /// </summary>
     public async Task SeedBlockingRuleAsync(Guid hospitalId, string code)

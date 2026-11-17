@@ -208,6 +208,28 @@ public sealed class IcdIndexDiagnosisResolver(
     }
 
     /// <summary>
+    /// P2 R3 极性缺失降级提示（流水线口径）：输入含阳性/阴性证据词，但交付的候选里
+    /// 没有任何极性一致的（证据深链未走到）——说明"证实分支没找到"，给出可解释提示。
+    /// 口径对齐面板引擎（NameCodingLookupEngine 同名降级位）：只提示，不改推荐内容。
+    /// 流水线与面板的差别：面板的候选带链路极性可直接比对，流水线的候选极性取
+    /// 链路终点（DiagnosisIndexRecommendation.Polarity），同源同判据。
+    /// </summary>
+    public static string? PolarityUnmatchedFlag(
+        string inputText,
+        IReadOnlyList<DiagnosisIndexRecommendation> recommendations)
+    {
+        var inputPolarity = IcdIndexPolarity.DeriveInputPolarity(inputText);
+        if (inputPolarity is not ("Positive" or "Negative") || recommendations.Count == 0)
+        {
+            return null;
+        }
+
+        var matched = recommendations.Any(item =>
+            string.Equals(item.Polarity, inputPolarity, StringComparison.Ordinal));
+        return matched ? null : $"POLARITY.UNMATCHED.{inputPolarity.ToUpperInvariant()}";
+    }
+
+    /// <summary>
     /// 字典标题直达候选：只认 <see cref="IcdDictionarySnapshot.TitleDirectMatches"/> 的硬词面证据
     /// （逐字相等，或 ≥3 字标题被输入逐字包含且贴合度 ≥0.5）。分数与手术侧同口径
     /// （depth×1.5，钳位 1.0）；只有逐字相等才给 WholeTitleDepth=1，让管道按整标题贴合保首。

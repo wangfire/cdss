@@ -454,6 +454,9 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
         // Step 6.5：诊断侧 ICD 索引两段式（主导词召回 → 逐级下钻 → 索引编码 7 格式解析 → 字典展开）。
         var indexStartedAt = DateTimeOffset.UtcNow;
         var indexResults = new Dictionary<Guid, IReadOnlyList<DiagnosisIndexRecommendation>>();
+        // P2 R3 极性缺失的输入（证据语义没被兑现）：跑批结束统一挂一次降级标记，
+        // 避免逐输入重复加同一标记把降级列表灌满。
+        var polarityUnmatchedInputs = new HashSet<Guid>();
         var indexAttempted = settings.IcdIndexEnabled
             && selectedInputs.Any(input => !IsProcedureInput(input));
         var indexSucceeded = false;
@@ -490,9 +493,17 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                         && normalized != input.OriginalText
                         ? [input.OriginalText]
                         : null;
-                    indexResults[input.Id] = resolver.Resolve(
+                    var resolved = resolver.Resolve(
                         indexSnapshot, diagnosisDictionary, inputName, aliasTexts,
                         termSynonyms, tumorSnapshot, cancellationToken);
+                    indexResults[input.Id] = resolved;
+                    // P2 R3 极性缺失降级提示：输入含阳性/阴性证据词（病理(+)、痰镜检(+)…）
+                    // 但交付候选里没有极性一致的（证实分支没找到）——挂降级标记，
+                    // 让下游知道"这条输入的证据语义没被兑现"，与面板引擎同口径。
+                    if (IcdIndexDiagnosisResolver.PolarityUnmatchedFlag(inputName, resolved) is not null)
+                    {
+                        polarityUnmatchedInputs.Add(input.Id);
+                    }
                 }
 
                 indexSucceeded = true;
@@ -504,6 +515,18 @@ public sealed class V22LiteCodingPipelineRunner : ICodingTaskPipelineRunner, ICo
                 degradedFlags.Add("DEGRADED.NO_ICD_INDEX");
                 _logger.LogWarning(ex, "ICD 索引快照加载失败，本次运行诊断输入不召回。TaskId={TaskId}", task.Id);
             }
+        }
+
+        // P2 R3 极性缺失降级标记（跑批级挂一次）：有输入的证据语义没被兑现。
+        if (polarityUnmatchedInputs.Count > 0)
+        {
+            degradedFlags.Add("POLARITY.UNMATCHED");
+            qualityIssues.Add(CreateQualityIssue(
+                QualityIssueType.PolarityUnmatched,
+                "MEDIUM",
+                $"{polarityUnmatchedInputs.Count} 条诊断输入含阳性/阴性证据词，"
+                    + "但索引链路未走到极性一致的证实/阴性分支，证据语义未兑现。",
+                task));
         }
 
         // Step 6.6：向量语义召回（WP-B3-1，决策 2：CPU 小模型先行）。

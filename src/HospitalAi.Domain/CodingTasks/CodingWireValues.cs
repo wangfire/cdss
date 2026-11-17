@@ -64,6 +64,7 @@ public static class CodingWireValues
             QualityIssueType.RuleViolation => "RULE_VIOLATION",
             QualityIssueType.GranularityInsufficient => "GRANULARITY_INSUFFICIENT",
             QualityIssueType.LlmOutputInvalid => "LLM_OUTPUT_INVALID",
+            QualityIssueType.PolarityUnmatched => "POLARITY_UNMATCHED",
             _ => "EVIDENCE_INSUFFICIENT"
         };
     }

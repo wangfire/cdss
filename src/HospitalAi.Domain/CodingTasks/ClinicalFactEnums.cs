@@ -59,5 +59,8 @@ public enum QualityIssueType
     RuleViolation = 1,
     GranularityInsufficient = 2,
     /// 模型输出经 Schema 重试校验仍不合法。评分必须按未校验口径处理，不得采信该次输出。
-    LlmOutputInvalid = 3
+    LlmOutputInvalid = 3,
+    /// 输入含阳性/阴性证据词（病理(+)、痰镜检(+)…），但索引链路未走到极性一致的
+    /// 证实/阴性分支——证据语义未兑现。提示用，不改变交付内容。
+    PolarityUnmatched = 4
 }

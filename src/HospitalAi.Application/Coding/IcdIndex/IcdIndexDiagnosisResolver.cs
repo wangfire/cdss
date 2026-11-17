@@ -289,14 +289,20 @@ public sealed class IcdIndexDiagnosisResolver(
         // P1 R1 极性匹配优先（口径对齐面板引擎 Assemble）：输入含阳性/阴性证据词时，
         // 极性一致的候选排在未证实泛码之前（整标题贴合仍是更高优先档——逐字写着的
         // 标准标题码不因极性让位）。极性冲突的候选已在 R2 剔除。
+        // 全档并列的终判继承候选池顺序（DictionaryDirect 按标题贴合+searchText 长度
+        // 已排好序；LINQ OrderBy 系稳定排序，First 进组的既有次序保留到组间并列）——
+        // 库内重复标题行（前体细胞淋巴母细胞型淋巴瘤 的 C83.506 主行 vs C96.707
+        // 错置族别行）的取舍由此落在 searchText 更全的主行上，而不是编码字典序。
         var sorted = candidates
-            .GroupBy(item => item.Recommendation.Code, StringComparer.OrdinalIgnoreCase)
+            .Select((item, index) => (item, index))
+            .GroupBy(entry => entry.item.Recommendation.Code, StringComparer.OrdinalIgnoreCase)
             .Select(group => group
-                .OrderByDescending(item => item.Recommendation.WholeTitleDepth)
-                .ThenByDescending(item => IcdIndexPolarity.PolarityRank(item.Recommendation.Polarity, inputPolarity))
-                .ThenByDescending(item => item.RawScore)
-                .ThenBy(item => item.Recommendation.FamilyRank)
-                .First())
+                .OrderByDescending(entry => entry.item.Recommendation.WholeTitleDepth)
+                .ThenByDescending(entry => IcdIndexPolarity.PolarityRank(entry.item.Recommendation.Polarity, inputPolarity))
+                .ThenByDescending(entry => entry.item.RawScore)
+                .ThenBy(entry => entry.item.Recommendation.FamilyRank)
+                .ThenBy(entry => entry.index)
+                .First().item)
             .OrderByDescending(item => item.Recommendation.WholeTitleDepth)
             .ThenByDescending(item => IcdIndexPolarity.PolarityRank(item.Recommendation.Polarity, inputPolarity))
             .ThenByDescending(item => item.RawScore)

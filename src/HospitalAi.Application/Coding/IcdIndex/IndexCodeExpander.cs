@@ -61,7 +61,7 @@ public sealed class IcdDictionarySnapshot
             return [];
         }
 
-        var matches = new List<(IcdDictionaryRow Row, decimal Depth, string TitleKey)>();
+        var matches = new List<(IcdDictionaryRow Row, decimal Depth, string TitleKey, int SearchTextLength)>();
         foreach (var entry in _entries)
         {
             if (entry.TitleKey.Length < 2)
@@ -72,7 +72,7 @@ public sealed class IcdDictionarySnapshot
             if (string.Equals(entry.TitleKey, inputKey, StringComparison.Ordinal)
                 || string.Equals(entry.SearchTextKey, inputKey, StringComparison.Ordinal))
             {
-                matches.Add((entry.Row, 1m, entry.TitleKey));
+                matches.Add((entry.Row, 1m, entry.TitleKey, entry.SearchTextKey.Length));
             }
             else if (entry.TitleKey.Length >= 3
                 && inputKey.Contains(entry.TitleKey, StringComparison.Ordinal))
@@ -80,13 +80,16 @@ public sealed class IcdDictionarySnapshot
                 var depth = Math.Min(1m, entry.TitleKey.Length / (decimal)inputKey.Length);
                 if (depth >= 0.5m)
                 {
-                    matches.Add((entry.Row, depth, entry.TitleKey));
+                    matches.Add((entry.Row, depth, entry.TitleKey, entry.SearchTextKey.Length));
                 }
             }
         }
 
         // 极大性：包含匹配若被任一已准入标题包含则丢弃——更长标题已经逐字解释了这段词面，
         // 短泛包含不该挤进同一场竞争（肠吻合术 ⊂ 胆囊肠吻合术 的教训）。
+        // 同标题同码级的并列（库内重复标题行）取 searchText 更长（别名/同义词信息更全，
+        // 维护者确认的主行）者优先：前体细胞淋巴母细胞型淋巴瘤 的 C83.506（带 前体B细胞
+        // 别名）压过错置族别的 C96.707（只有标题本身）。
         return matches
             .Where(match => match.Depth >= 1m || !matches.Any(other =>
                 other.TitleKey.Length > match.TitleKey.Length
@@ -94,6 +97,7 @@ public sealed class IcdDictionarySnapshot
             .GroupBy(match => match.Row.Code, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .OrderByDescending(match => match.Depth)
+            .ThenByDescending(match => match.SearchTextLength)
             .ThenBy(match => match.Row.Code, StringComparer.Ordinal)
             .Select(match => (match.Row, match.Depth))
             .ToList();

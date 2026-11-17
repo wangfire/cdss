@@ -771,11 +771,21 @@ public static class IcdIndexMatcher
                 // "借字面涨分的噪声分支"（多发性 靠 继发性 的 发性、结缔组织 靠 被组织学 的
                 // 组织）手里抢选层权，不能从输入点名的分支手里抢（否则 A19 血行播散性
                 // 整族被拖进 A15 肺结核，万条 CAP 实测 6 条族级回归）。
+                // 但锚定护栏有一个漏口：best 锚定且 child 也锚定（肺门淋巴结结核,病理(+)
+                // 的 肠系膜-淋巴结 与 肺门淋巴结 都整词在输入里）且 child 通往证据分支
+                // （肺门子树有 伴有细菌学和组织学证实）而 best 不通往——此时输入点名的
+                // 部位分支是 child，anchored 护栏反而替噪声分支守门（实测 Top1 掉
+                // A18.316 肠系膜淋巴结结核）。收窄：两个都锚定时，前瞻只要求 child 的
+                // 增益不低于 best（同为输入点名分支，谁都不会被"借字面"诬陷）。
                 var bestFullyAnchored = bestChildMatchKey is { Length: > 0 } bestMatchKey
                     && TextMatch.CoverageOf(bestMatchKey, inputKey).Ratio >= 1.0m;
+                var childFullyAnchored = childBestMatchKey is { Length: > 0 } childMatchKey
+                    && TextMatch.CoverageOf(childMatchKey, inputKey).Ratio >= 1.0m;
+                var anchoredPairSafe = !bestFullyAnchored
+                    || (childFullyAnchored && childBestGain >= bestGain);
                 if (childBestKey is not null
                     && childBestGain >= 1
-                    && (childReachesEvidence && !bestReachesEvidence && !bestFullyAnchored
+                    && (childReachesEvidence && !bestReachesEvidence && anchoredPairSafe
                         || (childReachesEvidence == bestReachesEvidence
                             && (childIsEvidence && !bestIsEvidence
                                 || (childIsEvidence == bestIsEvidence

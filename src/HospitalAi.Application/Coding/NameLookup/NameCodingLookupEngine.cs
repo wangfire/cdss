@@ -845,7 +845,10 @@ public static class NameCodingLookupEngine
     {
         foreach (var node in path.Skip(1).Where(node => !IcdIndexMatcher.IsConnectorNode(node)))
         {
-            var nodeKey = TextMatch.NormalizeKey(node.Term);
+            // P3 证据判据用 CoreTerm（剥括号装饰后的核心词）：部位节点（肺门淋巴结）
+            // 的整行词面当然含在输入里，按整行判定会把"链路停在部位层"误判成证据已解释，
+            // 变体补钻不触发，A15.4 证据分支整族走不到（肺门淋巴结结核,病理(+) 实测）。
+            var nodeKey = TextMatch.NormalizeKey(node.CoreTerm);
             if (nodeKey.Length == 0)
             {
                 continue;

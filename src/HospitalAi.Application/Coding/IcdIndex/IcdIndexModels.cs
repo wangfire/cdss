@@ -883,3 +883,63 @@ public static class IcdIndexSnapshotBuilder
     private static readonly System.Text.RegularExpressions.Regex SegmentSeparatorRegex =
         new(@"([或，、])", System.Text.RegularExpressions.RegexOptions.Compiled);
 }
+
+/// <summary>
+/// 输入侧证据极性口径（P0 极性族，流水线 IcdIndexDiagnosisResolver 与编码录入面板引擎
+/// NameCodingLookupEngine 共用同一判据，避免两套极性口径漂移）。
+/// </summary>
+internal static class IcdIndexPolarity
+{
+    /// <summary>
+    /// 输入的证据极性识别：阳性——(+)、阳性、培阳、涂阳 等"已证实"措辞；
+    /// 阴性——(-)、阴性、未做、未查 等"未证实/阴性"措辞；都没写 → None（不参与极性裁决）。
+    /// 顺序：阴性优先于阳性（"未做检查"含"未"，不应被"检查"类词误判）。
+    /// </summary>
+    public static string DeriveInputPolarity(string? inputText)
+    {
+        if (string.IsNullOrWhiteSpace(inputText))
+        {
+            return "None";
+        }
+
+        foreach (var keyword in NegativeInputPolarityKeywords)
+        {
+            if (inputText.Contains(keyword, StringComparison.Ordinal))
+            {
+                return "Negative";
+            }
+        }
+
+        foreach (var keyword in PositiveInputPolarityKeywords)
+        {
+            if (inputText.Contains(keyword, StringComparison.Ordinal))
+            {
+                return "Positive";
+            }
+        }
+
+        return "None";
+    }
+
+    private static readonly string[] NegativeInputPolarityKeywords =
+        ["(-)", "阴性", "未做", "未查", "未做细菌学"];
+
+    private static readonly string[] PositiveInputPolarityKeywords =
+        ["(+)", "阳性", "培阳", "涂阳"];
+
+    /// <summary>
+    /// 候选的极性排序权重（P1 极性匹配优先）：输入极性与候选极性一致 → 2；
+    /// 输入无证据词或候选未标注 → 1；相反 → 0。只做同分附近的次序调整，
+    /// 极性冲突的候选已由 R2 剔除。
+    /// </summary>
+    public static int PolarityRank(string? candidatePolarity, string inputPolarity)
+    {
+        if (inputPolarity is not ("Positive" or "Negative")
+            || candidatePolarity is not ("Positive" or "Negative"))
+        {
+            return 1;
+        }
+
+        return string.Equals(candidatePolarity, inputPolarity, StringComparison.Ordinal) ? 2 : 0;
+    }
+}

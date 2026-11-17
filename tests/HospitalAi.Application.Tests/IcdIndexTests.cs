@@ -3510,4 +3510,143 @@ public sealed class IcdIndexTests
         Assert.DoesNotContain(response.Recommendations,
             item => item.Code.StartsWith("A16.", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void 痰培养阳性输入_仅被培养分支可达A151()
+    {
+        // P3 家族收尾（真实字典行 A15.100 肺结核,仅经痰培养所证实）：输入 痰培养(+) 的
+        // 证据链走 确定的→仅被培养 A15.1——与 病理(+)→被组织学 同一支 决定的 三分支，
+        // 词面占位与变体补钻共用同一机制，逐分支钉死。
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("A15.100", "肺结核,仅经痰培养所证实"),
+            Dict("A15.201", "肺结核瘤,病理(+)"),
+        ]);
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "肺结核瘤,痰培养(+)", topK: 8,
+            icdSnapshot: EvidenceGateSnapshot(), tumorSnapshot: null, icdDictionary: dictionary,
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true),
+            termSynonyms: SmearSynonyms());
+
+        Assert.NotEmpty(response.Recommendations);
+        Assert.StartsWith("A15.1", response.Recommendations[0].Code);
+    }
+
+    [Fact]
+    public void 涂阴培阳输入_仅被培养分支可达A151()
+    {
+        // 门控动因案例（真实字典行 A15.100X005 继发性肺结核(初治,耐多药)涂阴培阳）：
+        // DrillIcdLead 注释里记过的 结核→多发性 A19.9 噪声链就是这条输入暴露的。
+        // 涂阴培阳 ≡ 确定的仅被培养（同组），变体补钻走出解释证据词的深链后接管。
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("A15.100X005", "继发性肺结核(初治,耐多药)涂阴培阳"),
+            Dict("A16.200X002", "继发性肺结核(初治,耐多药)"),
+        ]);
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "继发性肺结核(初治,耐多药)涂阴培阳", topK: 8,
+            icdSnapshot: EvidenceGateSnapshot(), tumorSnapshot: null, icdDictionary: dictionary,
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true),
+            termSynonyms: SmearSynonyms());
+
+        Assert.NotEmpty(response.Recommendations);
+        Assert.StartsWith("A15.1", response.Recommendations[0].Code);
+        var top1 = response.Recommendations[0];
+        Assert.Contains(top1.Path, segment => segment.Contains("仅被培养"));
+    }
+
+    private static IcdIndexDiagnosisResolver EvidenceResolver() =>
+        new(leadWordTopK: 12, maxResults: 3, diagnosisCodeSystem: "ICD-10",
+            titleDirectEnabled: false, titleReverseEnabled: true);
+
+    [Fact]
+    public void 流水线病理阳性输入_证据分支可达A152且未证实分支被R2剔除()
+    {
+        // P0-P3 极性族在流水线（IcdIndexDiagnosisResolver）的同口径移植：
+        // 阳性输入走证据链（确定的→被组织学 A15.2），未证实泛码（肺(空洞性) A16.2，
+        // 分叉点已标 Negative）被 R2 剔除，不得再当 Top1 交付。
+        var results = EvidenceResolver().Resolve(
+            EvidenceGateSnapshot(), EvidenceGateDictionary(), "肺结核瘤,病理(+)",
+            synonyms: SmearSynonyms());
+
+        Assert.NotEmpty(results);
+        Assert.StartsWith("A15.2", results[0].Code);
+        Assert.DoesNotContain(results, item => item.Code.StartsWith("A16.", StringComparison.Ordinal));
+        Assert.DoesNotContain(results, item => item.Code.StartsWith("A18.", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void 流水线结核性肺纤维变性病理阳性_证据分支可达A152()
+    {
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("A15.203", "结核性肺纤维变性,病理(+)"),
+            Dict("A16.203", "结核性肺纤维变性"),
+        ]);
+        var results = EvidenceResolver().Resolve(
+            EvidenceGateSnapshot(), dictionary, "结核性肺纤维变性,病理(+)",
+            synonyms: SmearSynonyms());
+
+        Assert.NotEmpty(results);
+        Assert.StartsWith("A15.2", results[0].Code);
+        Assert.DoesNotContain(results, item => item.Code.StartsWith("A16.", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void 流水线涂阴培阳输入_仅被培养分支可达A151()
+    {
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("A15.100X005", "继发性肺结核(初治,耐多药)涂阴培阳"),
+            Dict("A16.200X002", "继发性肺结核(初治,耐多药)"),
+        ]);
+        var results = EvidenceResolver().Resolve(
+            EvidenceGateSnapshot(), dictionary, "继发性肺结核(初治,耐多药)涂阴培阳",
+            synonyms: SmearSynonyms());
+
+        Assert.NotEmpty(results);
+        Assert.StartsWith("A15.1", results[0].Code);
+    }
+
+    [Fact]
+    public void 流水线阴性输入_未证实分支照常保留不误删()
+    {
+        // R2 只在阳性输入时剔除阴性/未证实分支；阴性输入的 A16.2 候选照常保留
+        // （可能是"待排"语境），不得反向误删（becameEmpty 硬线）。
+        var results = EvidenceResolver().Resolve(
+            EvidenceGateSnapshot(), EvidenceGateDictionary(), "肺结核瘤,痰镜检(-)",
+            synonyms: SmearSynonyms());
+
+        Assert.NotEmpty(results);
+        Assert.DoesNotContain(results, item => item.Code.StartsWith("A15.", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void 流水线阳性输入无阳性分支时_保留既有推荐不误删()
+    {
+        // 流水线硬线：不得让任何输入失去既有推荐。阳性输入但候选池里没有任何
+        // 阳性分支（证据深链未走到）时，R2 不剔——没有替代方案可让位，
+        // 面板引擎配 POLARITY.UNMATCHED 降级提示可以空，流水线没有这条通道。
+        var results = EvidenceResolver().Resolve(
+            EvidenceGateSnapshot(), EvidenceGateDictionary(), "肺结核瘤,痰镜检(+)");
+
+        Assert.NotEmpty(results);
+    }
+
+    [Fact]
+    public void 流水线证据分支_字典真码优先于回退码()
+    {
+        // 变体输入（肺结核瘤,病理(+) → 肺结核瘤,确定的被组织学）走出的证据链，
+        // 字典标题写的是临床原文 肺结核瘤,病理(+)——展开门控用变体文本时标题字面
+        // 永远对不上，整族只剩回退码 A15.200。原文回退展开后拿到字典真码 A15.201。
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("A15.201", "肺结核瘤,病理(+)"),
+            Dict("A15.200", "肺结核,经组织学所证实"),
+        ]);
+        var results = EvidenceResolver().Resolve(
+            EvidenceGateSnapshot(), dictionary, "肺结核瘤,病理(+)",
+            synonyms: SmearSynonyms());
+
+        Assert.NotEmpty(results);
+        Assert.Equal("A15.201", results[0].Code);
+        Assert.False(results[0].IsIndexFallback);
+    }
 }

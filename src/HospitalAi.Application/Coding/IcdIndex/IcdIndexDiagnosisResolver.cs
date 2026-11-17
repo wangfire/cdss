@@ -35,7 +35,9 @@ public sealed record DiagnosisIndexRecommendation(
     /// <summary>同族（同一索引编码展开批次）内的精排名次，供下游抗重排噪声。</summary>
     int FamilyRank = 0,
     /// <summary>产出本条的索引编码（同族粒度菜单的共同身份）。名额分配按族计，不按键计。</summary>
-    string? IndexFamilyCode = null);
+    string? IndexFamilyCode = null,
+    /// <summary>链路终点的证据极性（P0 极性标签）：R2 极性冲突剔除与 P1 极性匹配优先用。</summary>
+    string Polarity = "Unspecified");
 
 /// <summary>
 /// 诊断输入的两段式解析：主导词召回 → 逐级下钻 → 索引编码格式解析 → 字典展开。
@@ -121,6 +123,24 @@ public sealed class IcdIndexDiagnosisResolver(
         texts.AddRange(TestPoleMarkerVariants(inputText)
             .Where(text => text.Length > 0 && !texts.Contains(text)));
 
+        // P0-P3 极性族（流水线口径，与编码录入面板引擎共用同一判据）：
+        // 输入带证据极性时才启用证据模式——证据等价组成员词面（病理(+)→确定的被组织学…）
+        // 传给 Drill 做选层证据优先与词面占位；无极性的普通同义词命中不得触发，
+        // 否则占位拦截会波及全部同义词输入（万条零偏差的保险）。
+        var inputPolarity = IcdIndexPolarity.DeriveInputPolarity(inputText);
+        IReadOnlyList<string>? evidenceKeys = null;
+        // 证据模式下的同义词快照（供字典展开的同义词解释门用）：只有输入带证据极性
+        // 且确实命中等价类时才接——无极性输入接这条门会放宽全部同义词命中的字典放行口径。
+        IcdTermSynonymSnapshot? evidenceSynonyms = null;
+        if (synonyms is not null && inputPolarity != "None")
+        {
+            evidenceKeys = synonyms.GroupMembersForText(inputText, TermSynonymTypes.Diagnosis);
+            if (evidenceKeys.Count > 0)
+            {
+                evidenceSynonyms = synonyms;
+            }
+        }
+
         var ranked = new List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)>();
         // 另见-1 提示候选：只在常规链路的名额没占满时补位，不参与 Top1 竞争。
         var hints = new List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)>();
@@ -129,7 +149,21 @@ public sealed class IcdIndexDiagnosisResolver(
         var conditionFallbacks = new List<ConditionFallback>();
         foreach (var text in texts)
         {
-            ResolveText(snapshot, dictionary, text, ranked, hints, conditionFallbacks, tumor, cancellationToken);
+            ResolveText(snapshot, dictionary, text, inputText, ranked, hints, conditionFallbacks, tumor,
+                evidenceKeys, evidenceSynonyms, cancellationToken);
+        }
+
+        // R2 极性冲突剔除（P0）：输入含阳性证据词（病理(+)、痰镜检(+)、培阳、涂阳）时，
+        // 终点极性为 阴性/未证实 的链路剔除——语义反转防护（2026-11-16 用户案例：
+        // 结核性肺纤维变性,病理(+) 曾产出 A16.023 病理(-)）。
+        // **有阳性分支可交付时才剔**：候选池里存在极性一致的阳性分支（同义词变体走出的
+        // 证据深链）时，阴性/未证实候选让位；整个池子都没有阳性分支时保留原推荐——
+        // 流水线硬线是"不得让任何输入失去既有推荐"（面板引擎配 POLARITY.UNMATCHED
+        // 降级提示可以空，流水线没有这条通道，无替代时不剔）。
+        if (inputPolarity == "Positive"
+            && ranked.Any(item => item.Recommendation.Polarity == "Positive"))
+        {
+            ranked.RemoveAll(item => item.Recommendation.Polarity is "Negative" or "NotPerformed");
         }
 
         // 字典标题直达：输入逐字包含完整标题（或与标题逐字相等）是比任何链路都硬的证据。
@@ -154,7 +188,7 @@ public sealed class IcdIndexDiagnosisResolver(
         // 整标题贴合度优先于链路分数：标题被输入逐字连续包含（且解释掉 ≥75% 输入字符）时，
         // 编码员看的就是这一条，其它链路的相关性再高也只能排其后。贴合度同为 0（无整标题命中）
         // 时退回链路分数口径，非命中类结果的排序完全不变。
-        var results = Order(ranked).ToList();
+        var results = Order(ranked, inputPolarity).ToList();
 
         // 提示链路补位：Top1 恒为"直接采用码"，另见目标树的更细码只补空出来的名额，
         // 让编码员看到 "病案信息更详细时须转 分娩，剖宫产 取 O34.2" 这类漏填信号。
@@ -162,7 +196,7 @@ public sealed class IcdIndexDiagnosisResolver(
         // 其中 胆囊结石 让位给 先天性胆囊缺如 Q44.3、创伤性关节病 让位给 肘关节扭伤 S53.1
         // 这类"指针树里的另一个部位"，精度上不划算）。
         var taken = results.Select(item => item.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var hint in Order(hints))
+        foreach (var hint in Order(hints, inputPolarity))
         {
             if (results.Count < maxResults && taken.Add(hint.Code))
             {
@@ -227,16 +261,22 @@ public sealed class IcdIndexDiagnosisResolver(
     private const int MaxSeatsPerIndexFamily = 1;
 
     private IEnumerable<DiagnosisIndexRecommendation> Order(
-        List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)> candidates)
+        List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)> candidates,
+        string inputPolarity = "None")
     {
+        // P1 R1 极性匹配优先（口径对齐面板引擎 Assemble）：输入含阳性/阴性证据词时，
+        // 极性一致的候选排在未证实泛码之前（整标题贴合仍是更高优先档——逐字写着的
+        // 标准标题码不因极性让位）。极性冲突的候选已在 R2 剔除。
         var sorted = candidates
             .GroupBy(item => item.Recommendation.Code, StringComparer.OrdinalIgnoreCase)
             .Select(group => group
                 .OrderByDescending(item => item.Recommendation.WholeTitleDepth)
+                .ThenByDescending(item => IcdIndexPolarity.PolarityRank(item.Recommendation.Polarity, inputPolarity))
                 .ThenByDescending(item => item.RawScore)
                 .ThenBy(item => item.Recommendation.FamilyRank)
                 .First())
             .OrderByDescending(item => item.Recommendation.WholeTitleDepth)
+            .ThenByDescending(item => IcdIndexPolarity.PolarityRank(item.Recommendation.Polarity, inputPolarity))
             .ThenByDescending(item => item.RawScore)
             .ThenBy(item => item.Recommendation.FamilyRank)
             .ToList();
@@ -288,10 +328,13 @@ public sealed class IcdIndexDiagnosisResolver(
         IcdIndexSnapshot snapshot,
         IcdDictionarySnapshot dictionary,
         string inputText,
+        string originalInputText,
         List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)> ranked,
         List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)> hints,
         List<ConditionFallback> conditionFallbacks,
         TumorIndexSnapshot? tumor,
+        IReadOnlyList<string>? evidenceKeys,
+        IcdTermSynonymSnapshot? evidenceSynonyms,
         CancellationToken cancellationToken)
     {
         var inputKey = TextMatch.NormalizeKey(inputText);
@@ -306,8 +349,9 @@ public sealed class IcdIndexDiagnosisResolver(
                 return;
             }
 
-            Collect(snapshot, dictionary, inputText,
-                IcdIndexMatcher.Drill(snapshot, exactHit, inputKey), exactHit.Alias.Weight, ranked, hints, tumor: tumor);
+            Collect(snapshot, dictionary, inputText, originalInputText,
+                IcdIndexMatcher.Drill(snapshot, exactHit, inputKey, evidenceKeys: evidenceKeys),
+                exactHit.Alias.Weight, ranked, hints, tumor: tumor, evidenceSynonyms: evidenceSynonyms);
             return;
         }
 
@@ -327,9 +371,10 @@ public sealed class IcdIndexDiagnosisResolver(
         foreach (var hit in leadHits)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Collect(snapshot, dictionary, inputText,
-                IcdIndexMatcher.Drill(snapshot, hit, inputKey, genericJumps: genericJumps),
-                hit.Alias.Weight, ranked, hints, tumor: tumor);
+            Collect(snapshot, dictionary, inputText, originalInputText,
+                IcdIndexMatcher.Drill(snapshot, hit, inputKey, genericJumps: genericJumps,
+                    evidenceKeys: evidenceKeys),
+                hit.Alias.Weight, ranked, hints, tumor: tumor, evidenceSynonyms: evidenceSynonyms);
         }
 
         // 见-1 的 level-0 形态（"剖腹产 - 见 剖宫产"）：这些行不是主导词，原先只有整条输入
@@ -367,16 +412,18 @@ public sealed class IcdIndexDiagnosisResolver(
             }
 
             Collect(
-                snapshot, dictionary, inputText,
+                snapshot, dictionary, inputText, originalInputText,
                 IcdIndexMatcher.Drill(
                     snapshot,
                     new LeadWordHit(redirectLead, redirectSeed, 0m, 0),
                     inputKey,
-                    jumpTrace: $"{key} → {redirectLead.Term}"),
+                    jumpTrace: $"{key} → {redirectLead.Term}",
+                    evidenceKeys: evidenceKeys),
                 1m,
                 ranked,
                 hints,
-                tumor: tumor);
+                tumor: tumor,
+                evidenceSynonyms: evidenceSynonyms);
         }
 
         // 常规主导词只要有产出，泛词 病，疾病 通道就不启用（编码员也是先找真主导词，
@@ -596,7 +643,8 @@ public sealed class IcdIndexDiagnosisResolver(
                 }
 
                 var before = ranked.Count;
-                Collect(snapshot, dictionary, fallback.InputText, drill, 1m, ranked, tumor: tumor);
+                Collect(snapshot, dictionary, fallback.InputText, fallback.InputText, drill, 1m, ranked,
+                    tumor: tumor);
                 if (ranked.Count > before)
                 {
                     return;
@@ -609,19 +657,23 @@ public sealed class IcdIndexDiagnosisResolver(
         IcdIndexSnapshot snapshot,
         IcdDictionarySnapshot dictionary,
         string inputText,
+        string originalInputText,
         DrillResult? drill,
         decimal leadBoost,
         List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)> ranked,
         List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)>? hints = null,
-        TumorIndexSnapshot? tumor = null)
+        TumorIndexSnapshot? tumor = null,
+        IcdTermSynonymSnapshot? evidenceSynonyms = null)
     {
-        var produced = CollectOnce(snapshot, dictionary, inputText, drill, leadBoost, ranked, tumor: tumor);
+        var produced = CollectOnce(snapshot, dictionary, inputText, originalInputText, drill, leadBoost, ranked,
+            tumor: tumor, evidenceSynonyms: evidenceSynonyms);
 
         // 见-1 强制改道让位给跳转链路的本地祖先兜底链路：改道链路展不开时回退，
         // 规则要求的是"优先"，不是"没有别的码就不出推荐"。
         if (!produced && drill?.Displaced is { } displaced)
         {
-            CollectOnce(snapshot, dictionary, inputText, displaced, leadBoost, ranked, tumor: tumor);
+            CollectOnce(snapshot, dictionary, inputText, originalInputText, displaced, leadBoost, ranked,
+                tumor: tumor, evidenceSynonyms: evidenceSynonyms);
         }
 
         // 另见-1：Top1 保持本行直接采用码，跳转树的更细码只进提示池补位。
@@ -629,9 +681,9 @@ public sealed class IcdIndexDiagnosisResolver(
         {
             foreach (var hint in drill.SeeAlsoHints)
             {
-                CollectOnce(snapshot, dictionary, inputText, hint, leadBoost, hints,
+                CollectOnce(snapshot, dictionary, inputText, originalInputText, hint, leadBoost, hints,
                     $"本行 {drill.CodeNode.Code} 为直接采用码，更详细情况见",
-                    tumor: tumor);
+                    tumor: tumor, evidenceSynonyms: evidenceSynonyms);
             }
         }
     }
@@ -640,11 +692,13 @@ public sealed class IcdIndexDiagnosisResolver(
         IcdIndexSnapshot snapshot,
         IcdDictionarySnapshot dictionary,
         string inputText,
+        string originalInputText,
         DrillResult? drill,
         decimal leadBoost,
         List<(decimal RawScore, DiagnosisIndexRecommendation Recommendation)> ranked,
         string? hintNote = null,
-        TumorIndexSnapshot? tumor = null)
+        TumorIndexSnapshot? tumor = null,
+        IcdTermSynonymSnapshot? evidenceSynonyms = null)
     {
         var rankedBefore = ranked.Count;
         if (drill?.CodeNode.Code is not { Length: > 0 } indexCode)
@@ -665,9 +719,45 @@ public sealed class IcdIndexDiagnosisResolver(
         // 字典展开门控用规范形路径：标题写规范形（脑梗死），命中别名（梗塞）拼的路径
         // 会让单字覆盖差一个字而整族误杀（详见 DrillResult.ExpansionPathKey）。
         var expansionPathKey = drill.ExpansionPathKey ?? drill.PathKey;
+        // 同义词快照**只在证据模式下**接入字典展开门（同义词解释门，2026-11-16）：
+        // 索引分支词 被组织学 与字典标题 肺结核瘤,病理(+) 同义不同字，字面覆盖永远凑不齐，
+        // 整族被误杀成"字典库无此码"回退（A15.201 的教训）。
+        // 只在证据模式下接：无极性输入走这条门会放宽所有同义词命中的字典放行口径
+        // （万条实测 1051 行变化：非极性输入的精确码被泛码顶掉），超出本轮改动范围。
+        var expansionSynonyms = evidenceSynonyms;
         var expanded = IndexCodeExpander.Expand(
             parsed, dictionary, inputText, expansionPathKey, maxResults, diagnosisCodeSystem, tumor,
-            titleReverseEnabled);
+            titleReverseEnabled,
+            pathSegments: expansionSynonyms is null
+                ? null
+                : drill.Path.Select(node => node.Term).ToList(),
+            synonyms: expansionSynonyms);
+
+        // 变体输入的字典展开回退：证据链是**改写变体**走出来的（肺结核瘤,病理(+) →
+        // 肺结核瘤,确定的被组织学），字典标题写的是临床原文（肺结核瘤,病理(+)）——
+        // 用变体文本过门控，标题的字面永远对不上，整族只剩回退码 A15.200。
+        // 变体展开不出**真码**时用**用户原文**再展开一次：原文与标题逐字相等，
+        // 拿到的是字典真码（A15.201 肺结核瘤,病理(+)）。
+        // 判据是"没有非回退产出"（展开器在放行失败时会先给一条回退码占位，
+        // 不能用 expanded.Count==0 判断）；原文展开有产出则原样保留（不引入第二套口径）。
+        // **只在证据模式下启用**：变体链路的路径是变体文本钻出来的，用原文去展开别的
+        // 路径（如 乳腺腺瘤术后 → 手术后状态 Z98.8 的路径上冒出乳腺腺瘤 N60.200）
+        // 会把与该链路无关的码塞进候选池——万条实测 37 行变化、11 条 Top1 变更，
+        // 全部与极性无关，属越界改动。
+        if (evidenceSynonyms is not null
+            && !expanded.Any(item => !item.IsIndexFallback)
+            && !string.Equals(originalInputText, inputText, StringComparison.Ordinal))
+        {
+            var originalExpanded = IndexCodeExpander.Expand(
+                parsed, dictionary, originalInputText, expansionPathKey, maxResults, diagnosisCodeSystem,
+                tumor, titleReverseEnabled,
+                pathSegments: drill.Path.Select(node => node.Term).ToList(),
+                synonyms: expansionSynonyms);
+            if (originalExpanded.Any(item => !item.IsIndexFallback))
+            {
+                expanded = originalExpanded;
+            }
+        }
 
         // 形态学码在肿瘤表没查到部位（输入只写 "C细胞癌"，没有部位词）：索引在同一节点下备了
         // "－－未特指部位" 行（全库 311 条、269 条带码，值就是该形态的最常见部位码
@@ -734,7 +824,10 @@ public sealed class IcdIndexDiagnosisResolver(
                         + (item.Note is { Length: > 0 } fallbackNote ? $"（{fallbackNote}）" : string.Empty),
                 item.WholeTitleDepth,
                 item.FamilyRank,
-                indexCode)));
+                indexCode,
+                // 链路终点（drill 停住的那一行）的极性标签，口径同面板引擎 path.Polarity：
+                // R2 极性冲突剔除与 P1 极性匹配优先按它裁决。
+                drill.Path.Count > 0 ? drill.Path[^1].Polarity : "Unspecified")));
         }
 
         return ranked.Count > rankedBefore;

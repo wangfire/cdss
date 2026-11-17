@@ -755,14 +755,27 @@ public static class IcdIndexMatcher
                 // 证据分支是唯一正确去向，字面噪声分支不得抢占。
                 var childIsEvidence = EvidenceKeysMatch(child, evidenceKeys);
                 var bestIsEvidence = bestChild is not null && EvidenceKeysMatch(bestChild, evidenceKeys);
+                // P3 选层证据子树前瞻：证据分支的**祖先层**（结核→肺→确定的→仅被培养 的 肺/确定的）
+                // 自身不是证据词面，gain 也可能低于借字面涨分的噪声分支（多发性 靠 继发性 的 发性
+                // 2 字）——但其子树能走到证据词面。有证据词时优先保住"通往证据分支"的选层，
+                // 否则贪婪选层在第一层就被噪声分支带偏，证据深链整支进不去。
+                var childReachesEvidence = childIsEvidence
+                    || (evidenceKeys is { Count: > 0 }
+                        && SubtreeReachesEvidence(child, evidenceKeys, EvidenceDescentDepth));
+                var bestReachesEvidence = bestChild is not null
+                    && (bestIsEvidence
+                        || (evidenceKeys is { Count: > 0 }
+                            && SubtreeReachesEvidence(bestChild, evidenceKeys, EvidenceDescentDepth)));
                 if (childBestKey is not null
                     && childBestGain >= 1
-                    && (childIsEvidence && !bestIsEvidence
-                        || (childIsEvidence == bestIsEvidence
-                            && (childBestGain > bestGain
-                                || (childBestGain == bestGain && childBestRatio > bestRatio)
-                                || (childBestGain == bestGain && childBestRatio == bestRatio
-                                    && childBestSegment > bestSegment)))))
+                    && (childReachesEvidence && !bestReachesEvidence
+                        || (childReachesEvidence == bestReachesEvidence
+                            && (childIsEvidence && !bestIsEvidence
+                                || (childIsEvidence == bestIsEvidence
+                                    && (childBestGain > bestGain
+                                        || (childBestGain == bestGain && childBestRatio > bestRatio)
+                                        || (childBestGain == bestGain && childBestRatio == bestRatio
+                                            && childBestSegment > bestSegment)))))))
                 {
                     bestGain = childBestGain;
                     bestRatio = childBestRatio;
@@ -1144,7 +1157,9 @@ public static class IcdIndexMatcher
     /// 节点是否命中证据词面（P3 选层证据词优先）：**整词包含**判据——
     /// 证据词面包含节点核心词（"确定的被组织学" ⊇ 被组织学）或节点核心词包含证据词，
     /// 且不含"共享单字/双字散落重叠"的弱形态（结缔组织 vs 被组织学 只共享 组织 2 字）。
-    /// 判据用核心词（CoreTerm，剥括号）而非别名，避免 结缔组织(全身性) 的括号内容干扰。
+    /// 判据用核心词（CoreTerm，剥括号）**与各别名 MatchKey**：真实索引行常带解释尾段
+    /// （"被显微镜下痰检查，伴有或不伴有痰培养"），尾段让核心词与证据词面
+    /// （确定的被显微镜下痰检查）的整词包含失效——别名才是实际参与匹配的词面。
     /// 证据词由调用方从同义词等价组提取（GroupMembersForText），无证据词时恒 false。
     /// </summary>
     private static bool EvidenceKeysMatch(IcdIndexNode node, IReadOnlyList<string>? evidenceKeys)
@@ -1154,24 +1169,83 @@ public static class IcdIndexMatcher
             return false;
         }
 
-        var core = TextMatch.NormalizeKey(node.CoreTerm);
-        if (core.Length < 2)
+        foreach (var face in NodeEvidenceFaces(node))
         {
-            return false;
-        }
-
-        foreach (var evidence in evidenceKeys)
-        {
-            var evidenceKey = TextMatch.NormalizeKey(evidence);
-            if (evidenceKey.Length < 2)
+            if (face.Length < 2)
             {
                 continue;
             }
 
-            // 整词包含：证据词面含节点核心词（确定的被组织学 ⊇ 被组织学）
-            // 或节点核心词含证据词面（罕见反向）。
-            if (evidenceKey.Contains(core, StringComparison.Ordinal)
-                || core.Contains(evidenceKey, StringComparison.Ordinal))
+            foreach (var evidence in evidenceKeys)
+            {
+                var evidenceKey = TextMatch.NormalizeKey(evidence);
+                if (evidenceKey.Length < 2)
+                {
+                    continue;
+                }
+
+                // 整词包含：证据词面含节点词面（确定的被组织学 ⊇ 被组织学）
+                // 或节点词面含证据词面（罕见反向）。
+                if (evidenceKey.Contains(face, StringComparison.Ordinal)
+                    || face.Contains(evidenceKey, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>节点的证据判据词面：核心词 + 各别名 MatchKey（去重，归一化）。</summary>
+    private static IEnumerable<string> NodeEvidenceFaces(IcdIndexNode node)
+    {
+        var core = TextMatch.NormalizeKey(node.CoreTerm);
+        if (core.Length >= 2)
+        {
+            yield return core;
+        }
+
+        foreach (var alias in node.Aliases)
+        {
+            var matchKey = TextMatch.NormalizeKey(alias.MatchKey);
+            if (matchKey.Length >= 2 && !string.Equals(matchKey, core, StringComparison.Ordinal))
+            {
+                yield return matchKey;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 证据分支前瞻层数：证据词面通常在噪声分支被抢层级的下方 2-3 层
+    /// （结核→肺→确定的→被组织学/仅被培养）。前瞻只判定"能否走到证据词面"，
+    /// 不改写选层本身，层数封顶避免大子树的扫描开销。
+    /// </summary>
+    private const int EvidenceDescentDepth = 3;
+
+    /// <summary>
+    /// 节点子树内（限 <paramref name="depth"/> 层）是否存在证据词面命中的节点
+    /// （P3 选层证据子树前瞻）：命中即当前节点是"通往证据分支"的祖先层，
+    /// 选层时优先保住它。node 自身命中也算。
+    /// </summary>
+    private static bool SubtreeReachesEvidence(
+        IcdIndexNode node,
+        IReadOnlyList<string> evidenceKeys,
+        int depth)
+    {
+        if (EvidenceKeysMatch(node, evidenceKeys))
+        {
+            return true;
+        }
+
+        if (depth <= 0)
+        {
+            return false;
+        }
+
+        foreach (var child in node.Children)
+        {
+            if (SubtreeReachesEvidence(child, evidenceKeys, depth - 1))
             {
                 return true;
             }

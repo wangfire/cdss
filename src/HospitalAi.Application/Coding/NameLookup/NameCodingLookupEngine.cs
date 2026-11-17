@@ -135,7 +135,7 @@ public static class NameCodingLookupEngine
             // 传给 Drill 作选层证据优先与词面占位的判据。极性门控是零偏差硬线的保险：
             // 无极性的普通同义词命中（阿尔茨海默硬化 等）不得触发证据模式，
             // 否则占位拦截与证据优先会波及全部同义词输入。
-            evidenceKeys = DeriveInputPolarity(text) == "None"
+            evidenceKeys = IcdIndexPolarity.DeriveInputPolarity(text) == "None"
                 ? null
                 : termSynonyms.GroupMembersForText(text, TermSynonymTypes.Diagnosis);
             foreach (var variantText in termSynonyms.ExpandVariants(text, TermSynonymTypes.Diagnosis))
@@ -294,7 +294,7 @@ public static class NameCodingLookupEngine
         // （2026-11-16 用户案例：结核性肺纤维变性,病理(+) 曾产出 A16.023 病理(-)）。
         // 反向不做剔除：输入含阴性证据词时阳性分支仍作并列候选（可能是"待排"语境）。
         // 只删不加：最坏结果是候选变少，不会引入新错码。
-        var inputPolarity = DeriveInputPolarity(text);
+        var inputPolarity = IcdIndexPolarity.DeriveInputPolarity(text);
         if (inputPolarity == "Positive")
         {
             foreach (var leadTerm in leadTerms.ToList())
@@ -364,7 +364,7 @@ public static class NameCodingLookupEngine
         // 那要等变体补钻来覆盖），主链路暂缓交付，等补钻深链出来后让位。
         // 案例依据：继发性肺结核…涂阴培阳 的 结核→多发性 A19.9（覆盖 0.267 噪声链）
         // 与 肺结核瘤,病理(+) 的 结核→结缔组织 链——证据词一个都没进链路。
-        var inputPolarity = DeriveInputPolarity(text);
+        var inputPolarity = IcdIndexPolarity.DeriveInputPolarity(text);
         var evidenceTerms = ExtractEvidenceTerms(text, inputPolarity);
         var drill = IcdIndexMatcher.Drill(
             snapshot,
@@ -872,61 +872,6 @@ public static class NameCodingLookupEngine
     }
 
     /// <summary>
-    /// 候选的极性排序权重（P1 R1 极性匹配优先）：
-    /// 输入极性与候选极性一致 → 2；输入无证据词或候选未标注 → 1；相反 → 0。
-    /// 只做同分附近的次序调整，冲突候选已由 R2 剔除。
-    /// </summary>
-    private static int PolarityRank(string? candidatePolarity, string inputPolarity)
-    {
-        if (inputPolarity is not ("Positive" or "Negative")
-            || candidatePolarity is not ("Positive" or "Negative"))
-        {
-            return 1;
-        }
-
-        return string.Equals(candidatePolarity, inputPolarity, StringComparison.Ordinal) ? 2 : 0;
-    }
-
-    /// <summary>
-    /// 输入的证据极性识别（P0）：从输入原文找证据词——
-    /// 阳性：(+)、阳性、培阳、涂阳、涂片(+) 等"已证实"措辞；
-    /// 阴性：(-)、阴性、未做、未查 等"未证实/阴性"措辞；
-    /// 都没写 → None（不参与极性裁决）。
-    /// 顺序：阴性优先于阳性（"未做检查"含"未"，不应被"检查"类词误判）。
-    /// </summary>
-    private static string DeriveInputPolarity(string inputText)
-    {
-        if (string.IsNullOrWhiteSpace(inputText))
-        {
-            return "None";
-        }
-
-        foreach (var keyword in NegativeInputPolarityKeywords)
-        {
-            if (inputText.Contains(keyword, StringComparison.Ordinal))
-            {
-                return "Negative";
-            }
-        }
-
-        foreach (var keyword in PositiveInputPolarityKeywords)
-        {
-            if (inputText.Contains(keyword, StringComparison.Ordinal))
-            {
-                return "Positive";
-            }
-        }
-
-        return "None";
-    }
-
-    private static readonly string[] NegativeInputPolarityKeywords =
-        ["(-)", "阴性", "未做", "未查", "未做细菌学"];
-
-    private static readonly string[] PositiveInputPolarityKeywords =
-        ["(+)", "阳性", "培阳", "涂阳"];
-
-    /// <summary>
     /// 链路路径 A 是否为链路路径 B 的严格前缀（逐节点引用相等）：
     /// 成立即 A 停在 B 的祖先层——深链覆盖浅链裁决的判据
     /// （551e973 截断让位原则在续查链上的延伸）。
@@ -1295,20 +1240,20 @@ public static class NameCodingLookupEngine
         // P1 R1 极性匹配优先：输入含阳性/阴性证据词时，极性一致的候选排在前面
         // （阳性输入 → 阳性分支优先；阴性输入 → 阴性分支优先）。只影响同分附近的次序，
         // 极性冲突的候选已在 R2 剔除。
-        var inputPolarity = DeriveInputPolarity(text);
+        var inputPolarity = IcdIndexPolarity.DeriveInputPolarity(text);
         foreach (var group in candidates
             .GroupBy(item => item.Code, StringComparer.OrdinalIgnoreCase)
             .Select(group => group
                 .OrderBy(item => item.IsIndexFallback)
                 .ThenBy(item => item.IsSeeAlsoHint)
-                .ThenByDescending(item => PolarityRank(item.Polarity, inputPolarity))
+                .ThenByDescending(item => IcdIndexPolarity.PolarityRank(item.Polarity, inputPolarity))
                 .ThenByDescending(item => item.Score)
                 .ThenByDescending(item => item.WholeTitleDepth)
                 .ThenByDescending(item => item.TitleSpecificity)
                 .First())
             .OrderBy(item => item.IsIndexFallback)
             .ThenBy(item => item.IsSeeAlsoHint)
-            .ThenByDescending(item => PolarityRank(item.Polarity, inputPolarity))
+            .ThenByDescending(item => IcdIndexPolarity.PolarityRank(item.Polarity, inputPolarity))
             .ThenByDescending(item => item.Score)
             .ThenByDescending(item => item.WholeTitleDepth)
             .ThenByDescending(item => item.TitleSpecificity)

@@ -3805,4 +3805,171 @@ public sealed class IcdIndexTests
         Assert.DoesNotContain(pipeline, item => item.Code.StartsWith("A18.", StringComparison.Ordinal));
         Assert.DoesNotContain(panel.Recommendations, item => item.Code.StartsWith("A18.", StringComparison.Ordinal));
     }
+
+    /// <summary>
+    /// 极性专项回归门禁（P1）：复刻真库结核树关键分支（18793 及其 0-2 级子行），
+    /// 对 logs/pole_names_cap.txt 的 38 条极性语料逐条断言**码族方向**——
+    /// 阳性输入落 A15（证实族），阴性输入落 A16.0（阴性族），部位树输入不得
+    /// 被拖进别的部位/噪声分支。这些方向规则就是本轮极性族修复的验收口径，
+    /// 此后任何改动破坏其中一条即门禁红。
+    /// </summary>
+    public static IReadOnlyList<object[]> PoleGateCases { get; } =
+    [
+        // 阳性（证据族）：肺树走 确定的→被XX 分支；非肺部位走 伴有细菌学和组织学证实 分支。
+        [new object[] { "肺结核瘤,病理(+)", "A15" }],
+        [new object[] { "肺干酪性结核,病理(+)", "A15" }],
+        [new object[] { "浸润型肺结核,病理(+)", "A15" }],
+        [new object[] { "结核性支气管扩张,病理(+)", "A15" }],
+        [new object[] { "结核性肺纤维变性,痰镜检(+)", "A15" }],
+        [new object[] { "肺干酪性结核,痰镜检(+)", "A15" }],
+        [new object[] { "结核性肺炎,痰培养(+)", "A15" }],
+        [new object[] { "肺干酪性结核,痰培养(+)", "A15" }],
+        [new object[] { "结核性肺纤维变性,痰培养(+)", "A15" }],
+        [new object[] { "支气管结核,病理(+)", "A15.5" }],
+        [new object[] { "结核性鼻窦炎,病理(+)", "A15.8" }],
+        [new object[] { "鼻中隔结核,病理(+)", "A15.8" }],
+        [new object[] { "鼻结核,病理(+)", "A15.8" }],
+        [new object[] { "纵隔淋巴结结核,细菌学(+)", "A15.4" }],
+        [new object[] { "结核性脓胸,病理(+)", "A15.6" }],
+        [new object[] { "继发性肺结核(初治,耐多药)涂阴培阳", "A15.1" }],
+        // 阴性（A16.0 检查为阴性族）：不得进 A15 证实族（语义反转防护）。
+        [new object[] { "肺结核瘤,痰镜检(-)", "A16" }],
+        [new object[] { "肺干酪性结核,痰镜检(-)", "A16" }],
+        [new object[] { "结核性肺纤维变性,痰镜检(-)", "A16" }],
+        [new object[] { "结核性气胸,痰镜检(-)", "A16" }],
+        [new object[] { "浸润型肺结核,痰培养(-)", "A16" }],
+        [new object[] { "肺结核,痰培养(-)", "A16" }],
+        [new object[] { "结核性肺纤维变性,痰培养(-)", "A16" }],
+        [new object[] { "结核性肺炎,病理(-)", "A16" }],
+        [new object[] { "肺干酪性结核,病理(-)", "A16" }],
+        [new object[] { "结核性肺纤维变性,病理(-)", "A16" }],
+        [new object[] { "结核性气胸,病理(-)", "A16" }],
+        // 分布分支不被证据前瞻抢占：血行播散性 是输入点名的分支（A19 族）。
+        [new object[] { "血行播散性肺结核(初治,耐多药)涂阴培阳", "A19" }],
+    ];
+
+    [Theory]
+    [MemberData(nameof(PoleGateCases))]
+    public void 极性专项门禁_码族方向(object[] caseData)
+    {
+        var input = (string)caseData[0];
+        var expectedFamily = (string)caseData[1];
+        var results = EvidenceResolver().Resolve(
+            PoleGateSnapshot(), PoleGateDictionary(), input,
+            synonyms: SmearSynonyms());
+
+        Assert.NotEmpty(results);
+        Assert.StartsWith(
+            expectedFamily,
+            results[0].Code,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>极性门禁夹具：真库结核树 18793 的关键 0-2 级子行（肺/播散性/支气管/鼻/喉部位 + 各证实/阴性分支）。</summary>
+    private static IcdIndexSnapshot PoleGateSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(18793, "结核(病)，结核性(干酪样)(变性)(坏疽)(坏死)", "A16.9"),
+        // 肺树：确定的 下四条证实分支 + 阴性/未做分支。
+        ChildRow(18843, 18793, "肺(空洞性)(纤维变性)(浸润性)(结节性)", "A16.2", 1),
+        ChildRow(18844, 18843, "不伴有提及细菌学或组织学证实", "A16.2", 2),
+        ChildRow(18847, 18843, "确定的", null, 2),
+        ChildRow(18848, 18847, "被未特指的方法", "A15.3", 3),
+        ChildRow(18849, 18847, "被显微镜下痰检查，伴有或不伴有痰培养", "A15.0", 3),
+        ChildRow(18850, 18847, "被组织学", "A15.2", 3),
+        ChildRow(18851, 18847, "仅被培养", "A15.1", 3),
+        ChildRow(18852, 18843, "未做细菌学和组织学检查的", "A16.1", 2),
+        ChildRow(18853, 18843, "细菌学和组织学检查为阴性", "A16.0", 2),
+        // 分布分支：播散性（输入点名时不得被肺分支抢占）。
+        ChildRow(18809, 18793, "播散性(另见 结核，粟粒性)", "A19.9", 1),
+        // 非肺部位树：伴有细菌学和组织学证实 = "已证实"分支（病理(+)/细菌学(+) 真码挂它下面）。
+        ChildRow(19237, 18793, "支气管", "A16.4", 1),
+        ChildRow(19238, 19237, "伴有细菌学和组织学证实", "A15.5", 2),
+        ChildRow(19093, 18793, "气管支气管", "A16.4", 1),
+        ChildRow(19094, 19093, "伴有细菌学和组织学证实", "A15.5", 2),
+        ChildRow(18797, 18793, "鼻(道)(窦)", "A16.8", 1),
+        ChildRow(18798, 18797, "伴有细菌学和组织学证实", "A15.8", 2),
+        ChildRow(18799, 18793, "鼻(中隔)", "A16.8", 1),
+        ChildRow(18800, 18799, "伴有细菌学和组织学证实", "A15.8", 2),
+        ChildRow(18826, 18793, "窦道(任何鼻窦的)", "A16.8", 1),
+        ChildRow(18827, 18826, "伴有细菌学和组织学证实", "A15.8", 2),
+        ChildRow(18857, 18793, "肺门淋巴结", "A16.3", 1),
+        ChildRow(18858, 18857, "伴有细菌学和组织学证实", "A15.4", 2),
+        ChildRow(19272, 18793, "纵隔淋巴腺或淋巴结", "A16.3", 1),
+        ChildRow(19273, 19272, "伴有细菌学和组织学证实", "A15.4", 2),
+        ChildRow(19025, 18793, "脓气胸", "A16.5", 1),
+        ChildRow(19026, 19025, "伴有细菌学和组织学证实", "A15.6", 2),
+        ChildRow(19027, 18793, "脓胸", "A16.5", 1),
+        ChildRow(19028, 19027, "伴有细菌学和组织学证实", "A15.6", 2),
+    ]);
+
+    /// <summary>极性门禁字典：38 条语料的真码行（ICD-10 真实行）。</summary>
+    private static IcdDictionarySnapshot PoleGateDictionary() => new([
+        Dict("A15.201", "肺结核瘤,病理(+)"),
+        Dict("A15.202", "肺干酪性结核,病理(+)"),
+        Dict("A15.208", "浸润型肺结核,病理(+)"),
+        Dict("A15.206", "结核性支气管扩张,病理(+)"),
+        Dict("A15.003", "结核性肺纤维变性,痰镜检(+)"),
+        Dict("A15.002", "肺干酪性结核,痰镜检(+)"),
+        Dict("A15.104", "结核性肺炎,痰培养(+)"),
+        Dict("A15.102", "肺干酪性结核,痰培养(+)"),
+        Dict("A15.103", "结核性肺纤维变性,痰培养(+)"),
+        Dict("A15.509", "支气管结核,病理(+)"),
+        Dict("A15.505", "声带结核,病理(+)"),
+        Dict("A15.802", "结核性鼻窦炎,病理(+)"),
+        Dict("A15.804", "鼻中隔结核,病理(+)"),
+        Dict("A15.808", "鼻结核,病理(+)"),
+        Dict("A15.406", "纵隔淋巴结结核,细菌学(+)"),
+        Dict("A15.405", "胸内淋巴结结核,病理(+)"),
+        Dict("A15.603", "结核性脓胸,病理(+)"),
+        Dict("A15.100X005", "继发性肺结核(初治,耐多药)涂阴培阳"),
+        Dict("A16.001", "肺结核瘤,痰镜检(-)"),
+        Dict("A16.006", "肺干酪性结核,痰镜检(-)"),
+        Dict("A16.003", "结核性肺纤维变性,痰镜检(-)"),
+        Dict("A16.004", "结核性气胸,痰镜检(-)"),
+        Dict("A16.018", "浸润型肺结核,痰培养(-)"),
+        Dict("A16.010", "肺结核,痰培养(-)"),
+        Dict("A16.013", "结核性肺纤维变性,痰培养(-)"),
+        Dict("A16.022", "结核性肺炎,病理(-)"),
+        Dict("A16.026", "肺干酪性结核,病理(-)"),
+        Dict("A16.023", "结核性肺纤维变性,病理(-)"),
+        Dict("A16.024", "结核性气胸,病理(-)"),
+        Dict("A19.900X004", "全身血行播散性结核"),
+    ]);
+
+    /// <summary>
+    /// 标志物语境门禁（非结核树）：分型标记（CD30/ALK/BCR-ABL/EBV/革兰氏/凝固酶）
+    /// 不触发证据极性——输入不被套上结核证据链，交付各自正确的疾病族。
+    /// </summary>
+    [Fact]
+    public void 极性专项门禁_标志物语境不进结核证据链()
+    {
+        var markerSnapshot = IcdIndexSnapshotBuilder.Build([
+            LeadRow(43920, "血管瘤", "D18.0"),
+            ChildRow(43921, 43920, "淋巴管瘤", "D18.1", 1),
+        ]);
+        var markerDictionary = new IcdDictionarySnapshot([
+            Dict("C83.307", "CD30阳性弥漫大B细胞淋巴瘤"),
+            Dict("C84.700", "间变性大细胞淋巴瘤,ALK阴性"),
+            Dict("C92.100X019", "慢性髓系白血病,BCR/ABL阳性"),
+            Dict("D82.300X002", "EB病毒阳性T细胞淋巴增殖性疾病"),
+            Dict("J15.600", "革兰氏阴性细菌性肺炎"),
+            Dict("A41.101", "凝固酶阴性葡萄球菌脓毒症"),
+            Dict("D18.000X001", "血管瘤"),
+        ]);
+
+        // 标志物输入不触发结核证据模式：交付里不得出现 A15/A16 结核族码。
+        foreach (var input in new[]
+                 {
+                     "CD30阳性弥漫大B细胞淋巴瘤", "间变性大细胞淋巴瘤,ALK阴性",
+                     "慢性髓系白血病,BCR/ABL阳性", "EB病毒阳性T细胞淋巴增殖性疾病",
+                     "革兰氏阴性细菌性肺炎", "凝固酶阴性葡萄球菌脓毒症",
+                 })
+        {
+            var results = EvidenceResolver().Resolve(
+                markerSnapshot, markerDictionary, input, synonyms: SmearSynonyms());
+            Assert.DoesNotContain(
+                results, item => item.Code.StartsWith("A15.", StringComparison.Ordinal));
+            Assert.DoesNotContain(
+                results, item => item.Code.StartsWith("A16.", StringComparison.Ordinal));
+        }
+    }
 }

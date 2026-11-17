@@ -127,8 +127,17 @@ public static class NameCodingLookupEngine
         // 显微镜检证实 vs 子行 确定的），修饰词分支整支进不去。变体键交给
         // DrillIcdLead 作补钻输入（chip 召回仍以原文为准，不新增主导词 chip）。
         var synonymVariantKeys = new List<string>();
+        IReadOnlyList<string>? evidenceKeys = null;
         if (termSynonyms is not null)
         {
+            // P3 选层证据词面：**只在输入带证据极性（(+)阳性/(-)阴性/培阳/涂阳…）时启用**——
+            // 输入命中等价类的全部成员（病理(+) → 确定的被组织学/组织学(+)/病理检查(+)），
+            // 传给 Drill 作选层证据优先与词面占位的判据。极性门控是零偏差硬线的保险：
+            // 无极性的普通同义词命中（阿尔茨海默硬化 等）不得触发证据模式，
+            // 否则占位拦截与证据优先会波及全部同义词输入。
+            evidenceKeys = DeriveInputPolarity(text) == "None"
+                ? null
+                : termSynonyms.GroupMembersForText(text, TermSynonymTypes.Diagnosis);
             foreach (var variantText in termSynonyms.ExpandVariants(text, TermSynonymTypes.Diagnosis))
             {
                 var synonymKey = TextMatch.NormalizeKey(variantText);
@@ -209,7 +218,8 @@ public static class NameCodingLookupEngine
                 ? DrillIcdLead(hit, text, variantKey, snapshot!, tumor, dictionary, candidates, channels,
                     renameAnchored: renameVariantKeys.Contains(variantKey),
                     extraVariantKeys: synonymVariantKeys,
-                    synonyms: termSynonyms)
+                    synonyms: termSynonyms,
+                    evidenceKeys: evidenceKeys)
                 : [];
         }
 
@@ -339,7 +349,8 @@ public static class NameCodingLookupEngine
         NameLookupTitleChannels channels,
         bool renameAnchored = false,
         IReadOnlyList<string>? extraVariantKeys = null,
-        IcdTermSynonymSnapshot? synonyms = null)
+        IcdTermSynonymSnapshot? synonyms = null,
+        IReadOnlyList<string>? evidenceKeys = null)
     {
         var paths = new List<NameLookupModifierPath>();
         DrillResult? redirectOwnFallback = null;
@@ -353,10 +364,13 @@ public static class NameCodingLookupEngine
         // 那要等变体补钻来覆盖），主链路暂缓交付，等补钻深链出来后让位。
         // 案例依据：继发性肺结核…涂阴培阳 的 结核→多发性 A19.9（覆盖 0.267 噪声链）
         // 与 肺结核瘤,病理(+) 的 结核→结缔组织 链——证据词一个都没进链路。
+        var inputPolarity = DeriveInputPolarity(text);
+        var evidenceTerms = ExtractEvidenceTerms(text, inputPolarity);
         var drill = IcdIndexMatcher.Drill(
             snapshot,
             new LeadWordHit(hit.Node, hit.Alias, 1m, hit.CoveredChars),
-            variantKey);
+            variantKey,
+            evidenceKeys: evidenceKeys);
         // 主导词自身带码且链路停在主导词（未下钻任何子行）时豁免 30% 重叠门：查典查到
         // 伤寒(顿挫型)…(A01.0)，行右边的码就是编码员的候选——多病并列长输入
         // （伤寒并发胆囊炎 7 字）里 2 字主导词占 0.286 曾被门槛整体丢弃（11-08 用户口径）。
@@ -370,11 +384,19 @@ public static class NameCodingLookupEngine
             && drill.Path.Count == 1
             && hit.Node.Code is { Length: > 0 }
             && hit.Node.CoreTerm.Length >= 2;
+        // P3 证据词门控：输入含证据词且主链路一个证据词面都没解释时，暂缓主链路交付，
+        // 等变体补钻深链出来——补钻链解释了证据词面才接管（深链不解释证据词的不收，
+        // 见尾部补钻块的 EvidenceTermExplained 判据）。证据词全部被解释
+        // （如 培阳⊂链路 或 无证据词）照常交付。
+        var evidenceUnexplained = evidenceTerms.Count > 0
+            && drill is not null
+            && !EvidenceTermExplained(drill.Path, evidenceTerms, synonyms, text);
         if (drill is not null
             && (leadOnlyOwnCode || PathOverlapRatio(drill.Path, variantKey) >= MinPathOverlap)
             && drill.Path.Skip(1).Where(node => !IcdIndexMatcher.IsConnectorNode(node))
                 .All(node => ModifierNodeAllowed(node, variantKey, snapshot, drill.Path))
-            && drill.Path.Skip(1).All(node => ChildNotCoveredByPathLiteral(node, drill.Path, variantKey)))
+            && drill.Path.Skip(1).All(node => ChildNotCoveredByPathLiteral(node, drill.Path, variantKey))
+            && !evidenceUnexplained)
         {
             paths.Add(BuildIcdPath(hit, text, drill, dictionary, tumor, candidates, channels, variantKey, seeAlsoHint: false, synonyms: synonyms));
 
@@ -469,6 +491,7 @@ public static class NameCodingLookupEngine
                     snapshot,
                     new LeadWordHit(alsoLead, seedAlias, 1m, seedAlias.Key.Length),
                     variantKey,
+                    evidenceKeys: evidenceKeys,
                     jumpTrace: $"{hit.Node.Term} ⇢ {leadJumpTarget}") is { } alsoDrill
                 && alsoDrill.Path.Count > 1
                 && !alsoDrill.CodeFromAncestorFallback
@@ -510,7 +533,9 @@ public static class NameCodingLookupEngine
                 var childDrill = IcdIndexMatcher.Drill(
                     snapshot,
                     new LeadWordHit(child, childAlias, 1m, childAlias.Key.Length),
-                    variantKey);                if (childDrill is null)
+                    variantKey,
+                    evidenceKeys: evidenceKeys);
+                if (childDrill is null)
                 {
                     continue;
                 }
@@ -585,7 +610,9 @@ public static class NameCodingLookupEngine
                     var grandDrill = IcdIndexMatcher.Drill(
                         snapshot,
                         new LeadWordHit(grandchild, grandAlias, 1m, grandAlias.Key.Length),
-                        variantKey);                    if (grandDrill is null)
+                        variantKey,
+                        evidenceKeys: evidenceKeys);
+                    if (grandDrill is null)
                     {
                         continue;
                     }
@@ -675,6 +702,7 @@ public static class NameCodingLookupEngine
                         snapshot,
                         new LeadWordHit(leadSeeAlsoLead, leadSeeAlsoSeedAlias, 1m, leadSeeAlsoSeedAlias.Key.Length),
                         continuationKey,
+                        evidenceKeys: evidenceKeys,
                         jumpTrace: $"{hit.Node.Term} ⇢ {leadSeeAlsoTarget}");
                     if (leadSeeAlsoDrill is null
                         || leadSeeAlsoDrill.Path.Count <= 1
@@ -718,7 +746,8 @@ public static class NameCodingLookupEngine
         // 每个变体键独立重钻，门控照过（重叠门/修饰词核心词/子行字面包含），
         // 走到比现有最长链路更深且终点码未出现过的链路才并入——
         // 浅层重复与噪声变体不挤占名额。
-        if (extraVariantKeys is { Count: > 0 } && (sawConflictTruncation || paths.Count > 0))
+        // P3：证据词未被主链路解释时也触发补钻（变体带规范形词面，可能走出解释证据词的深链）。
+        if (extraVariantKeys is { Count: > 0 } && (sawConflictTruncation || paths.Count > 0 || evidenceUnexplained))
         {
             var knownTerminals = paths.Select(path => path.IndexCode).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var bestPathDepth = paths.Count > 0 ? paths.Max(path => path.Path.Count) : 0;
@@ -732,11 +761,20 @@ public static class NameCodingLookupEngine
                 var retryDrill = IcdIndexMatcher.Drill(
                     snapshot,
                     new LeadWordHit(hit.Node, hit.Alias, 1m, hit.CoveredChars),
-                    extraKey);
+                    extraKey,
+                    evidenceKeys: evidenceKeys);
                 if (retryDrill is null
                     || retryDrill.Path.Count <= bestPathDepth
                     || retryDrill.CodeNode.Code is not { Length: > 0 } retryCode
                     || !knownTerminals.Add(retryCode))
+                {
+                    continue;
+                }
+
+                // 深链必须解释至少一个证据词面（P3 核心判据）——不解释证据词的更深链路
+                // 只是换了个噪声分支（如 结核→多发性 A19.9），不接管。
+                if (evidenceTerms.Count > 0
+                    && !EvidenceTermExplained(retryDrill.Path, evidenceTerms, synonyms, extraKey))
                 {
                     continue;
                 }
@@ -769,6 +807,68 @@ public static class NameCodingLookupEngine
         }
 
         return paths;
+    }
+
+    /// <summary>
+    /// 从输入原文提取证据词短语（P3）：阳性/阴性输入里承载证据语义的片段——
+    /// 涂阴培阳 / 痰培养(+) / 病理(+) / 痰镜检(+) / 培阳 / 涂阳 / 病理 等。
+    /// 提取的是"词组整体"而非单字，供链路解释判定（链路需解释至少一个词组）。
+    /// </summary>
+    private static IReadOnlyList<string> ExtractEvidenceTerms(string text, string inputPolarity)
+    {
+        if (inputPolarity == "None" || string.IsNullOrWhiteSpace(text))
+        {
+            return [];
+        }
+
+        var candidates = new[]
+        {
+            "涂阴培阳", "涂阳培阴", "痰培养(+)", "痰培养(-)", "病理(+)", "病理(-)",
+            "痰镜检(+)", "痰镜检(-)", "痰涂片(+)", "痰涂片(-)", "组织学(+)",
+            "培阳", "涂阳", "涂阴", "病理", "痰培养", "痰镜检", "痰涂片",
+        };
+        return candidates.Where(candidate => text.Contains(candidate, StringComparison.Ordinal)).ToList();
+    }
+
+    /// <summary>
+    /// 链路是否解释了至少一个证据词（P3 判据）：
+    /// ① 链路节点词面含证据词或证据词含节点词面（病理 ⊂ 未做…检查 的反向不成立，
+    ///    只允许正向包含与被包含的双向子串）；② 同义词解释——证据词与节点词面同组
+    ///   （涂阴培阳 ≡ 确定的仅被培养，组内词面在变体输入里已替换为规范形，
+    ///   节点词面 仅被培养 会与变体文本中的规范词匹配，所以用变体键 inputKey 判定）。
+    /// </summary>
+    private static bool EvidenceTermExplained(
+        IReadOnlyList<IcdIndexNode> path,
+        IReadOnlyList<string> evidenceTerms,
+        IcdTermSynonymSnapshot? synonyms,
+        string inputKey)
+    {
+        foreach (var node in path.Skip(1).Where(node => !IcdIndexMatcher.IsConnectorNode(node)))
+        {
+            var nodeKey = TextMatch.NormalizeKey(node.Term);
+            if (nodeKey.Length == 0)
+            {
+                continue;
+            }
+
+            foreach (var evidence in evidenceTerms)
+            {
+                // 双向子串：节点词面含证据词（未做…检查 ⊇ 病理）或证据词含节点词面。
+                if (nodeKey.Contains(evidence, StringComparison.Ordinal)
+                    || evidence.Contains(nodeKey, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+                // 同义解释：证据词与节点词面在等价类里互通（培阳 ≡ 仅被培养 的组级关系）。
+                if (synonyms is not null && synonyms.TextCoversTerm(inputKey, nodeKey, TermSynonymTypes.Diagnosis))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

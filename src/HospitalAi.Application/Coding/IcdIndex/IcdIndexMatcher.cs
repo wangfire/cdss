@@ -537,7 +537,8 @@ public static class IcdIndexMatcher
         string inputKey,
         int maxHops = 2,
         List<IcdIndexNode>? genericJumps = null,
-        string? jumpTrace = null)
+        string? jumpTrace = null,
+        IReadOnlyList<string>? evidenceKeys = null)
     {
         return DrillFromLead(
             snapshot,
@@ -549,7 +550,8 @@ public static class IcdIndexMatcher
             maxHops,
             visited: [leadHit.Node.SeqNo],
             jumps: jumpTrace is null ? [] : [jumpTrace],
-            genericJumps: genericJumps);
+            genericJumps: genericJumps,
+            evidenceKeys: evidenceKeys);
     }
 
     private static DrillResult? DrillFromLead(
@@ -562,7 +564,8 @@ public static class IcdIndexMatcher
         int maxHops,
         HashSet<int> visited,
         List<string> jumps,
-        List<IcdIndexNode>? genericJumps = null)
+        List<IcdIndexNode>? genericJumps = null,
+        IReadOnlyList<string>? evidenceKeys = null)
     {
         var path = new List<IcdIndexNode> { lead };
         var pathKey = initialPathKey;
@@ -572,6 +575,10 @@ public static class IcdIndexMatcher
         var expansionPathKey = canonicalLeadKey;
         var inputQualifiers = TextMatch.ExtractQualifiers(inputKey);
         var currentCover = CoverageOfPath(pathKey, inputKey);
+        // P3 证据词面占位区间：证据等价组成员（病理(+)→确定的被组织学/组织学(+)/病理检查(+)）
+        // 在输入里的连续出现位置。证据分支的词面就住在这个区间里，非证据子行若
+        // "新增内容"全部落在区间内，挣的是证据锚点的字面而不是自己的——按无新内容拦截。
+        var evidenceSpans = ComputeEvidenceSpans(inputKey, evidenceKeys);
         var current = lead;
         IcdIndexNode? pendingJump = null;
         IcdIndexNode? pendingSeeAlsoJump = null;
@@ -641,6 +648,18 @@ public static class IcdIndexMatcher
                     // 只有虚字符（"原因不明致命性" 的 "性"）或重复字
                     // （先兆→流产→"伴有随后性流产" 的 "流产"）可沾的分支不得进入。
                     if (!AliasAddsInputContent(alias.MatchKey, inputKey, pathPositions))
+                    {
+                        continue;
+                    }
+
+                    // P3 证据词面占位：非证据子行的"新增内容"若全部落在证据词面区间内
+                    // （结缔组织 靠 被组织学 里的 组织 2 字），挣的是证据锚点的字面而非
+                    // 自己的——按无新内容拦截。否则变体输入（肺结核瘤,确定的被组织学）的
+                    // 第二层选层被 gain=2 的噪声分支抢占，证据深链（确定的→被组织学 A15.2）
+                    // 整支进不去。证据子行自身豁免（它们的词面就住在区间里，见 EvidenceKeysMatch）。
+                    if (evidenceSpans.Count > 0
+                        && !EvidenceKeysMatch(child, evidenceKeys)
+                        && AliasNewContentInsideEvidenceSpans(alias.MatchKey, inputKey, pathPositions, evidenceSpans))
                     {
                         continue;
                     }
@@ -730,11 +749,20 @@ public static class IcdIndexMatcher
                 // 按序号后来者胜会把链路带到冠状动脉 I21.9；覆盖比例才反映输入真正写出的部位。
                 // 同增益同比例再取最长连续段大者：散落单字（桥/角）凑的覆盖是弱证据，
                 // 不应压过输入里连续写出的词（蛛网膜），否则选层不回溯会带偏整条链路。
+                // P3 证据词优先（最高优先档）：节点词面与证据词面整词包含
+                // （"被组织学" ⊂ "确定的被组织学"）且自身挣到 ≥1 增益时，
+                // 优先于增益更高的非证据兄弟——输入经同义词改写携带了证据词面，
+                // 证据分支是唯一正确去向，字面噪声分支不得抢占。
+                var childIsEvidence = EvidenceKeysMatch(child, evidenceKeys);
+                var bestIsEvidence = bestChild is not null && EvidenceKeysMatch(bestChild, evidenceKeys);
                 if (childBestKey is not null
-                    && (childBestGain > bestGain
-                        || (childBestGain == bestGain && childBestRatio > bestRatio)
-                        || (childBestGain == bestGain && childBestRatio == bestRatio
-                            && childBestSegment > bestSegment)))
+                    && childBestGain >= 1
+                    && (childIsEvidence && !bestIsEvidence
+                        || (childIsEvidence == bestIsEvidence
+                            && (childBestGain > bestGain
+                                || (childBestGain == bestGain && childBestRatio > bestRatio)
+                                || (childBestGain == bestGain && childBestRatio == bestRatio
+                                    && childBestSegment > bestSegment)))))
                 {
                     bestGain = childBestGain;
                     bestRatio = childBestRatio;
@@ -1110,6 +1138,109 @@ public static class IcdIndexMatcher
             !ReferenceEquals(codeNode, terminal),
             jumps.AsReadOnly(),
             ExpansionPathKey: expansionPathKey);
+    }
+
+    /// <summary>
+    /// 节点是否命中证据词面（P3 选层证据词优先）：**整词包含**判据——
+    /// 证据词面包含节点核心词（"确定的被组织学" ⊇ 被组织学）或节点核心词包含证据词，
+    /// 且不含"共享单字/双字散落重叠"的弱形态（结缔组织 vs 被组织学 只共享 组织 2 字）。
+    /// 判据用核心词（CoreTerm，剥括号）而非别名，避免 结缔组织(全身性) 的括号内容干扰。
+    /// 证据词由调用方从同义词等价组提取（GroupMembersForText），无证据词时恒 false。
+    /// </summary>
+    private static bool EvidenceKeysMatch(IcdIndexNode node, IReadOnlyList<string>? evidenceKeys)
+    {
+        if (evidenceKeys is null || evidenceKeys.Count == 0)
+        {
+            return false;
+        }
+
+        var core = TextMatch.NormalizeKey(node.CoreTerm);
+        if (core.Length < 2)
+        {
+            return false;
+        }
+
+        foreach (var evidence in evidenceKeys)
+        {
+            var evidenceKey = TextMatch.NormalizeKey(evidence);
+            if (evidenceKey.Length < 2)
+            {
+                continue;
+            }
+
+            // 整词包含：证据词面含节点核心词（确定的被组织学 ⊇ 被组织学）
+            // 或节点核心词含证据词面（罕见反向）。
+            if (evidenceKey.Contains(core, StringComparison.Ordinal)
+                || core.Contains(evidenceKey, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 证据词面在输入中的占位区间（P3 证据词门控的选层侧判据）：
+    /// 证据等价组成员（病理(+) → 确定的被组织学/组织学(+)/病理检查(+)）归一化后
+    /// 在输入键里的连续出现位置，0 基、右开。无证据词或词面未出现返回空。
+    /// </summary>
+    private static List<(int Start, int End)> ComputeEvidenceSpans(
+        string inputKey,
+        IReadOnlyList<string>? evidenceKeys)
+    {
+        var spans = new List<(int Start, int End)>();
+        if (evidenceKeys is null || evidenceKeys.Count == 0 || inputKey.Length < 2)
+        {
+            return spans;
+        }
+
+        foreach (var evidence in evidenceKeys)
+        {
+            var face = TextMatch.NormalizeKey(evidence);
+            if (face.Length < 2)
+            {
+                continue;
+            }
+
+            var start = 0;
+            while ((start = inputKey.IndexOf(face, start, StringComparison.Ordinal)) >= 0)
+            {
+                spans.Add((start, start + face.Length));
+                start += 1;
+            }
+        }
+
+        return spans;
+    }
+
+    /// <summary>
+    /// 别名的"新增内容"是否全部落在证据词面占位区间内（P3 证据词面占位拦截）：
+    /// 噪声分支（结缔组织(全身性) 靠 被组织学 里的 组织 2 字）借证据锚点的字面挣
+    /// 新增内容去抢占选层——其字面实为证据分支的保留词面，按无新内容拦截。
+    /// 部分重叠（区间外还带来真内容）不拦；单字别名走整字包含门，不进本判据。
+    /// </summary>
+    private static bool AliasNewContentInsideEvidenceSpans(
+        string matchKey,
+        string inputKey,
+        HashSet<int> pathPositions,
+        List<(int Start, int End)> evidenceSpans)
+    {
+        if (matchKey.Length < 2 || evidenceSpans.Count == 0)
+        {
+            return false;
+        }
+
+        var newPositions = TextMatch.CoveredTextPositions(matchKey, inputKey)
+            .Except(pathPositions)
+            .ToList();
+        if (newPositions.Count == 0)
+        {
+            return false;
+        }
+
+        return newPositions.All(position => evidenceSpans.Any(span =>
+            position >= span.Start && position < span.End));
     }
 
     /// <summary>

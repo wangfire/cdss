@@ -257,7 +257,10 @@ static List<IcdIndexRow> BuildRows(string conn)
     using var sql = new SqlConnection(conn);
     sql.Open();
     using var cmd = new SqlCommand(
-        "SELECT seq_no, index_name, index_code, index_level, parent_seq_no, lead_word_status FROM icd_index", sql);
+        // ORDER BY 是台账可复现性的一部分：medical_code 无聚集序，缺省时 SQL Server
+        // 的返回顺序随执行计划漂移，字典展开同分行的 tie-break 会随之翻转，
+        // 改动前后两份台账会凭空多出"同证据不同码"的伪偏差。
+        "SELECT seq_no, index_name, index_code, index_level, parent_seq_no, lead_word_status FROM icd_index ORDER BY seq_no", sql);
     cmd.CommandTimeout = 300;
     using var reader = cmd.ExecuteReader();
     var rows = new List<IcdIndexRow>();
@@ -1035,6 +1038,7 @@ static IcdDictionarySnapshot BuildDictionary(string conn, string hospital, strin
         WHERE mc.is_enabled = 1
           AND (mc.hospital_id = @hospital OR cs.hospital_id = @hospital)
           AND mc.code_system_code = @codeSystem
+        ORDER BY mc.code, mc.title
         """, sql);
     cmd.Parameters.AddWithValue("@hospital", Guid.Parse(hospital));
     cmd.Parameters.AddWithValue("@codeSystem", codeSystem);

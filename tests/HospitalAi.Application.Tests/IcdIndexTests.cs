@@ -3432,4 +3432,82 @@ public sealed class IcdIndexTests
                 $"阳性码应排在阴性码之前：{string.Join(",", response.Recommendations.Select(item => item.Code))}");
         }
     }
+
+    /// <summary>
+    /// P3 选层证据词夹具（真实索引行 18793/18843/18847/18850/18851/19240）：
+    /// 结核树带 结缔组织(全身性) A18.8 噪声分支与 确定的→被组织学 A15.2 证据分支。
+    /// 变体输入（肺结核瘤,确定的被组织学）里，噪声分支靠 被组织学 中的 组织 2 字
+    /// 挣到更高增益，会把选层从证据分支带偏——P3 词面占位拦截修复此问题。
+    /// </summary>
+    private static IcdIndexSnapshot EvidenceGateSnapshot() => IcdIndexSnapshotBuilder.Build([
+        LeadRow(18793, "结核(病)，结核性(干酪样)(变性)(坏疽)(坏死)", "A16.9"),
+        ChildRow(18843, 18793, "肺(空洞性)(纤维变性)(浸润性)(结节性)", "A16.2", 1),
+        ChildRow(18847, 18843, "确定的", null, 2),
+        ChildRow(18850, 18847, "被组织学", "A15.2", 3),
+        ChildRow(18851, 18847, "仅被培养", "A15.1", 3),
+        ChildRow(19240, 18793, "结缔组织(全身性)", "A18.8†M36.8*", 1),
+    ]);
+
+    private static IcdDictionarySnapshot EvidenceGateDictionary() => new([
+        Dict("A15.201", "肺结核瘤,病理(+)"),
+        Dict("A15.100", "肺结核,仅经痰培养所证实"),
+        Dict("A18.800X001", "结核性结缔组织病"),
+    ]);
+
+    [Fact]
+    public void 病理阳性输入_噪声分支不接管_证据词分支可达A152()
+    {
+        // P3 核心验收（用户 2026-11-16 方案 A 第三案例）：输入 病理(+) 时，
+        // 证据词门控要求链路解释至少一个证据词面——噪声分支 结缔组织(全身性)
+        // 一个证据词都不解释，不得接管 Top1；同义词变体（确定的被组织学）
+        // 走出的深链解释了证据词（病理(+)+被组织学 同组），A15.2 可达。
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "肺结核瘤,病理(+)", topK: 8,
+            icdSnapshot: EvidenceGateSnapshot(), tumorSnapshot: null, icdDictionary: EvidenceGateDictionary(),
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true),
+            termSynonyms: SmearSynonyms());
+
+        Assert.NotEmpty(response.Recommendations);
+        // 证据分支本身必须是 Top1（结核→肺→确定的→被组织学 A15.2，字典展开 A15.201）。
+        Assert.StartsWith("A15.2", response.Recommendations[0].Code);
+        // 证据词分支（A15.2）应在噪声分支（A18.8）之前。
+        var a15Index = response.Recommendations.ToList()
+            .FindIndex(item => item.Code.StartsWith("A15.", StringComparison.Ordinal));
+        var noiseIndex = response.Recommendations.ToList()
+            .FindIndex(item => item.Code.StartsWith("A18.", StringComparison.Ordinal));
+        if (noiseIndex >= 0)
+        {
+            Assert.True(a15Index < noiseIndex,
+                $"证据词分支应排在噪声分支之前：{string.Join(",", response.Recommendations.Select(item => item.Code))}");
+        }
+        else
+        {
+            Assert.StartsWith("A15.", response.Recommendations[0].Code);
+        }
+    }
+
+    [Fact]
+    public void 结核性肺纤维变性病理阳性_同机制证据分支可达A152()
+    {
+        // 用户点名的同理案例（2026-11-17）：输入的部位词是 纤维变性（肺(空洞性)(纤维变性)…
+        // 的全称别名锚定）而非 肺 时，证据链同样要走到 确定的→被组织学 A15.2——
+        // 证据词面占位与变体补钻与 肺结核瘤,病理(+) 同一条规则，不逐案例特判。
+        var dictionary = new IcdDictionarySnapshot([
+            Dict("A15.201", "结核性肺纤维变性,病理(+)"),
+            Dict("A16.203", "结核性肺纤维变性"),
+            Dict("A18.800X001", "结核性结缔组织病"),
+        ]);
+        var response = NameCodingLookupEngine.Lookup(
+            NameCodingLookupEngine.DiagnosisKind, "结核性肺纤维变性,病理(+)", topK: 8,
+            icdSnapshot: EvidenceGateSnapshot(), tumorSnapshot: null, icdDictionary: dictionary,
+            cm3Snapshot: null, cm3Dictionary: null,
+            new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true),
+            termSynonyms: SmearSynonyms());
+
+        Assert.NotEmpty(response.Recommendations);
+        Assert.StartsWith("A15.2", response.Recommendations[0].Code);
+        Assert.DoesNotContain(response.Recommendations,
+            item => item.Code.StartsWith("A16.", StringComparison.Ordinal));
+    }
 }

@@ -189,6 +189,37 @@ public sealed class IcdTermSynonymSnapshot
         return false;
     }
 
+    /// <summary>
+    /// 返回输入命中等价类的全部成员词面（P3 选层证据词面用）：
+    /// 输入含 病理(+) → 组内成员含 确定的被组织学/组织学(+)/病理检查(+)，
+    /// 其中"被组织学"这样的分支词面可作下钻选层的证据锚点。
+    /// 无命中返回空。
+    /// </summary>
+    public IReadOnlyList<string> GroupMembersForText(string? text, string termType)
+    {
+        var members = new List<string>();
+        if (string.IsNullOrWhiteSpace(text)
+            || !_rulesByType.TryGetValue(termType, out var rules)
+            || rules.Groups.Count == 0)
+        {
+            return members;
+        }
+
+        var hits = Scan(text, rules);
+        foreach (var hit in hits)
+        {
+            foreach (var member in rules.Groups[hit.GroupIndex].Members)
+            {
+                if (!members.Contains(member, StringComparer.Ordinal))
+                {
+                    members.Add(member);
+                }
+            }
+        }
+
+        return members;
+    }
+
     /// <summary>原输入 + 规范改写 + 等价类互换改写（未命中任何类时只有原输入）。</summary>
     public IReadOnlyList<string> ExpandVariants(string? text, string termType)
     {

@@ -677,6 +677,46 @@ public static class IcdIndexMatcher
                         continue;
                     }
 
+                    // 泛形态学主导词行（M8000/M8010）的子行若**借用输入部位词的子串**，
+                    // 让位给肿瘤表通道：胸骨肿瘤 的 瘤(M8000/1) 下钻被
+                    // 「胸骨乳突(先天性) Q68.0」(22621) 抢走——其词面只与输入共享部位词
+                    // 胸骨（胸骨乳突 ⊃ 胸骨），而 胸骨 在肿瘤表可解出部位码
+                    // （M8000/1+胸骨 → D48.0 动态未定或未知）。泛形态学入口保持停链，
+                    // 肿瘤表接管部位定码——与既有 TumorSiteAliasFaces
+                    // 「部位词是形态学码的证据」口径互补。判据（全部满足才拦）：
+                    // ① protectMorphologyLead（泛形态学入口 + 尾重心）；
+                    // ② 子行词面含输入的某段且**多于**该段（胸骨乳突 ⊃ 胸骨）——
+                    //    子行挣的字面全部来自部位词子串，自身语义（乳突/先天性）输入没写；
+                    // ③ 该子行码不是形态学码（同族形态学子行照常下钻）。
+                    // 例子对照：－胸骨乳突(先天性) Q68.0 被拦 ✓；
+                    // －骨(骨膜)◇ 这类输入逐字声明的部位子行不被拦（词面=输入段本身）。
+                    if (protectMorphologyLead
+                        && !(child.Code is { Length: > 0 } borrowedCode
+                            && MorphologyCodeRegex.IsMatch(borrowedCode)))
+                    {
+                        var aliasKey = TextMatch.NormalizeKey(alias.MatchKey);
+                        if (aliasKey.Length >= 2)
+                        {
+                            var (lcsStart, lcsLength) = TextMatch.LongestCommonSubstring(aliasKey, inputKey);
+                            if (lcsLength >= 2
+                                && lcsLength < aliasKey.Length
+                                && aliasKey.Contains(inputKey[lcsStart..(lcsStart + lcsLength)], StringComparison.Ordinal))
+                            {
+                                // LCS 段是输入的一段（部位词），且子行词面多于它——借部位词子串。
+                                // 再要求子行词面的**剩余段**不在输入里（胸骨乳突 的 乳突 不在
+                                // 胸骨肿瘤 里——剩余段是子行自己的语义，输入未声明）。
+                                var borrowed = aliasKey[lcsStart..(lcsStart + lcsLength)];
+                                var remainder = aliasKey.Replace(borrowed, string.Empty, StringComparison.Ordinal);
+                                var remainderKey = TextMatch.NormalizeKey(remainder);
+                                if (remainderKey.Length >= 2
+                                    && !inputKey.Contains(remainderKey, StringComparison.Ordinal))
+                                {
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
                     // 增益按 MatchKey（剥离"(慢性)"等泛化修饰括号）计算：
                     // 修饰词命中不得单独驱动进入核心词与输入无关的子树。
                     // 索引惯例 "主导词 → －部位"（钙化→肾）在输入中常倒置（"肾…钙化"），

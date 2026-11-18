@@ -56,6 +56,12 @@ else
 var codes = LoadDetailCodes(connString, hospital, codeSystem, limit);
 Console.Error.WriteLine($"待导出细码 {codes.Count} 条。");
 
+// 证据极性同义词（与生产 Infrastructure 同源：icd_term_synonym 全库启用行）。
+// 编码录入面板生产口径会注入该快照——导出工具此前缺失，导致 极性族/证据链路
+// 修复在导出对照里全部失效（肺结核(显微镜检证实) 等输入 Top1 错位）。
+var synonyms = BuildSynonyms(connString);
+Console.Error.WriteLine($"术语同义词已加载。");
+
 using var writer = new StreamWriter(outPath, append: false, new UTF8Encoding(false));
 writer.WriteLine(string.Join('\t',
     "序号", "编码", "诊断名称", "可匹配", "匹配方式",
@@ -73,7 +79,8 @@ foreach (var (code, title) in codes)
         NameCodingLookupEngine.DiagnosisKind, title, topK: 8,
         icdSnapshot: snapshot, tumorSnapshot: null, icdDictionary: dictionary,
         cm3Snapshot: null, cm3Dictionary: null,
-        new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true));
+        new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true),
+        termSynonyms: synonyms);
 
     var leads = response.LeadTerms;
     var recs = response.Recommendations;
@@ -157,6 +164,22 @@ static List<IcdIndexRow> BuildRows(string conn)
 }
 
 static IcdIndexSnapshot BuildSnapshot(string conn) => IcdIndexSnapshotBuilder.Build(BuildRows(conn));
+
+static IcdTermSynonymSnapshot BuildSynonyms(string conn)
+{
+    using var sql = new SqlConnection(conn);
+    sql.Open();
+    using var cmd = new SqlCommand(
+        "SELECT term_type, canonical_term, variant_term FROM icd_term_synonym WHERE is_enabled = 1", sql);
+    using var reader = cmd.ExecuteReader();
+    var rows = new List<IcdTermSynonymRow>();
+    while (reader.Read())
+    {
+        rows.Add(new IcdTermSynonymRow(reader.GetString(0), reader.GetString(1), reader.GetString(2)));
+    }
+
+    return IcdTermSynonymSnapshot.Build(rows);
+}
 
 static IcdDictionarySnapshot BuildDictionary(string conn, string hospital, string codeSystem)
 {

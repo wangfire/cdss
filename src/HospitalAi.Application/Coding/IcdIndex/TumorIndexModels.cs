@@ -190,7 +190,7 @@ public sealed class TumorIndexSnapshot
     /// </summary>
     public IReadOnlyList<TumorSiteCandidate> DescribeCandidates(string inputText, string morphologyCode, int top = 10)
     {
-        var inputKey = TextMatch.StripUncertaintyPhrases(inputText);
+        var inputKey = StripBehaviorModifiers(TextMatch.StripUncertaintyPhrases(inputText));
         var (column, digit) = ResolveBehaviorColumn(morphologyCode) ?? (PrimaryColumn, '3');
         var sorted = RankCandidates(CollectCandidates(inputKey));
         var best = sorted.Count > 0 ? sorted[0] : null;
@@ -243,16 +243,21 @@ public sealed class TumorIndexSnapshot
     /// <summary>
     /// 候选排序键：匹配质量优先于层级——甲状腺 的行别名整词命中（1.0）必须赢过 颌－癌 的单字 癌（0.7），
     /// 按层级优先会把 C03.9 顶到 C73 前面。
-    /// 同分先取本行带码的直接部位行，再取走 见/另见 的指针行：胃平滑肌肉瘤 的 肌(另见 结缔组织 C49.9)
-    /// 与 胃(C16.9) 同分同层，病案写的是器官部位；乙状结肠 也靠这条赢过 结肠(另见 肠，大 C18.9)。
-    /// 词面长度是"特指程度"：甲状腺乳头状癌 里 甲状腺(3字) 是部位，乳头(2字) 是形态学词，
-    /// 同级同分并列时必须让长词面胜出，否则解不出码。
+    /// 词面长度是"特指程度"，先于父路径覆盖：乳腺腋尾部恶性肿瘤 的 腋尾部(3字,直接码 C50.6) 必须赢过
+    /// 乳腺(2字,指针→乳房 C50.9)——腋尾部 行的父限定词 乳房 没字面写进输入（输入写 乳腺 是它的指针同义），
+    /// PathScore=0 但长词面才是病案写的亚部位，让覆盖优先会把具体部位顶成泛部位。
+    /// 同词面长度再比父路径覆盖（PathScore）：同一部位别名跨族锚定多行时，父限定词齐全的行赢过缺限定词的行——
+    /// 上唇系带恶性肿瘤 的 唇－系带(指针,唇在输入,覆盖1.0) 要赢过 舌－系带(直接码 C02.2,舌不在输入,覆盖0.0)，
+    /// 否则缺舌的舌系带直接码行靠"直接行优先"把错器官顶到 Top1，满覆盖的唇系带指针行在首出码组兜底里永远轮不到。
+    /// 同覆盖再取本行带码的直接部位行，后取走 见/另见 的指针行：胃平滑肌肉瘤 的 肌(另见 结缔组织 C49.9)
+    /// 与 胃(C16.9) 同分同层同覆盖同词长，病案写的是器官部位；乙状结肠 也靠这条赢过 结肠(另见 肠，大 C18.9)。
+    /// 层级、全名长度兜底。
     /// </summary>
     private static List<Candidate> RankCandidates(List<Candidate> candidates) => candidates
         .OrderByDescending(item => item.AliasScore)
-        .ThenBy(item => item.Node.JumpKind != 0)
-        .ThenByDescending(item => item.PathScore)
         .ThenByDescending(item => item.AliasLength)
+        .ThenByDescending(item => item.PathScore)
+        .ThenBy(item => item.Node.JumpKind != 0)
         .ThenByDescending(item => item.Node.Level)
         .ThenByDescending(item => item.Node.FullIndexName.Length)
         .ToList();
@@ -279,7 +284,7 @@ public sealed class TumorIndexSnapshot
             return [];
         }
 
-        var inputKey = TextMatch.StripUncertaintyPhrases(inputText);
+        var inputKey = StripBehaviorModifiers(TextMatch.StripUncertaintyPhrases(inputText));
         if (inputKey.Length < 2)
         {
             return [];
@@ -329,7 +334,19 @@ public sealed class TumorIndexSnapshot
                 return distinct;
             }
 
-            if (from >= sorted.Count || !string.Equals(sorted[from].AliasText, anchor.AliasText, StringComparison.Ordinal))
+            if (from >= sorted.Count)
+            {
+                return [];
+            }
+
+            // 死指针退出竞选（纪律12 的肿瘤表类比）：整组解不出码、且锚是 见/另见 指针行时，
+            // 指针本身不携带部位码，允许跨词面落到下一组出码的直接行——上肢关节良性肿瘤 的最优组
+            // 关节NEC(另见肿瘤,骨) 解不动(null)，不该挡住 骨－长的上肢 D16.0 这些出码直接行。
+            // 锚是直接行(jump0)时仍只沿同词面兜底：腮腺 转移分支只有 /6 码，跨词面会取到
+            // 呼吸器官/腹部器官 等错部位（生殖器官继发恶性肿瘤 实测）。
+            var sameAliasText = string.Equals(sorted[from].AliasText, anchor.AliasText, StringComparison.Ordinal);
+            var deadPointerYieldsToDirect = anchor.Node.JumpKind != 0 && sorted[from].Node.JumpKind == 0;
+            if (!sameAliasText && !deadPointerYieldsToDirect)
             {
                 return [];
             }
@@ -449,10 +466,16 @@ public sealed class TumorIndexSnapshot
 
         // 单段指针（另见 肿瘤，乳房）指向主导词本身 → 取最浅的 乳房 行，
         // 不能取 皮肤 树下的 －－乳房（否则 乳腺恶性肿瘤 解成 C44.5 皮肤癌）。
-        // 多段指针（肿瘤，唇，内）自带亚部位限定 → 父段覆盖相同后取最深行。
+        // 多段指针（肿瘤，唇，内）自带亚部位限定：父段覆盖相同后，先取"祖先全被指针头段提及"的行
+        // （无未提及的额外限定词），再按层级。唇，内 的 generic 唇内(2级 C00.5) 祖先恰为 [唇]，
+        // 而 唇上内(3级 C00.3)/唇下内(3级 C00.4) 多出指针没说的 上/下 —— 旧版"取最深行"让这两行
+        // 平局 → 整条指针判歧义返回 null，唇系带 见指针解不动，上唇系带恶性肿瘤 掉到 舌系带 C02.2。
+        var headSegments = segments[..^1];
         var top = matched
             .OrderByDescending(item => item.AliasScore)
             .ThenByDescending(item => item.PathScore)
+            .ThenBy(item => item.Node.PathWords.Count(word =>
+                !headSegments.Any(segment => segment.Contains(word, StringComparison.Ordinal))))
             .ThenBy(item => segments.Length == 1 ? item.Node.Level : -item.Node.Level)
             .First();
         // 目标词在本表多处（如 窦 在鼻与副鼻窦）且父段无法区分 → 放弃。
@@ -478,6 +501,18 @@ public sealed class TumorIndexSnapshot
         var hit = node.PathWords.Count(word => inputKey.Contains(word, StringComparison.Ordinal));
         return hit / (decimal)node.PathWords.Length;
     }
+
+    /// <summary>
+    /// 剥掉肿瘤动态修饰词（继发性/原发性）再解部位：行为位已由形态学码（/6 继发、/3 原发）编码，
+    /// 动态词不是部位证据。resolver 为召回 继发性 主导词把 继发 改写成 继发性 再跑一路，
+    /// 该变体文本喂进肿瘤表会让 淋巴－腺(继发性)(642) 的 4 字别名「腺继发性」凭词面长度压过
+    /// 器官行（胰腺/舌下/胸腺 2 字、父路径满覆盖），把 胰腺继发恶性肿瘤 解成 C77.9 淋巴结泛码。
+    /// 剥掉动态词后变体回到原文行为（642 无「性」不匹配），器官行胜出。只剥动态词、不剥器官词，
+    /// 乳腺腋尾部（腋尾部 3 字真部位）与 上唇系带（唇系带指针）不受影响。
+    /// </summary>
+    private static string StripBehaviorModifiers(string inputKey) => inputKey
+        .Replace("继发性", string.Empty, StringComparison.Ordinal)
+        .Replace("原发性", string.Empty, StringComparison.Ordinal);
 
     /// <summary>
     /// 剥掉索引的分类限定后缀（NEC / NOS，可连写）："喉 NEC" 的部位词就是 喉。
@@ -646,7 +681,7 @@ public sealed class TumorIndexSnapshot
         public string AliasText { get; } = aliasText;
     }
 
-    /// <summary>排序键的公共前四键：匹配质量 / 直接行-指针行 / 父路径覆盖 / 词面长度。</summary>
+    /// <summary>排序键的公共前四键：匹配质量 / 词面长度 / 父路径覆盖 / 直接行-指针行。</summary>
     private static bool SameMatchKeys(Candidate left, Candidate right)
         => left.AliasScore == right.AliasScore
             && (left.Node.JumpKind != 0) == (right.Node.JumpKind != 0)

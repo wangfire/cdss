@@ -2444,6 +2444,90 @@ public sealed class IcdIndexTests
     }
 
     [Fact]
+    public void 肿瘤表_歧义部位词按父限定词覆盖消歧而非直接行优先()
+    {
+        // 系带 是歧义部位词：舌－系带(直接码 C02.2)、唇－系带(指针 见肿瘤,唇,内→唇内 C00.5)、裸 系带(无码)。
+        // 上唇系带恶性肿瘤 含 唇 不含 舌：唇－系带 父路径满覆盖(1.0)，舌－系带 缺舌(0.0)。
+        // 过去"直接码行优先于指针行"排在父路径覆盖之前，缺舌的舌系带直接码行靠首出码组兜底顶掉
+        // 满覆盖的唇系带指针行 → 交付错器官 C02.2 舌系带。覆盖优先后唇系带胜出 → C00.5(与真值 C00.3 同 C00 族)。
+        // 第二刀：唇系带指针 见肿瘤,唇,内 的目标 内 在唇树里有三行——generic 唇内(2级 C00.5)、
+        // 唇上内(3级 C00.3)、唇下内(3级 C00.4)。旧版 FollowPointer"多段取最深行"让 唇上内/唇下内
+        // 平局判歧义返回 null，指针解不动又掉回舌系带。修法：父段覆盖相同后先取"祖先全被指针头段
+        // 提及"的行——唇,内 头段=[唇]，generic 唇内 祖先恰为[唇]，唇上内/唇下内 多出未提及的 上/下。
+        var snapshot = TumorIndexSnapshot.Build([
+            TumorRoot(),
+            new TumorIndexRow(88, "唇", 1, 1, "肿瘤，肿瘤性 唇",
+                "C00.9", "C79.8", null, "D10.0", "D37.0", 0, null),
+            new TumorIndexRow(99, "内", 2, 88, "肿瘤，肿瘤性 唇 内",
+                "C00.5", "C79.8", null, "D10.0", "D37.0", 0, null),
+            new TumorIndexRow(105, "上", 2, 88, "肿瘤，肿瘤性 唇 上",
+                "C00.0", "C79.8", null, "D10.0", "D37.0", 0, null),
+            new TumorIndexRow(106, "内", 3, 105, "肿瘤，肿瘤性 唇 上 内",
+                "C00.3", "C79.8", null, "D10.0", "D37.0", 0, null),
+            new TumorIndexRow(111, "下", 2, 88, "肿瘤，肿瘤性 唇 下",
+                "C00.1", "C79.8", null, "D10.0", "D37.0", 0, null),
+            new TumorIndexRow(112, "内", 3, 111, "肿瘤，肿瘤性 唇 下 内",
+                "C00.4", "C79.8", null, "D10.0", "D37.0", 0, null),
+            new TumorIndexRow(110, "系带 - 见 肿瘤，唇，内", 2, 88, "肿瘤，肿瘤性 唇 系带",
+                null, null, null, null, null, 1, "肿瘤，唇，内"),
+            new TumorIndexRow(1024, "舌", 1, 1, "肿瘤，肿瘤性 舌",
+                "C02.9", "C79.8", null, "D10.1", "D37.0", 0, null),
+            new TumorIndexRow(1039, "系带", 2, 1024, "肿瘤，肿瘤性 舌 系带",
+                "C02.2", "C79.8", null, "D10.1", "D37.0", 0, null),
+            new TumorIndexRow(1292, "系带", 1, 1, "肿瘤，肿瘤性 系带",
+                null, null, null, null, null, 0, null),
+            new TumorIndexRow(1294, "舌", 2, 1292, "肿瘤，肿瘤性 系带 舌",
+                "C02.2", "C79.8", null, "D10.1", "D37.0", 0, null),
+        ]);
+
+        // 含唇不含舌 → 唇系带分支（C00.5），不是舌系带 C02.2。
+        Assert.Equal(
+            ["C00.5"],
+            snapshot.ResolveSiteCodes("M8000/3", "上唇系带恶性肿瘤").Select(item => item.Code));
+
+        // 含舌不含唇 → 舌系带分支仍正确（C02.2），覆盖优先不误伤反向案。
+        Assert.Equal(
+            ["C02.2"],
+            snapshot.ResolveSiteCodes("M8000/3", "舌系带恶性肿瘤").Select(item => item.Code));
+    }
+
+    [Fact]
+    public void 肿瘤表_继发性变体剥动态词后器官行胜过泛腺淋巴结行()
+    {
+        // resolver 为召回 继发性 主导词把 继发 改写成 继发性 再跑一路（胰腺继发→胰腺继发性）。
+        // 该变体喂进肿瘤表会让 淋巴－腺(继发性)(642) 的 4 字别名「腺继发性」凭词面长度（Option B
+        // AliasLength 先于 PathScore）压过 胰腺(1402,2字,父路径满覆盖)，把 胰腺继发恶性肿瘤 解成
+        // C77.9 淋巴结泛码（万名实测 胰腺/舌下腺/胸腺 三条继发精度损失）。行为位已由 /6 编码，
+        // 动态词不是部位证据：剥掉 继发性 后变体回到原文行为，642 退到单字 腺(0.7)，器官行胜出。
+        var snapshot = TumorIndexSnapshot.Build([
+            TumorRoot(),
+            new TumorIndexRow(638, "淋巴", 1, 1, "肿瘤，肿瘤性 淋巴",
+                null, null, null, null, null, 0, null),
+            new TumorIndexRow(642, "腺(继发性)", 2, 638, "肿瘤，肿瘤性 淋巴 腺(继发性)",
+                null, "C77.9", null, null, null, 0, null),
+            new TumorIndexRow(1310, "腺(淋巴)(系统)", 1, 1, "肿瘤，肿瘤性 腺(淋巴)(系统)",
+                null, "C77.9", null, null, null, 0, null),
+            new TumorIndexRow(1402, "胰腺", 1, 1, "肿瘤，肿瘤性 胰腺",
+                "C25.9", "C78.8", null, "D13.7", "D37.7", 0, null),
+        ]);
+
+        // 继发性变体：剥动态词后 胰腺(1.0/2字/覆盖1) 胜过 腺(0.7/1字) → C78.8，不是 C77.9。
+        Assert.Equal(
+            ["C78.8"],
+            snapshot.ResolveSiteCodes("M8000/6", "胰腺继发性恶性肿瘤").Select(item => item.Code));
+
+        // 原文（无 性）本就给 C78.8，剥词不改变它。
+        Assert.Equal(
+            ["C78.8"],
+            snapshot.ResolveSiteCodes("M8000/6", "胰腺继发恶性肿瘤").Select(item => item.Code));
+
+        // 纯腺继发（无器官词）：剥词后 1 级 腺(1310) 仍凭单字 腺 出 C77.9——合法淋巴结继发链路不被误杀。
+        Assert.Equal(
+            ["C77.9"],
+            snapshot.ResolveSiteCodes("M8000/6", "腺继发性恶性肿瘤").Select(item => item.Code));
+    }
+
+    [Fact]
     public void 泛形态学码锚不到部位时改交付肿瘤表未特指部位码()
     {
         // 良性肿瘤：链路终点就是 M8000/0（"肿瘤，未特指"），肿瘤表里一个部位词都锚不上。

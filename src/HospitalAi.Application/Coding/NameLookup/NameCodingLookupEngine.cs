@@ -787,7 +787,15 @@ public static class NameCodingLookupEngine
         if (extraVariantKeys is { Count: > 0 } && (sawConflictTruncation || paths.Count > 0 || evidenceUnexplained))
         {
             var knownTerminals = paths.Select(path => path.IndexCode).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var bestPathDepth = paths.Count > 0 ? paths.Max(path => path.Path.Count) : 0;
+            // 补钻深度基准只算与输入极性一致的链：阴性输入时"伴有细菌学和组织学证实"(Positive)
+            // 链虽作"待排"候选保留(R2 反向不剔除)，但它是3层，会把 bestPathDepth 抬到3，
+            // 挡住同为3层的阴性/未做证据链(A16.0/A16.1)补钻进来。极性冲突链不计入基准。
+            var drillInputPolarity = IcdIndexPolarity.DeriveInputPolarity(text);
+            var bestPathDepth = paths.Count > 0
+                ? paths.Where(p => drillInputPolarity == "None"
+                        || IcdIndexPolarity.PolarityRank(p.Polarity, drillInputPolarity) >= 1)
+                    .Select(p => p.Path.Count).DefaultIfEmpty(0).Max()
+                : 0;
             foreach (var extraKey in extraVariantKeys)
             {
                 if (string.Equals(extraKey, variantKey, StringComparison.Ordinal))

@@ -450,6 +450,7 @@ public static class IcdIndexSnapshotBuilder
         // OccursAsStandaloneWord 保证只在整词命中时改写，不误伤长词内部子串。
         renameEquivalents.TryAdd("涂阳培阳", "细菌学和组织学证实");
         renameEquivalents.TryAdd("涂阴培阳", "细菌学和组织学证实");
+        renameEquivalents.TryAdd("未做细菌学和组织学检查", "未做");
 
         return new IcdIndexSnapshot
         {

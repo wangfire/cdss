@@ -837,6 +837,34 @@ public sealed class IcdIndexDiagnosisResolver(
         {
             // 排序用未截断分：Reported Score 上限 1.0 会把 "扁桃体息肉→J35.805"（标题全覆盖）
             // 与 "→J03.901 急性化脓性扁桃体炎"（沾词）压成同分，取Top时只剩召回顺序。
+            // 证据模式变体轮的整标题贴合按**原文**复核：同义词改写把 继发 改成 继发性
+            // 后，变体文本与细码标题（舌骨继发恶性肿瘤）差一个 性 字，逐字相等判定
+            // 失败（wtd=0），而原文（舌骨继发恶性肿瘤）与细码标题逐字相等——原文贴合
+            // 才是编码员的视觉判定。取变体/原文两算的较大者。
+            var wtd = item.WholeTitleDepth;
+            // 带证据极性的输入：原文复核不得给"不含证据词面"的浅码标题（喉结核）整标题贴合分——
+            // 否则它先于极性档排到确诊链之前。确诊标题（喉结核(细菌学和组织学证实)）含证据概念词，
+            // 仍照常复核；非极性输入完全不受影响。
+            var evidenceInput = IcdIndexPolarity.DeriveInputPolarity(originalInputText) != "None";
+            var titleHasEvidenceFace = item.Title.Contains("证实", StringComparison.Ordinal)
+                || item.Title.Contains("确定的", StringComparison.Ordinal)
+                || item.Title.Contains("阳性", StringComparison.Ordinal)
+                || item.Title.Contains("培阳", StringComparison.Ordinal)
+                || item.Title.Contains("涂阳", StringComparison.Ordinal);
+            if (!string.Equals(originalInputText, inputText, StringComparison.Ordinal)
+                && wtd < 1m
+                && (!evidenceInput || titleHasEvidenceFace))
+            {
+                var originalKey = TextMatch.StripUncertaintyPhrases(originalInputText);
+                var titleKey = TextMatch.NormalizeKey(item.Title);
+                if (titleKey.Length >= 3
+                    && originalKey.Contains(titleKey, StringComparison.Ordinal)
+                    && titleKey.Length * 100m / Math.Max(1, originalKey.Length) >= 50m)
+                {
+                    wtd = Math.Min(1m, titleKey.Length / (decimal)originalKey.Length);
+                }
+            }
+
             var rawScore = item.Score * leadBoost * depthBoost * (0.5m + evidenceOverlap)
                 * (item.IsIndexFallback ? 0.8m : 1m);
             ranked.Add((rawScore, new DiagnosisIndexRecommendation(
@@ -850,7 +878,7 @@ public sealed class IcdIndexDiagnosisResolver(
                 hintNote is null ? item.Note
                     : $"{hintNote} {pathDisplay} {indexCode}"
                         + (item.Note is { Length: > 0 } fallbackNote ? $"（{fallbackNote}）" : string.Empty),
-                item.WholeTitleDepth,
+                wtd,
                 item.FamilyRank,
                 indexCode,
                 // 链路终点（drill 停住的那一行）的极性标签，口径同面板引擎 path.Polarity：

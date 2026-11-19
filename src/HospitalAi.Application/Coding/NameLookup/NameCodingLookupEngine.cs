@@ -148,6 +148,16 @@ public static class NameCodingLookupEngine
             }
         }
 
+        // 肿瘤动态词的「性」尾缀变体（与流水线 IcdIndexDiagnosisResolver.TumorDynamicFormVariants
+        // 同口径）：索引写成 继发性（瘤 －继发性 M8000/6 - 见 肿瘤，继发性），临床常省成 继发
+        // （舌骨继发恶性肿瘤）。差一个字，继发链（M8000/6 → 肿瘤，继发性 → 骨 C79.5）建不起来，
+        // 舌骨继发恶性肿瘤 的细码 C79.500X028 不可达。补的是变体不是替换，原文照跑。
+        if (text.Contains("继发", StringComparison.Ordinal)
+            && !text.Contains("继发性", StringComparison.Ordinal))
+        {
+            variants.Add(TextMatch.NormalizeKey(text.Replace("继发", "继发性", StringComparison.Ordinal)));
+        }
+
         // 诊断侧标题直达受运行时开关门控（与流水线 IcdTitleDirectEnabled 同源）。
         var directs = dictionary is null || !channels.IcdTitleDirect
             ? []
@@ -210,6 +220,17 @@ public static class NameCodingLookupEngine
 
         var drillBudget = Math.Min(splitHits.Count, MaxDrillLeads);
         var pathBuffer = new Dictionary<int, IReadOnlyList<NameLookupModifierPath>>();
+        // 现译名/输入侧改写变体键（涂阳培阳→细菌学和组织学证实 等）并入补钻键集：
+        // 这类变体与原文命中同一主导词(seq)，在 splitHits 按 seq 去重时被丢弃，
+        // 但它携带的词面能让补钻走出更深更准的链路。复用同义词变体的补钻通道。
+        var allExtraVariantKeys = new List<string>(synonymVariantKeys);
+        foreach (var rk in renameVariantKeys)
+        {
+            if (!allExtraVariantKeys.Contains(rk, StringComparer.Ordinal))
+            {
+                allExtraVariantKeys.Add(rk);
+            }
+        }
         for (var index = 0; index < splitHits.Count; index++)
         {
             var (hit, variantKey) = splitHits[index];
@@ -217,7 +238,7 @@ public static class NameCodingLookupEngine
             pathBuffer[hit.SeqNo] = !prunedLeads.Contains(hit.SeqNo) && index < drillBudget && dictionary is not null
                 ? DrillIcdLead(hit, text, variantKey, snapshot!, tumor, dictionary, candidates, channels,
                     renameAnchored: renameVariantKeys.Contains(variantKey),
-                    extraVariantKeys: synonymVariantKeys,
+                    extraVariantKeys: allExtraVariantKeys,
                     synonyms: termSynonyms,
                     evidenceKeys: evidenceKeys)
                 : [];
@@ -1764,7 +1785,13 @@ public static class NameCodingLookupEngine
             var head = TextMatch.NormalizeKey(headRaw);
             if (head.Length >= 2
                 && !inputKey.Contains(head, StringComparison.Ordinal)
-                && LongestCommonSegment(head, inputKey) < 2)
+                && LongestCommonSegment(head, inputKey) < 2
+                // 逗号并列尾段整词豁免：索引里"声门，声带"、"胶样，胶状"这类逗号段是同一行的
+                // 等价别名（ParseNode 已把两段拆成独立 aliases，主导词召回据此命中）。病历只写
+                // 尾段整词时，面板的 CoreTerm 原文核对也应认——否则数据侧补的逗号别名在面板侧
+                // 完全失效（声带结核(细菌学和组织学证实) 的 结核→声门，声带→证实 A15.5 整链被剔）。
+                // 只认 ≥2 字整词逐字命中，且尾段不是连接词/泛属性词——"词根沾边"仍由主段门控拦住。
+                && !CommaTailWholeWordInInput(coreTerm, inputKey))
             {
                 return false;
             }
@@ -1798,6 +1825,50 @@ public static class NameCodingLookupEngine
         }
 
         return core.Length <= 2 && core.Any(character => inputKey.Contains(character));
+    }
+
+    /// <summary>
+    /// 逗号并列行的尾段整词是否逐字出现在输入里。用于"声门，声带"式等价别名行：
+    /// 病历只写尾段（声带）时等同于写了主段，面板修饰词核对应放行。
+    /// 护栏：主段/尾段均为 2-3 字短词、首字相同（同位同义词）、整词逐字命中；
+    /// 排除含拉丁字母数字、泛属性词、连接词开头段——避免"主词+修饰词"逗号行
+    /// （血栓形成性，血小板减少性 / 特发性，急性）借字面把噪声分支放进来。
+    /// </summary>
+    private static bool CommaTailWholeWordInInput(string coreTerm, string inputKey)
+    {
+        var commaIndex = coreTerm.IndexOfAny(['，', ',']);
+        if (commaIndex < 0)
+        {
+            return false;
+        }
+
+        var head = TextMatch.NormalizeKey(coreTerm[..commaIndex]);
+        if (head.Length is < 2 or > 3)
+        {
+            return false;
+        }
+
+        foreach (var raw in coreTerm[(commaIndex + 1)..]
+                     .Split(EnumerationSeparators, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var key = TextMatch.NormalizeKey(raw);
+            if (key.Length is < 2 or > 3
+                || head[0] != key[0]
+                || key.Any(char.IsAsciiLetterOrDigit)
+                || GenericAttributeSegmentKeys.Contains(key)
+                || IcdIndexMatcher.IsGenericLeadKey(key)
+                || EnumerationConnectorPrefixes.Any(prefix => key.StartsWith(prefix, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            if (inputKey.Contains(key, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>两串的最长共同连续段长度。</summary>

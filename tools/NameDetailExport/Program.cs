@@ -61,6 +61,10 @@ Console.Error.WriteLine($"待导出细码 {codes.Count} 条。");
 // 修复在导出对照里全部失效（肺结核(显微镜检证实) 等输入 Top1 错位）。
 var synonyms = BuildSynonyms(connString);
 Console.Error.WriteLine($"术语同义词已加载。");
+var tumor = BuildTumor(connString);
+Console.Error.WriteLine(tumor is null
+    ? "肿瘤部位表为空（肿瘤表通道不启用）。"
+    : $"肿瘤部位表 {tumor.TotalNodes} 行。");
 
 using var writer = new StreamWriter(outPath, append: false, new UTF8Encoding(false));
 writer.WriteLine(string.Join('\t',
@@ -77,7 +81,7 @@ foreach (var (code, title) in codes)
     index++;
     var response = NameCodingLookupEngine.Lookup(
         NameCodingLookupEngine.DiagnosisKind, title, topK: 8,
-        icdSnapshot: snapshot, tumorSnapshot: null, icdDictionary: dictionary,
+        icdSnapshot: snapshot, tumorSnapshot: tumor, icdDictionary: dictionary,
         cm3Snapshot: null, cm3Dictionary: null,
         new NameLookupTitleChannels(IcdTitleDirect: false, Cm3TitleDirect: false, IcdTitleReverse: true),
         termSynonyms: synonyms);
@@ -164,6 +168,46 @@ static List<IcdIndexRow> BuildRows(string conn)
 }
 
 static IcdIndexSnapshot BuildSnapshot(string conn) => IcdIndexSnapshotBuilder.Build(BuildRows(conn));
+
+static TumorIndexSnapshot? BuildTumor(string conn)
+{
+    try
+    {
+        using var sql = new SqlConnection(conn);
+        sql.Open();
+        using var cmd = new SqlCommand(
+            """
+            SELECT seq_no, index_name, index_level, parent_seq_no, full_index_name,
+                   code_malignant_primary, code_malignant_secondary, code_in_situ,
+                   code_benign, code_uncertain, jump_kind, ISNULL(jump_target, '') AS jump_target
+            FROM tumor_index ORDER BY seq_no
+            """, sql);
+        using var reader = cmd.ExecuteReader();
+        var rows = new List<TumorIndexRow>();
+        while (reader.Read())
+        {
+            rows.Add(new TumorIndexRow(
+                reader.GetInt32(0),
+                reader.GetString(1),
+                reader.GetInt32(2),
+                reader.GetInt32(3),
+                reader.GetString(4),
+                reader.IsDBNull(5) ? null : reader.GetString(5),
+                reader.IsDBNull(6) ? null : reader.GetString(6),
+                reader.IsDBNull(7) ? null : reader.GetString(7),
+                reader.IsDBNull(8) ? null : reader.GetString(8),
+                reader.IsDBNull(9) ? null : reader.GetString(9),
+                reader.GetInt32(10),
+                reader.GetString(11)));
+        }
+
+        return rows.Count == 0 ? null : TumorIndexSnapshot.Build(rows);
+    }
+    catch
+    {
+        return null;
+    }
+}
 
 static IcdTermSynonymSnapshot BuildSynonyms(string conn)
 {

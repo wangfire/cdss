@@ -297,7 +297,8 @@ public static class IcdIndexSnapshotBuilder
                 continue;
             }
 
-            var hasPositiveChild = node.Children.Any(child => child.Polarity == "Positive");
+            var hasPositiveChild = node.Children.Any(child => child.Polarity == "Positive"
+                && !child.CoreTerm.Contains("细菌学和组织学证实", StringComparison.OrdinalIgnoreCase));
             if (hasPositiveChild)
             {
                 node.Polarity = "Negative";
@@ -443,6 +444,13 @@ public static class IcdIndexSnapshotBuilder
             }
         }
 
+        // 用户口径（2026-11-19）：涂阳培阳/涂阴培阳 是"已做细菌学和组织学证实"的检验结果写法，
+        // 与 支气管结核(细菌学和组织学证实) 同义。作为**输入侧文本改写**注入（原文照跑、变体补一路），
+        // 不走 icd_term_synonym 等价类——后者会让 痰培养(+)/培阳 同组连坐，污染肺树选层。
+        // OccursAsStandaloneWord 保证只在整词命中时改写，不误伤长词内部子串。
+        renameEquivalents.TryAdd("涂阳培阳", "细菌学和组织学证实");
+        renameEquivalents.TryAdd("涂阴培阳", "细菌学和组织学证实");
+
         return new IcdIndexSnapshot
         {
             Leads = leads,
@@ -580,8 +588,12 @@ public static class IcdIndexSnapshotBuilder
     /// </summary>
     private static string DerivePolarity(string term)
     {
-        var isNegative = NegativePolarityKeywords.Any(keyword =>
-            term.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+        // "被未特指的方法"是"确定的"下的**阳性证实分支**（A15.3 经证实），
+        // "未特指"修饰的是检查方法而非"未证实"——不得按阴性词剔除。
+        var isConfirmationByUnspecifiedMethod = term.Contains("被未特指的方法", StringComparison.Ordinal);
+        var isNegative = !isConfirmationByUnspecifiedMethod
+            && NegativePolarityKeywords.Any(keyword =>
+                term.Contains(keyword, StringComparison.OrdinalIgnoreCase));
         if (isNegative)
         {
             // "伴有或不伴有…"是中性表述（伴随培养与否都不改变"镜检证实"的事实），
@@ -609,7 +621,7 @@ public static class IcdIndexSnapshotBuilder
         ["阴性", "未做", "未查", "未证实", "未特指", "不伴有", "不提及"];
 
     private static readonly string[] PositivePolarityKeywords =
-        ["确定的", "阳性", "培阳", "涂阳"];
+        ["确定的", "阳性", "培阳", "涂阳", "细菌学和组织学证实", "被未特指的方法"];
 
     private static void AddAnotherNames(List<string> target, string value)
     {

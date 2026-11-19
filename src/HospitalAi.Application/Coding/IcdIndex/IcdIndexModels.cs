@@ -451,6 +451,16 @@ public static class IcdIndexSnapshotBuilder
         renameEquivalents.TryAdd("涂阳培阳", "细菌学和组织学证实");
         renameEquivalents.TryAdd("涂阴培阳", "细菌学和组织学证实");
         renameEquivalents.TryAdd("未做细菌学和组织学检查", "未做");
+        // 阴性证据族：痰镜检(-)/痰培养(-)/病理(-)/细胞学(组织学)(-) 均为"细菌学和组织学检查为阴性"(A16.0)。
+        renameEquivalents.TryAdd("痰镜检(-)", "阴性");
+        renameEquivalents.TryAdd("痰培养(-)", "阴性");
+        renameEquivalents.TryAdd("病理(-)", "阴性");
+        renameEquivalents.TryAdd("细胞学(组织学)(-)", "阴性");
+        // 转示部位（气胸/支气管扩张）在索引树里是"见 结核，肺"转示行，本身无证据子行；
+        // 输入侧补一路"部位→肺"改写变体，使结核主导词下钻进肺树证据行(A16.0/A16.1)；
+        // 原文照跑保证字典展开仍按原标题命中部位细码（A16.004 等）。
+        renameEquivalents.TryAdd("结核性气胸", "肺结核");
+        renameEquivalents.TryAdd("结核性支气管扩张", "肺结核");
 
         return new IcdIndexSnapshot
         {

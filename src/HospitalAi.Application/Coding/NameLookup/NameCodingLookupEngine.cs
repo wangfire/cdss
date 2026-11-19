@@ -120,6 +120,22 @@ public static class NameCodingLookupEngine
                     renameVariantKeys.Add(rewrittenKey);
                 }
             }
+            // 级联改写：一条输入可能同时需要多处替换（转示部位"气胸→肺结核" +
+            // 证据词"痰镜检(-)→阴性"），单轮 RewriteByRenameEquivalents 只做各自独立的
+            // 原文替换，得不到组合变体。对一轮变体再改写一次，补出组合链。
+            // 有上限（再一轮即可覆盖当前规则），不递归，避免组合爆炸。
+            foreach (var once in renameVariantKeys.ToList())
+            {
+                foreach (var twice in snapshot.RewriteByRenameEquivalents(once))
+                {
+                    var twiceKey = TextMatch.NormalizeKey(twice);
+                    if (twiceKey.Length > 0 && !variants.Contains(twiceKey))
+                    {
+                        variants.Add(twiceKey);
+                        renameVariantKeys.Add(twiceKey);
+                    }
+                }
+            }
         }
 
         // 术语同义词等价改写（证实≡确定的 一族）：主导词常以变体拼写命中，而下钻与

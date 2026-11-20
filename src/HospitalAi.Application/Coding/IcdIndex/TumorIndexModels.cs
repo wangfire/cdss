@@ -254,7 +254,16 @@ public sealed class TumorIndexSnapshot
     /// 层级、全名长度兜底。
     /// </summary>
     private static List<Candidate> RankCandidates(List<Candidate> candidates) => candidates
-        .OrderByDescending(item => item.AliasScore)
+        // 单字多层级部位链（唇→内→上）：3级单字行（如 唇 内 上 C00.3）父路径词全在输入时，
+        // 比浅层2字行更特指，应优先——否则"上唇内面颊侧面"会被 颊→内面 C06.0 以词长抢层。
+        // 窄口径：仅本行别名单字+层级>=3+父路径词全单字且全命中+直接行，
+        // 不碰"乳腺内上象限"这类父路径含多字词的3级行（否则乳腺/软组织整族回归）。
+        .OrderByDescending(item => item.Node.Level >= 3
+            && item.AliasLength == 1
+            && item.Node.JumpKind == 0
+            && item.PathScore == 1m
+            && item.Node.PathWords.All(w => w.Length == 1) ? 1 : 0)
+        .ThenByDescending(item => item.AliasScore)
         .ThenByDescending(item => item.AliasLength)
         .ThenByDescending(item => item.PathScore)
         .ThenBy(item => item.Node.JumpKind != 0)

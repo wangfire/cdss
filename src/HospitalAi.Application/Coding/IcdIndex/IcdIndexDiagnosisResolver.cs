@@ -861,7 +861,11 @@ public sealed class IcdIndexDiagnosisResolver(
                     && originalKey.Contains(titleKey, StringComparison.Ordinal)
                     && titleKey.Length * 100m / Math.Max(1, originalKey.Length) >= 50m)
                 {
-                    wtd = Math.Min(1m, titleKey.Length / (decimal)originalKey.Length);
+                    // 取两算较大者（上方注释口径）：变体轮的 wtd 已按变体文本算过一版
+                    // （titleKey.Length/变体键长），缩短型改写（同义词长词面→短词面、
+                    // rename 缩短规则）会让变体键比原文键短、变体算出的贴合分更高——
+                    // 直接覆盖会把已挣到的整标题贴合压回去，首排序键掉档。
+                    wtd = Math.Max(wtd, Math.Min(1m, titleKey.Length / (decimal)originalKey.Length));
                 }
             }
 

@@ -461,6 +461,12 @@ public static class IcdIndexSnapshotBuilder
         // 原文照跑保证字典展开仍按原标题命中部位细码（A16.004 等）。
         renameEquivalents.TryAdd("结核性气胸", "肺结核");
         renameEquivalents.TryAdd("结核性支气管扩张", "肺结核");
+        // 甲肝：输入前缀"急性"会被病毒层"急性(未特指)"(B17.9)抢层，挡住"型→甲"精确链。
+        // 甲肝本身即急性，去掉前缀语义无损；只针对完整"急性甲型"整词改写。
+        renameEquivalents.TryAdd("急性甲型", "甲型");
+        renameEquivalents.TryAdd("急性黄疸型甲型", "黄疸型甲型");
+        renameEquivalents.TryAdd("急性淤胆型甲型", "淤胆型甲型");
+        renameEquivalents.TryAdd("急性无黄疸型甲型", "无黄疸型甲型");
 
         return new IcdIndexSnapshot
         {

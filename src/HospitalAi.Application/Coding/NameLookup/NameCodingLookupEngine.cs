@@ -162,6 +162,26 @@ public static class NameCodingLookupEngine
                     synonymVariantKeys.Add(synonymKey);
                 }
             }
+            // 跨通道组合：先同义词展开原文证据词（痰镜检(+)→确定的被显微镜下痰检查），
+            // 再对展开结果做 rename 部位改写（结核性气胸→肺结核），得到
+            // "肺结核,确定的被显微镜下痰检查"——部位改写+证据规范词的组合键，
+            // 才能 drill 到"结核→肺→确定的→被显微镜下痰检查"A15.x 链。
+            // 顺序必须与阴性族成功路径一致：原文层先展开证据词、再改部位；
+            // 对归一化 key 展开会丢标点导致整词匹配失效。
+            if (snapshot is not null)
+            {
+                foreach (var synText in termSynonyms.ExpandVariants(text, TermSynonymTypes.Diagnosis))
+                {
+                    foreach (var rewritten in snapshot.RewriteByRenameEquivalents(synText))
+                    {
+                        var comboKey = TextMatch.NormalizeKey(rewritten);
+                        if (comboKey.Length > 0 && comboKey != inputKey && !synonymVariantKeys.Contains(comboKey))
+                        {
+                            synonymVariantKeys.Add(comboKey);
+                        }
+                    }
+                }
+            }
         }
 
         // 肿瘤动态词的「性」尾缀变体（与流水线 IcdIndexDiagnosisResolver.TumorDynamicFormVariants
@@ -171,7 +191,11 @@ public static class NameCodingLookupEngine
         if (text.Contains("继发", StringComparison.Ordinal)
             && !text.Contains("继发性", StringComparison.Ordinal))
         {
-            variants.Add(TextMatch.NormalizeKey(text.Replace("继发", "继发性", StringComparison.Ordinal)));
+            var tumorDynamicKey = TextMatch.NormalizeKey(text.Replace("继发", "继发性", StringComparison.Ordinal));
+            if (tumorDynamicKey.Length > 0 && !variants.Contains(tumorDynamicKey))
+            {
+                variants.Add(tumorDynamicKey);
+            }
         }
 
         // 诊断侧标题直达受运行时开关门控（与流水线 IcdTitleDirectEnabled 同源）。

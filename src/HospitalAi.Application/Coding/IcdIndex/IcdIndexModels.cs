@@ -483,6 +483,9 @@ public static class IcdIndexSnapshotBuilder
         // "急性重症庚型肝炎"词面缺"病毒"，下钻被"急性NEC"B17.9抢层；补"病毒性"锚点
         // 连同上条规则走 肝炎→病毒→型→非甲非乙。整词改写避免误伤"慢性庚型肝炎"。
         renameEquivalents.TryAdd("急性重症庚型肝炎", "急性重症庚型病毒性肝炎");
+        // 陈旧性=后遗症等同词：陈旧性诊断(结核/骨折/脑梗死/烧伤等)走"后遗症→..."后遗症链，
+        // 而非急性期码。原文照跑保证字典展开按原标题命中后遗症细码。
+        renameEquivalents.TryAdd("陈旧性", "后遗症");
 
         return new IcdIndexSnapshot
         {

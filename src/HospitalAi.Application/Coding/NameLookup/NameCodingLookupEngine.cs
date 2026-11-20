@@ -205,6 +205,11 @@ public static class NameCodingLookupEngine
                 .Select(match => new NameLookupDictionaryDirect(
                     codeSystem, match.Row.Code, match.Row.Title, match.Depth))
                 .ToList();
+        // 陈旧性=后遗症结核：改写变体含"后遗症"且输入含"结核"时，只保留后遗症主导词(14975)——
+        // 陈旧性结核语境下结核/脑膜炎/炎急性链(A16/A17/A18)是干扰，只允许后遗症链(B90.9)。
+        // 收窄到"后遗症+结核"共现，避免"脑出血后遗症"等非结核输入被误压制合法主导词。
+        var hasSequelaVariant = variants.Any(v => v.Contains("后遗症", StringComparison.Ordinal))
+            && variants.Any(v => v.Contains("结核", StringComparison.Ordinal));
         var splitHits = new List<(NameLeadTermSplitter.IcdLeadTermHit Hit, string VariantKey)>();
         foreach (var variantKey in variants)
         {
@@ -215,6 +220,10 @@ public static class NameCodingLookupEngine
 
             foreach (var hit in NameLeadTermSplitter.SplitIcd(snapshot, variantKey, NameLeadTermSplitter.MaxLeads))
             {
+                if (hasSequelaVariant && hit.SeqNo != 14975)
+                {
+                    continue;
+                }
                 var existingIndex = splitHits.FindIndex(entry => entry.Hit.SeqNo == hit.SeqNo);
                 if (existingIndex < 0)
                 {

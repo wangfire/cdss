@@ -467,6 +467,10 @@ public static class IcdIndexSnapshotBuilder
         renameEquivalents.TryAdd("急性黄疸型甲型", "黄疸型甲型");
         renameEquivalents.TryAdd("急性淤胆型甲型", "淤胆型甲型");
         renameEquivalents.TryAdd("急性无黄疸型甲型", "无黄疸型甲型");
+        // 慢性病毒性肝炎：主导词切分要求"肝炎"在结尾才召回；"病毒性肝炎慢性X"里肝炎在中间
+        // 被 DropMidWordFragments 丢弃。调语序把肝炎挪到结尾（原文照跑，字典展开按原标题命中细码）。
+        renameEquivalents.TryAdd("病毒性肝炎慢性重型", "慢性重型病毒性肝炎");
+        renameEquivalents.TryAdd("病毒性肝炎慢性淤胆型", "慢性淤胆型病毒性肝炎");
 
         return new IcdIndexSnapshot
         {

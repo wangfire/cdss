@@ -166,7 +166,12 @@ public static class IcdIndexMatcher
             // 0 级主导词锚定不看()里的内容（用户口径 11-07："急性肺炎"/"肺炎"/"慢性肺炎"
             // 主导词都是 肺炎）——病程极（急性/慢性、近期/陈旧）写在行名圆括号里
             // （肺炎(急性)(双侧)…），慢性肺炎 曾被极性冲突门控整行剔除。子行照旧门控。
-            && (node.Level == 0 || !TextMatch.HasPhasePoleConflict(node.Term, inputKey))
+            // 例外：10939"病毒(性)(急性)"是病毒性肝炎的通用枢纽（其下挂 慢性/甲/乙/丙 等），
+            // 括号内"急性"是词面注解而非病程限定——慢性输入里它也必须可进入，才能走到
+            // 10942"病毒→慢性"B18.9。否则慢性病毒性肝炎链路整支被急/慢冲突打死。
+            && (node.SeqNo == 10939
+                || node.Level == 0
+                || !TextMatch.HasPhasePoleConflict(node.Term, inputKey))
             && !TextMatch.HasNegationPoleConflict(node.CoreTerm, inputKey);
 
     /// <summary>ICD-O 形态学码（M8010/3、M9800/3:C95.9 的形态学段）。</summary>
@@ -823,9 +828,15 @@ public static class IcdIndexMatcher
                     && TextMatch.CoverageOf(childMatchKey, inputKey).Ratio >= 1.0m;
                 var anchoredPairSafe = !bestFullyAnchored
                     || (childFullyAnchored && childBestGain >= bestGain);
+                // 妊娠合并症（妊娠合并乙型丁型病毒性肝炎 O98.4）刻意走妊娠章节码，
+                // 不被分型枢纽拖进普通病毒性肝炎章节——有"妊娠"字样时不启用本判据。
+                var typeHubAllowed = !inputKey.Contains("妊娠", StringComparison.Ordinal);
+                var childIsTypeHub = typeHubAllowed && IsAnchoredTypeHub(child, inputKey);
+                var bestIsTypeHub = typeHubAllowed && bestChild is not null && IsAnchoredTypeHub(bestChild, inputKey);
                 if (childBestKey is not null
                     && childBestGain >= 1
-                    && (childReachesEvidence && !bestReachesEvidence && anchoredPairSafe
+                    && (childIsTypeHub && !bestIsTypeHub && childBestGain >= 1
+                        || childReachesEvidence && !bestReachesEvidence && anchoredPairSafe
                         || (childReachesEvidence == bestReachesEvidence
                             && (childIsEvidence && !bestIsEvidence
                                 || (childIsEvidence == bestIsEvidence
@@ -1289,6 +1300,30 @@ public static class IcdIndexMatcher
     /// （P3 选层证据子树前瞻）：命中即当前节点是"通往证据分支"的祖先层，
     /// 选层时优先保住它。node 自身命中也算。
     /// </summary>
+    // 分型枢纽：只认"型"枢纽（肝炎$病毒→型→甲/乙/丙），别名恰为单字"型"，本行无码，
+    // 且某个子节点（甲/乙/丙/丁/戊）的别名出现在输入里。收窄到分型语义，
+    // 不匹配泛化的"损伤→部位"等枢纽，避免大面积选层回归。
+    private static bool IsAnchoredTypeHub(IcdIndexNode node, string inputKey)
+    {
+        if (node.Code is { Length: > 0 }
+            || !node.Aliases.Any(a => a.MatchKey == "型"))
+        {
+            return false;
+        }
+        foreach (var sub in node.Children)
+        {
+            foreach (var alias in sub.Aliases)
+            {
+                if (alias.MatchKey.Length is >= 1 and <= 2
+                    && inputKey.Contains(alias.MatchKey, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private static bool SubtreeReachesEvidence(
         IcdIndexNode node,
         IReadOnlyList<string> evidenceKeys,

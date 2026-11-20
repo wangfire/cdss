@@ -254,6 +254,12 @@ public static class NameLeadTermSplitter
             {
                 return false;
             }
+            // "肝炎"是高价值主导词：词中位置后跟修饰词(急性/淤胆型…)时不当"复合名尾片段"删，
+            // 否则"病毒性肝炎急性X"整族召回不到肝炎、B17.9链落空。
+            if (string.CompareOrdinal(inputKey, start, "肝炎", 0, 2) == 0)
+            {
+                return false;
+            }
 
             if (leadSpans.Any(span => span.Start <= start && span.End >= end && span.End - span.Start > length))
             {

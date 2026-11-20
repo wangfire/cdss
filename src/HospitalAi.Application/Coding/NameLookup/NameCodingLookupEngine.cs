@@ -1531,6 +1531,16 @@ public static class NameCodingLookupEngine
             if (!inputKey.Contains(ancestorLiteral, StringComparison.Ordinal)
                 && inputKey.Contains(childCore, StringComparison.Ordinal))
             {
+                // 窄口径例外：只对"急性"分型枢纽放行——输入把"病毒性"与"急性"分段写出
+                // （如"病毒性肝炎急性淤胆型"，两段被主导词"肝炎"隔开），各自核心词都在输入里，
+                // 是明确点名的分型下钻而非子行借上层枚举行字面占位。不放宽到其它 childCore，
+                // 避免 沙门菌→伤寒、心肌病→梗阻性 这类多下钻误伤。
+                if (childCore == "急性"
+                    && child.Code is { Length: > 0 }
+                    && inputKey.Contains(TextMatch.NormalizeKey(ancestor.CoreTerm), StringComparison.Ordinal))
+                {
+                    continue;
+                }
                 return false;
             }
         }

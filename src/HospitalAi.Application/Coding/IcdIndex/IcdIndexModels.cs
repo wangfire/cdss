@@ -471,6 +471,18 @@ public static class IcdIndexSnapshotBuilder
         // 被 DropMidWordFragments 丢弃。调语序把肝炎挪到结尾（原文照跑，字典展开按原标题命中细码）。
         renameEquivalents.TryAdd("病毒性肝炎慢性重型", "慢性重型病毒性肝炎");
         renameEquivalents.TryAdd("病毒性肝炎慢性淤胆型", "慢性淤胆型病毒性肝炎");
+        // 病毒性肝炎感染族：索引里"丁型/庚型/重叠感染…"归在"非甲非乙型"(B17.8)下，
+        // 但诊断词面不含该锚点→下钻停在病毒层或被"急性(未特指)"抢层。补"非甲非乙型"锚点。
+        renameEquivalents.TryAdd("重叠感染", "非甲非乙型重叠感染");
+        renameEquivalents.TryAdd("重叠型", "非甲非乙型重叠型");
+        renameEquivalents.TryAdd("双重感染", "非甲非乙型双重感染");
+        renameEquivalents.TryAdd("三重感染", "非甲非乙型三重感染");
+        renameEquivalents.TryAdd("混合感染", "非甲非乙型混合感染");
+        renameEquivalents.TryAdd("丁型病毒性肝炎", "非甲非乙型丁型病毒性肝炎");
+        renameEquivalents.TryAdd("庚型病毒性肝炎", "非甲非乙型庚型病毒性肝炎");
+        // "急性重症庚型肝炎"词面缺"病毒"，下钻被"急性NEC"B17.9抢层；补"病毒性"锚点
+        // 连同上条规则走 肝炎→病毒→型→非甲非乙。整词改写避免误伤"慢性庚型肝炎"。
+        renameEquivalents.TryAdd("急性重症庚型肝炎", "急性重症庚型病毒性肝炎");
 
         return new IcdIndexSnapshot
         {

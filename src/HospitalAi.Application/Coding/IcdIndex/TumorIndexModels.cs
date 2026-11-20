@@ -233,8 +233,10 @@ public sealed class TumorIndexSnapshot
                 continue;
             }
 
+            var fp = node.JumpKind != 0 ? FollowPointer(node) : null;
+            var sameFamPtr = fp is not null && fp.FamilySeqNo == node.FamilySeqNo && fp.SeqNo != node.SeqNo && fp.Level <= node.Level;
             candidates.Add(new Candidate(
-                node, alias.Value.Score, alias.Value.Length, PathScore(node, inputKey), alias.Value.Key));
+                node, alias.Value.Score, alias.Value.Length, PathScore(node, inputKey), alias.Value.Key, sameFamPtr));
         }
 
         return candidates;
@@ -428,7 +430,13 @@ public sealed class TumorIndexSnapshot
             cleaned = cleaned["肿瘤，".Length..];
         }
 
-        var segments = cleaned.Split('，').Select(TextMatch.NormalizeKey).Where(s => s.Length > 0).ToArray();
+        var segments = cleaned.Split('，')
+            .Select(TextMatch.NormalizeKey)
+            // 指针尾段带索引补充词尾"的"（"见 肿瘤，唇，内 的" → "内的"），
+            // 剥掉后尾段才是真正的部位词"内"，否则 FollowPointer 拿"内的"去匹配别名全落空，
+            // 唇内面口腔面 的转示行解不到位、被别族直接码(C71.0)抢走。
+            .Select(seg => seg.Length > 1 && seg.EndsWith("的", StringComparison.Ordinal) ? seg[..^1] : seg)
+            .Where(s => s.Length > 0).ToArray();
         if (segments.Length == 0)
         {
             return null;
@@ -676,9 +684,12 @@ public sealed class TumorIndexSnapshot
         return best;
     }
 
-    private sealed class Candidate(Node node, decimal aliasScore, int aliasLength, decimal pathScore, string aliasText)
+    private sealed class Candidate(Node node, decimal aliasScore, int aliasLength, decimal pathScore, string aliasText, bool sameFamilyPointer = false)
     {
         public Node Node { get; } = node;
+
+        /// <summary>转示行且 FollowPointer 目标在同族非自身节点（本族内部定位跳转）。</summary>
+        public bool SameFamilyPointer { get; } = sameFamilyPointer;
 
         public decimal AliasScore { get; } = aliasScore;
 
@@ -693,9 +704,14 @@ public sealed class TumorIndexSnapshot
     /// <summary>排序键的公共前四键：匹配质量 / 词面长度 / 父路径覆盖 / 直接行-指针行。</summary>
     private static bool SameMatchKeys(Candidate left, Candidate right)
         => left.AliasScore == right.AliasScore
-            && (left.Node.JumpKind != 0) == (right.Node.JumpKind != 0)
             && left.PathScore == right.PathScore
-            && left.AliasLength == right.AliasLength;
+            && left.AliasLength == right.AliasLength
+            // JumpKind 拆组豁免：本族内部转示行（fp 到同族非自身节点，如 唇内面/系带
+            // fp→唇内 C00.5）与同词面无码/异族直接行并列裁决，字典按原标题选对细码
+            // （唇内面系带/颊侧面/口腔面 三条统一走此链）。形态码族(巨细胞瘤/腺癌)的
+            // 转示 fp 不同族，照旧拆组，实测零回归。
+            && (((left.Node.JumpKind != 0) == (right.Node.JumpKind != 0))
+                || left.SameFamilyPointer || right.SameFamilyPointer);
 
     /// <summary>
     /// 指针目标歧义判据（另见 肿瘤，乳房 这类目标词在表里多处）：层级必须参与。
